@@ -1,0 +1,171 @@
+import Foundation
+
+// MARK: - 风险级别（对应 CLEANUP-RULES.md G4）
+
+enum RiskLevel: String, Codable {
+    case safe    // 缓存/日志，可重建
+    case review  // 残留/大文件，需人眼确认
+    case danger  // 不可恢复/可能有用
+
+    var label: String {
+        switch self {
+        case .safe: return "安全"
+        case .review: return "谨慎"
+        case .danger: return "危险"
+        }
+    }
+}
+
+// MARK: - 清理分类（对应 CLEANUP-RULES.md 第 1-6 章）
+
+enum CleanCategory: String, CaseIterable, Identifiable, Codable {
+    case userCaches
+    case logsAndTemp
+    case devResidue
+    case appResidue
+    case largeFiles
+    case browserAndSystem
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .userCaches: return "用户缓存"
+        case .logsAndTemp: return "日志与临时文件"
+        case .devResidue: return "开发残留"
+        case .appResidue: return "App 残留"
+        case .largeFiles: return "大文件与垃圾箱"
+        case .browserAndSystem: return "浏览器与系统数据"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .userCaches: return "应用可重建的缓存文件"
+        case .logsAndTemp: return "日志、崩溃报告与临时文件"
+        case .devResidue: return "DerivedData 与包管理器缓存"
+        case .appResidue: return "已卸载应用的遗留数据"
+        case .largeFiles: return "垃圾箱、旧下载与超大文件"
+        case .browserAndSystem: return "浏览器缓存与站点数据"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .userCaches: return "archivebox"
+        case .logsAndTemp: return "doc.text"
+        case .devResidue: return "hammer"
+        case .appResidue: return "shippingbox"
+        case .largeFiles: return "externaldrive"
+        case .browserAndSystem: return "globe"
+        }
+    }
+
+    var ruleRef: String {
+        switch self {
+        case .userCaches: return "C1–C6"
+        case .logsAndTemp: return "L1–L4"
+        case .devResidue: return "D1–D11"
+        case .appResidue: return "A1–A4"
+        case .largeFiles: return "T1–T4"
+        case .browserAndSystem: return "B1–B3"
+        }
+    }
+}
+
+// MARK: - 清理项
+
+struct CleanItem: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    /// 主路径（展示用）
+    let path: String
+    /// 实际要清理的全部路径（默认 [path]）
+    let paths: [String]
+    let size: Int64
+    let risk: RiskLevel
+    let category: CleanCategory
+    let note: String
+    /// 已在废纸篓内的项：清理 = 彻底删除（无法再移入废纸篓）
+    let permanentDelete: Bool
+    /// 用户勾选（默认不勾选，遵守 G2）
+    var isSelected: Bool = false
+
+    init(name: String, path: String, paths: [String]? = nil, size: Int64, risk: RiskLevel,
+         category: CleanCategory, note: String = "", permanentDelete: Bool = false) {
+        self.name = name
+        self.path = path
+        self.paths = paths ?? [path]
+        self.size = size
+        self.risk = risk
+        self.category = category
+        self.note = note
+        self.permanentDelete = permanentDelete
+    }
+}
+
+// MARK: - 分类扫描状态
+
+final class CategoryState: ObservableObject, Identifiable {
+    let category: CleanCategory
+    @Published var items: [CleanItem] = []
+    @Published var isScanned = false
+    @Published var isScanning = false
+    @Published var lastError: String?
+    @Published var releasedBytes: Int64 = 0
+
+    var id: CleanCategory { category }
+
+    init(category: CleanCategory) {
+        self.category = category
+    }
+
+    var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
+    var selectedCount: Int { items.filter { $0.isSelected }.count }
+    var selectedSize: Int64 { items.filter { $0.isSelected }.reduce(0) { $0 + $1.size } }
+    var allSelected: Bool { !items.isEmpty && items.allSatisfy { $0.isSelected } }
+
+    func setSelected(_ itemID: UUID, _ selected: Bool) {
+        guard let idx = items.firstIndex(where: { $0.id == itemID }) else { return }
+        var newItems = items
+        newItems[idx].isSelected = selected
+        items = newItems   // 整体赋值才能触发 @Published
+    }
+
+    func setAllSelected(_ selected: Bool) {
+        items = items.map { item in
+            var copy = item
+            copy.isSelected = selected
+            return copy
+        }
+    }
+
+    var selectedItems: [CleanItem] { items.filter { $0.isSelected } }
+}
+
+// MARK: - 字节格式化
+
+extension Int64 {
+    var byteString: String {
+        ByteCountFormatter.string(fromByteCount: self, countStyle: .file)
+    }
+
+    /// 中文友好格式（避免 "Zero KB" 英文混排；与 macOS 一致采用十进制 1GB=10^9）
+    var byteStringCN: String {
+        let v = Double(self)
+        let units: [(Double, String)] = [(1_000_000_000_000, "TB"), (1_000_000_000, "GB"), (1_000_000, "MB"), (1_000, "KB")]
+        for (factor, unit) in units where abs(v) >= factor {
+            let val = v / factor
+            if val >= 100 {
+                return String(format: "%.0f %@", val, unit)
+            }
+            // 整数时省略小数（5.0 MB → 5 MB）
+            if val == val.rounded() {
+                return String(format: "%.0f %@", val, unit)
+            }
+            return String(format: "%.1f %@", val, unit)
+        }
+        if v == 0 { return "0 KB" }
+        return String(format: "%.0f B", v)
+    }
+}
