@@ -45,22 +45,28 @@ struct ContentView: View {
     @EnvironmentObject private var app: AppState
 
     var body: some View {
-        NavigationSplitView {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
-        } detail: {
-            switch app.destination {
-            case .category(let cat):
-                CategoryDetailView(category: cat)
-            case .uninstaller:
-                UninstallerView()
-            case .history:
-                HistoryView()
-            case nil:
-                Text("选择一个功能开始")
-                    .font(Theme.bodyFont(17))
-                    .foregroundColor(Theme.inkMuted48)
+        HStack(spacing: 0) {
+            NavigationSplitView {
+                SidebarView()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
+            } detail: {
+                switch app.destination {
+                case .category(let cat):
+                    CategoryDetailView(category: cat)
+                case .uninstaller:
+                    UninstallerView()
+                case .history:
+                    HistoryView()
+                case nil:
+                    Text("选择一个功能开始")
+                        .font(Theme.bodyFont(17))
+                        .foregroundColor(Theme.inkMuted48)
+                }
             }
+
+            // 右侧 AI 对话面板
+            Divider().overlay(Theme.hairline)
+            AIChatView()
         }
         .background(Theme.parchment)
         .onAppear { app.refreshDisk() }

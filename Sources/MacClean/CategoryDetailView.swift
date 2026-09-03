@@ -150,6 +150,8 @@ struct CategoryDetailView: View {
                 ForEach(Array(st.items.enumerated()), id: \.element.id) { idx, item in
                     ItemRowView(item: item, isSelected: item.isSelected) { selected in
                         st.setSelected(item.id, selected)
+                    } onAskAI: {
+                        app.ai.askAbout(item: item)
                     }
                 }
             }
@@ -206,6 +208,7 @@ struct ItemRowView: View {
     let item: CleanItem
     let isSelected: Bool
     let onToggle: (Bool) -> Void
+    var onAskAI: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: Theme.spaceSm) {
@@ -243,6 +246,20 @@ struct ItemRowView: View {
                 .font(Theme.bodyFont(13, weight: .semibold))
                 .foregroundColor(Theme.ink)
                 .monospacedDigit()
+
+            // 问 AI：针对该项提问（用途/能否删/是否在用）
+            if let onAskAI {
+                Button(action: onAskAI) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.actionBlue)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("askAIButton")
+                .help("问 AI：这个是什么？能删吗？")
+            }
         }
         .padding(.horizontal, Theme.spaceMd)
         .padding(.vertical, 10)

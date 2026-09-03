@@ -398,6 +398,20 @@ struct RelatedFileRow: View {
                 .font(Theme.bodyFont(12, weight: .semibold))
                 .foregroundColor(Theme.ink)
                 .monospacedDigit()
+
+            // 问 AI：针对该关联文件提问
+            Button {
+                app.ai.askAbout(file: file)
+            } label: {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.actionBlue)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("askAIFileButton")
+            .help("问 AI：这个残留是什么？能删吗？")
         }
         .padding(.horizontal, Theme.spaceMd)
         .padding(.vertical, 8)

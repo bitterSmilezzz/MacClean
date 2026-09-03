@@ -11,6 +11,7 @@
 
 ## 功能
 
+- **侧边 AI 助手**：针对任意清理项点 ✨ 提问——AI 判断用途、是否适合删除、当前是否被使用（本地 lsof 占用检测 + 上下文分析），可追问（OpenAI 兼容接口，Key 存钥匙串）
 - **6 大清理分类**（对应 [CLEANUP-RULES.md](docs/CLEANUP-RULES.md) 的 23 条固化规则）：
   用户缓存 · 日志与临时文件 · 开发残留 · App 残留 · 大文件与垃圾箱 · 浏览器与系统数据
 - **App 卸载器**（融合 Pearcleaner/PureMac）：选 App → 扫描全部关联文件（Preferences/Caches/Containers/Application Support/Logs/LaunchAgents）→ 移废纸篓

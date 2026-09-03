@@ -11,6 +11,7 @@ final class AppState: ObservableObject {
     @Published var lastCleanSummary: String?
     @Published var history: [CleanRecord] = []
     let uninstaller = UninstallerState()
+    var ai = AIState()   // 需为 var：Binding（$app.ai.xxx）不能穿过 let 属性
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -24,6 +25,10 @@ final class AppState: ObservableObject {
         }
         // 卸载器状态同样转发
         uninstaller.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // AI 对话状态同样转发
+        ai.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
