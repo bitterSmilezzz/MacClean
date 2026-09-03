@@ -1,0 +1,13 @@
+# SwiftPM
+.build/
+.swiftpm/
+
+# 打包产物
+dist/
+*.dmg
+
+# macOS
+.DS_Store
+
+# 临时
+*.log
