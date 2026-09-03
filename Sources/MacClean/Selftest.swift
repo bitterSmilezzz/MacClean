@@ -202,6 +202,32 @@ enum Selftest {
             app.clearHistory()
             return app.history.isEmpty
         }
+        check("AI：上下文渲染") {
+            let ctx = AskContext(title: "TestCache", path: "/private/tmp/x", size: 1500,
+                                 category: "用户缓存", risk: "安全", note: "可重建")
+            let text = AIService.render(context: ctx)
+            return text.contains("TestCache") && text.contains("1.5 KB") && text.contains("占用进程：无")
+        }
+        check("AI：占用检测（不存在路径返回空）") {
+            AIService.detectProcesses(using: "/private/tmp/macclean-ghost-\(UUID().uuidString)").isEmpty
+        }
+        check("AI：占用检测（被打开的文件有结果）") {
+            let path = "/private/tmp/macclean-lsof-\(UUID().uuidString).txt"
+            FileManager.default.createFile(atPath: path, contents: Data("x".utf8))
+            let handle = FileHandle(forWritingAtPath: path)
+            defer {
+                try? handle?.close()
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            return !AIService.detectProcesses(using: path).isEmpty
+        }
+        check("AI：提问状态链路（上下文与消息）") {
+            let st = AIState()
+            let item = CleanItem(name: "CacheApp", path: "/private/tmp/cacheapp", size: 1024,
+                                 risk: .safe, category: .userCaches)
+            st.askAbout(item: item)
+            return st.context != nil && st.context?.title == "CacheApp" && st.messages.count == 1
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")
