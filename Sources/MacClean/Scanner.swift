@@ -56,11 +56,18 @@ final class Scanner {
     }
 
     /// 中英文别名映射（目录名 → 可能的已安装应用名）
+    /// 修复：匹配方向改为双向——normalized 命中任一 key 或任一别名值即算"可能对应已装 App"
     private static let nameAliases: [String: Set<String>] = [
         "bilibili": ["哔哩哔哩", "bilibili"],
         "qianwenime": ["通义输入法", "qianwenime"],
         "imamac": ["wechat", "微信", "qq"],
         "traecn": ["traesolocn", "trae"],
+    ]
+
+    /// 通用框架/多应用共享目录名——无法确定归属，绝不列为"已卸载残留"
+    private static let sharedFrameworkDirs: Set<String> = [
+        "electron", "cef", "chromium", "code", "codespaces",
+        "google", "microsoft", "adobe", "jetbrains",
     ]
 
     private static func normalizeAppName(_ path: String) -> String {
@@ -97,11 +104,18 @@ final class Scanner {
         }
 
         // C1: ~/Library/Caches 下所有子目录
+        // 运行时跳过：目录名命中运行中 app 的 bundle id **或显示名**（如 "Tabbit Browser" 目录）
+        let runningBundleIDs = CleanPaths.runningBundleIDs
+        let runningDisplayNames = Set(
+            NSWorkspace.shared.runningApplications.compactMap { $0.localizedName }
+                .map { $0.lowercased().replacingOccurrences(of: " ", with: "") }
+        )
         for dir in FileSystem.subdirs(of: CleanPaths.expand(CleanPaths.userCaches)) {
             guard FileSystem.isSafeToClean(dir) else { continue }
-            // G5: 运行中应用跳过（目录名与 bundle id 匹配）
+            // G5: 运行中应用跳过（目录名与 bundle id 或 app 显示名匹配）
             let bundle = (dir as NSString).lastPathComponent
-            if CleanPaths.runningBundleIDs.contains(bundle) { continue }
+            let normalizedDir = bundle.lowercased().replacingOccurrences(of: " ", with: "")
+            if runningBundleIDs.contains(bundle) || runningDisplayNames.contains(normalizedDir) { continue }
             let size = FileSystem.size(at: dir)
             if size > 0 {
                 add(CleanItem(
@@ -435,11 +449,18 @@ final class Scanner {
                              "org.chromium", "com.jetbrains", "com.tencent", "com.alibaba", "com.bytedance"]
 
         // A1: Application Support 中已卸载 App 的目录
+        // 修复：①别名双向匹配 ②180 天活跃度门槛（在用数据不列）③共享框架目录排除 ④运行中 app 匹配跳过
+        let residueCutoff = Date().addingTimeInterval(-180 * 86400)
+        let runningNames = Set(CleanPaths.runningBundleIDs)
         for dir in FileSystem.subdirs(of: CleanPaths.expand(CleanPaths.appSupport)) {
             guard FileSystem.isSafeToClean(dir) else { continue }
             let name = (dir as NSString).lastPathComponent
             if name.hasPrefix(".") || name.hasPrefix("com.apple") { continue }
             let normalized = name.lowercased().replacingOccurrences(of: " ", with: "")
+            // 共享框架目录：无法确定归属，直接跳过（Electron/CEF 等可能被多个 app 使用）
+            if sharedFrameworkDirs.contains(normalized) { continue }
+            // 活跃度：180 天内有更新 → 在用数据，不列为残留（与 A2 同门槛）
+            if let mdate = FileSystem.modificationDate(dir), mdate > residueCutoff { continue }
             // 兼容 bundle-id 形式目录名（com.qoder.app.stable → 各段与 app 名比对）
             let segments = normalized.split(separator: ".")
             let segmentMatch = segments.contains { seg in
@@ -447,12 +468,17 @@ final class Scanner {
             }
             // bundle id 前缀匹配（com.tencent.imamac → com.tencent ∈ 已装前缀）
             let prefixMatch = segments.count >= 2 && installedBundlePrefixes.contains("\(segments[0]).\(segments[1])")
-            // 别名匹配（bilibili ↔ 哔哩哔哩）
-            let aliasMatch = nameAliases[normalized].map { aliases in
-                aliases.contains { alias in
-                    installedApps.contains { $0.contains(normalizeAppName(alias)) }
+            // 别名匹配（修复：双向——normalized 命中任一 key 或任一别名值，且对应 app 已装）
+            let aliasMatch = nameAliases.contains { (key, aliases) in
+                let hit = normalized == key || aliases.contains(normalized)
+                    || normalized.contains(key) || aliases.contains { normalized.contains($0) }
+                guard hit else { return false }
+                // 该别名对应 app 是否已装：key 或任一别名命中 installedApps 即视为在用
+                let names = aliases.union([key])
+                return installedApps.contains { app in
+                    names.contains { app.contains($0) || $0.contains(app) }
                 }
-            } ?? false
+            }
             // 与已安装 App 名双向子串匹配（"Google" ⊂ "Google Chrome" 视为已安装，
             // 宁可漏报也不误删活跃应用数据；反向匹配要求名字较长避免 "code" 类短名误伤）
             let stillInstalled = segmentMatch || prefixMatch || aliasMatch || installedApps.contains { app in
@@ -463,16 +489,28 @@ final class Scanner {
             if size > 10 * 1024 * 1024 { // 仅 >10MB 残留值得列出
                 items.append(CleanItem(
                     name: name, path: dir, size: size, risk: .review,
-                    category: .appResidue, note: "疑似已卸载 App 的残留"))
+                    category: .appResidue, note: "疑似已卸载 App 的残留（180 天未更新）"))
             }
         }
 
-        // A2: Preferences 中孤立 plist（排除系统 bundle 与仍安装的 App，> 180 天）
+        // A2: Preferences 中孤立 plist（排除系统 bundle、仍安装的 App 与通用框架，> 180 天）
+        // 修复：单段名（系统守护进程）、通用框架 vendor 前缀均不列为可删
         let cutoff = Date().addingTimeInterval(-180 * 86400)
+        let sharedVendors = ["jetbrains", "qt", "dotnet", "electron", "google", "microsoft",
+                             "adobe", "oracle", "tencent", "alibaba", "bytedance",
+                             "qtproject", "sqlite", "gnu", "freedesktop"]
         for child in FileSystem.children(of: CleanPaths.expand(CleanPaths.preferences), keepHidden: false) {
             guard child.hasSuffix(".plist"), FileSystem.isSafeToClean(child) else { continue }
             let bundle = (child as NSString).lastPathComponent.replacingOccurrences(of: ".plist", with: "")
             if systemBundles.contains(where: { bundle.hasPrefix($0) }) { continue }
+            // 单段名（sharedfilelistd/icloudmailagent/nsurlsessiond 等系统守护进程偏好）
+            if !bundle.contains(".") { continue }
+            // 通用框架 vendor 前缀（JetBrains/Qt/.NET 等可能仍在用）；
+            // 先剥离 com./org. 等反域名前缀再匹配（com.qtproject → qtproject）
+            let stripped = bundle.lowercased()
+                .replacingOccurrences(of: "^com\\.", with: "", options: .regularExpression)
+                .replacingOccurrences(of: "^org\\.", with: "", options: .regularExpression)
+            if sharedVendors.contains(where: { stripped.hasPrefix($0) || stripped.contains(".\($0)") }) { continue }
             // N6：App 仍安装（bundle 前缀命中已装前缀，或名称命中已装 App）→ 不列为可删
             let segments = bundle.lowercased().split(separator: ".")
             let prefixStillInstalled = segments.count >= 2
