@@ -43,6 +43,7 @@ enum Destination: Hashable, Identifiable {
     case uninstaller
     case history
     case search
+    case riskCheck
 
     var id: String {
         switch self {
@@ -51,6 +52,7 @@ enum Destination: Hashable, Identifiable {
         case .uninstaller: return "uninstaller"
         case .history: return "history"
         case .search: return "search"
+        case .riskCheck: return "riskCheck"
         }
     }
 }
