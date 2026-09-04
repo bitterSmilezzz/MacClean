@@ -34,8 +34,9 @@ struct MacCleanApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(app)
-                .frame(minWidth: 1000, minHeight: 640)
+                .frame(minWidth: 1080, minHeight: 680)
         }
+        .defaultSize(width: 1200, height: 760)
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
     }
@@ -45,11 +46,12 @@ struct ContentView: View {
     @EnvironmentObject private var app: AppState
 
     var body: some View {
-        HStack(spacing: 0) {
-            NavigationSplitView {
-                SidebarView()
-                    .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
-            } detail: {
+        NavigationSplitView {
+            SidebarView()
+                .navigationSplitViewColumnWidth(min: 240, ideal: 270, max: 300)
+        } detail: {
+            ZStack(alignment: .trailing) {
+                // 主内容（抽屉收起时占满全部宽度）
                 switch app.destination {
                 case .category(let cat):
                     CategoryDetailView(category: cat)
@@ -62,11 +64,18 @@ struct ContentView: View {
                         .font(Theme.bodyFont(17))
                         .foregroundColor(Theme.inkMuted48)
                 }
-            }
 
-            // 右侧 AI 对话面板
-            Divider().overlay(Theme.hairline)
-            AIChatView()
+                // AI 抽屉：覆盖在右侧，不挤占内容宽度（深度优化 d1）
+                if app.ai.isDrawerOpen {
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        AIChatView()
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .shadow(color: .black.opacity(0.10), radius: 18, x: -4, y: 0)
+                    }
+                    .zIndex(10)
+                }
+            }
         }
         .background(Theme.parchment)
         .onAppear { app.refreshDisk() }

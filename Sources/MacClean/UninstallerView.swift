@@ -55,7 +55,7 @@ struct UninstallerView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("App 卸载器")
-                    .font(Theme.displayFont(24, weight: .semibold))
+                    .font(Theme.displayFont(28, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundColor(Theme.ink)
                 Text("选择 App，扫描其全部关联文件后一键清理 · 规则 A1–A4")
@@ -90,7 +90,7 @@ struct UninstallerView: View {
                     .font(.system(size: 42, weight: .light))
                     .foregroundColor(Theme.inkMuted48.opacity(0.6))
                 Text("未发现可卸载的 App")
-                    .font(Theme.displayFont(20, weight: .semibold))
+                    .font(Theme.displayFont(24, weight: .semibold))
                     .foregroundColor(Theme.ink)
                 Button {
                     uninstaller.loadApps()
@@ -121,7 +121,7 @@ struct UninstallerView: View {
             .padding(.horizontal, Theme.spaceMd)
             .padding(.vertical, Theme.spaceXs)
             .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.canvas))
-            .overlay(RoundedRectangle(cornerRadius: Theme.radiusMd).stroke(Theme.hairline, lineWidth: 1))
+            
             .padding(.horizontal, Theme.contentPadding)
             .padding(.top, Theme.contentPadding)
             .padding(.bottom, Theme.spaceSm)
@@ -151,7 +151,7 @@ struct UninstallerView: View {
                 HStack(spacing: Theme.spaceSm) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
-                            .font(Theme.displayFont(17, weight: .semibold))
+                            .font(Theme.displayFont(20, weight: .semibold))
                             .foregroundColor(Theme.ink)
                         Text(app.path)
                             .font(Theme.bodyFont(11))
@@ -166,12 +166,12 @@ struct UninstallerView: View {
                     }
                     Spacer()
                     Text("本体 \(app.size.byteStringCN)")
-                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .font(Theme.bodyFont(14, weight: .semibold))
                         .foregroundColor(Theme.inkMuted80)
                 }
                 .padding(Theme.spaceMd)
                 .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.canvas))
-                .overlay(RoundedRectangle(cornerRadius: Theme.radiusMd).stroke(Theme.hairline, lineWidth: 1))
+                
                 .padding(Theme.spaceMd)
 
                 if app.isRunning {
@@ -180,7 +180,7 @@ struct UninstallerView: View {
                             .font(.system(size: 12))
                             .foregroundColor(Theme.warningOrange)
                         Text("该 App 正在运行，关联文件扫描已暂停。请先退出后再卸载。")
-                            .font(Theme.bodyFont(12, weight: .medium))
+                            .font(Theme.bodyFont(14, weight: .medium))
                             .foregroundColor(Theme.warningOrange)
                     }
                     .padding(.horizontal, Theme.spaceMd)
@@ -204,7 +204,7 @@ struct UninstallerView: View {
                             .font(.system(size: 28, weight: .light))
                             .foregroundColor(Theme.actionBlue.opacity(0.7))
                         Text("未发现残留文件")
-                            .font(Theme.bodyFont(14, weight: .medium))
+                            .font(Theme.bodyFont(15, weight: .medium))
                             .foregroundColor(Theme.inkMuted48)
                         Text("该 App 很干净，或残留已被清理")
                             .font(Theme.bodyFont(11))
@@ -239,7 +239,7 @@ struct UninstallerView: View {
                     uninstaller.setAllSelected(!uninstaller.allSelected)
                 }
                 .buttonStyle(.plain)
-                .font(Theme.bodyFont(12, weight: .medium))
+                .font(Theme.bodyFont(14, weight: .medium))
                 .foregroundColor(Theme.actionBlue)
                 Spacer()
                 Text("\(uninstaller.related.count) 个关联文件 · 共 \(uninstaller.related.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
@@ -272,7 +272,7 @@ struct UninstallerView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(Theme.actionBlue)
                     Text(summary)
-                        .font(Theme.bodyFont(12, weight: .medium))
+                        .font(Theme.bodyFont(14, weight: .medium))
                         .foregroundColor(Theme.inkMuted80)
                 }
             }
@@ -282,7 +282,7 @@ struct UninstallerView: View {
                     .font(Theme.bodyFont(12))
                     .foregroundColor(Theme.inkMuted48)
                 Text(uninstaller.selectedSize.byteStringCN)
-                    .font(Theme.displayFont(17, weight: .semibold))
+                    .font(Theme.displayFont(20, weight: .semibold))
                     .foregroundColor(Theme.ink)
             }
 
@@ -332,7 +332,7 @@ struct AppRow: View {
                 .background(RoundedRectangle(cornerRadius: 6).fill(isSelected ? Theme.actionBlue.opacity(0.12) : Theme.parchment))
             VStack(alignment: .leading, spacing: 1) {
                 Text(app.name)
-                    .font(Theme.bodyFont(12, weight: .medium))
+                    .font(Theme.bodyFont(14, weight: .medium))
                     .foregroundColor(Theme.ink)
                     .lineLimit(1)
                 Text(app.size.byteStringCN)
@@ -349,10 +349,7 @@ struct AppRow: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(isSelected ? Theme.actionBlue.opacity(0.08) : Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(isSelected ? Theme.actionBlue.opacity(0.5) : Theme.hairline, lineWidth: 1)
-                )
+                
         )
     }
 }
@@ -377,11 +374,11 @@ struct RelatedFileRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(file.name)
-                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .font(Theme.bodyFont(14, weight: .semibold))
                         .foregroundColor(Theme.ink)
                         .lineLimit(1)
                     Text(file.kind)
-                        .font(Theme.bodyFont(10, weight: .medium))
+                        .font(Theme.bodyFont(12, weight: .medium))
                         .foregroundColor(Theme.inkMuted48)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -395,7 +392,7 @@ struct RelatedFileRow: View {
             }
             Spacer()
             Text(file.size.byteStringCN)
-                .font(Theme.bodyFont(12, weight: .semibold))
+                .font(Theme.bodyFont(14, weight: .semibold))
                 .foregroundColor(Theme.ink)
                 .monospacedDigit()
 
@@ -418,10 +415,7 @@ struct RelatedFileRow: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(file.isSelected ? Theme.actionBlue.opacity(0.5) : Theme.hairline, lineWidth: 1)
-                )
+                
         )
     }
 }

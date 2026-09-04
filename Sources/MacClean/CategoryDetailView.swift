@@ -22,12 +22,12 @@ struct CategoryDetailView: View {
                         .font(.system(size: 12))
                         .foregroundColor(Theme.dangerRed)
                     Text(err)
-                        .font(Theme.bodyFont(12, weight: .medium))
+                        .font(Theme.bodyFont(14, weight: .medium))
                         .foregroundColor(Theme.dangerRed)
                     Spacer()
                     Button("重试") { app.scan(category) }
                         .buttonStyle(.borderless)
-                        .font(Theme.bodyFont(12, weight: .medium))
+                        .font(Theme.bodyFont(14, weight: .medium))
                         .foregroundColor(Theme.actionBlue)
                 }
                 .padding(.horizontal, Theme.contentPadding)
@@ -74,7 +74,7 @@ struct CategoryDetailView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(category.title)
-                    .font(Theme.displayFont(24, weight: .semibold))
+                    .font(Theme.displayFont(28, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundColor(Theme.ink)
                 Text("\(category.subtitle) · 规则 \(category.ruleRef)")
@@ -89,7 +89,7 @@ struct CategoryDetailView: View {
                     st.setAllSelected(!st.allSelected)
                 }
                 .buttonStyle(.borderless)
-                .font(Theme.bodyFont(13, weight: .medium))
+                .font(Theme.bodyFont(15, weight: .medium))
                 .foregroundColor(Theme.actionBlue)
             }
 
@@ -130,7 +130,7 @@ struct CategoryDetailView: View {
                 .font(.system(size: 42, weight: .light))
                 .foregroundColor(Theme.inkMuted48.opacity(0.6))
             Text("尚未扫描此分类")
-                .font(Theme.displayFont(20, weight: .semibold))
+                .font(Theme.displayFont(24, weight: .semibold))
                 .foregroundColor(Theme.ink)
             Text("点击右上角「扫描」，将按固化规则 \(category.ruleRef) 发现可清理项")
                 .font(Theme.bodyFont(13))
@@ -154,7 +154,7 @@ struct CategoryDetailView: View {
                 .font(.system(size: 36, weight: .light))
                 .foregroundColor(Theme.actionBlue.opacity(0.7))
             Text("没有发现可清理项")
-                .font(Theme.displayFont(18, weight: .semibold))
+                .font(Theme.displayFont(22, weight: .semibold))
                 .foregroundColor(Theme.ink)
             Text("此分类很干净")
                 .font(Theme.bodyFont(13))
@@ -177,7 +177,7 @@ struct CategoryDetailView: View {
                             HStack(spacing: 6) {
                                 Circle().fill(group.color).frame(width: 8, height: 8)
                                 Text(group.title)
-                                    .font(Theme.bodyFont(13, weight: .semibold))
+                                    .font(Theme.bodyFont(15, weight: .semibold))
                                     .foregroundColor(Theme.ink)
                                 Text("\(groupItems.count) 项 · \(groupItems.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
                                     .font(Theme.bodyFont(12))
@@ -240,7 +240,7 @@ struct CategoryDetailView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(Theme.actionBlue)
                     Text(summary)
-                        .font(Theme.bodyFont(12, weight: .medium))
+                        .font(Theme.bodyFont(14, weight: .medium))
                         .foregroundColor(Theme.inkMuted80)
                 }
             }
@@ -250,7 +250,7 @@ struct CategoryDetailView: View {
                     .font(Theme.bodyFont(12))
                     .foregroundColor(Theme.inkMuted48)
                 Text(st.selectedSize.byteStringCN)
-                    .font(Theme.displayFont(17, weight: .semibold))
+                    .font(Theme.displayFont(20, weight: .semibold))
                     .foregroundColor(Theme.ink)
             }
 
@@ -298,7 +298,7 @@ struct ItemRowView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(item.name)
-                            .font(Theme.bodyFont(14, weight: .semibold))
+                            .font(Theme.bodyFont(15, weight: .semibold))
                             .foregroundColor(Theme.ink)
                             .lineLimit(1)
                         RiskBadge(risk: item.risk)
@@ -321,7 +321,7 @@ struct ItemRowView: View {
                 }
                 Spacer()
                 Text(item.size.byteStringCN)
-                    .font(Theme.bodyFont(14, weight: .semibold))
+                    .font(Theme.bodyFont(15, weight: .semibold))
                     .foregroundColor(Theme.ink)
                     .monospacedDigit()
 
@@ -359,10 +359,7 @@ struct ItemRowView: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(isSelected ? Theme.actionBlue.opacity(0.5) : Theme.hairline, lineWidth: 1)
-                )
+                
         )
     }
 }
@@ -381,7 +378,7 @@ struct RiskBadge: View {
 
     var body: some View {
         Text(risk.label)
-            .font(Theme.bodyFont(10, weight: .semibold))
+            .font(Theme.bodyFont(12, weight: .semibold))
             .foregroundColor(color)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
