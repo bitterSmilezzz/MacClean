@@ -9,6 +9,40 @@ struct MacCleanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             exit(Selftest.run())
         }
+        // AI 链路无头诊断：--aitest [baseURL] [model]
+        // 用真实配置+钥匙串复现完整请求链路，定位"发消息不回"
+        if CommandLine.arguments.contains("--aitest") {
+            setvbuf(stdout, nil, _IONBF, 0)
+            let args = CommandLine.arguments
+            let cfg = AIConfig.load()
+            let baseURL = args.count > 2 ? args[2] : cfg.baseURL
+            let model = args.count > 3 ? args[3] : cfg.model
+            print("== MacClean AI 诊断 ==")
+            print("baseURL: \(baseURL)")
+            print("model:   \(model)")
+            print("enabled: \(cfg.enabled)")
+            let key = AIConfig.loadAPIKey()
+            print("apiKey:  \(key != nil ? "已读取（\(key!.prefix(6))…，长度 \(key!.count)）" : "❌ 读不到（钥匙串拒访）")")
+            guard let key, !key.isEmpty else {
+                print("结论：钥匙串读取失败 → App 内必然报『尚未配置』或静默失败")
+                exit(2)
+            }
+            print("发送测试请求…")
+            let sem = DispatchSemaphore(value: 0)
+            // detached：不继承 MainActor——否则 sem.wait() 阻塞主线程会造成恢复死锁
+            Task.detached {
+                do {
+                    let reply = try await AIService.testConnection(baseURL: baseURL, apiKey: key, model: model)
+                    print("✅ 成功，模型回复：\(reply)")
+                    sem.signal()
+                } catch {
+                    print("❌ 失败：\(error.localizedDescription)")
+                    sem.signal()
+                }
+            }
+            sem.wait()
+            exit(0)
+        }
         // 无头扫描模式：swift run MacClean --scan
         if CommandLine.arguments.contains("--scan") {
             print("MacClean headless scan")
