@@ -5,7 +5,14 @@ import Foundation
 final class AppState: ObservableObject {
     @Published var diskTotal: Int64 = 0
     @Published var diskAvailable: Int64 = 0
-    @Published var destination: Destination? = .category(.userCaches)
+    @Published var destination: Destination? = .category(.userCaches) {
+        didSet {
+            // Q7 切换即换：离开当前列表/条目时作废旧 AI 上下文
+            if oldValue != destination {
+                ai.clearContext()
+            }
+        }
+    }
     @Published var categories: [CategoryState] = CleanCategory.allCases.map { CategoryState(category: $0) }
     @Published var isCleaning = false
     @Published var lastCleanSummary: String?
@@ -31,6 +38,7 @@ final class AppState: ObservableObject {
         ai.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        ai.app = self   // 弱引用：列表级提问需访问当前分类状态
 
         history = HistoryStore.load()
         refreshDisk()
