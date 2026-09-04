@@ -199,6 +199,8 @@ struct ContentView: View {
                 HistoryView()
             case .search:
                 SearchView()
+            case .riskCheck:
+                RiskView()
             }
         }
         // 任一抽屉展开都留白（AI 对话 / AI 再筛查）

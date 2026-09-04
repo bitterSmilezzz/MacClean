@@ -62,6 +62,17 @@ struct SidebarView: View {
 
                     Divider().overlay(Theme.hairline).padding(.vertical, Theme.spaceXs)
 
+                    // 电脑风险提醒（独立于文件清理的风险检查模块）
+                    ToolRow(icon: "exclamationmark.shield", title: "风险提醒",
+                            subtitle: app.riskScanned
+                                ? (app.riskItems.isEmpty ? "检查通过，无风险项" : "\(app.totalRiskCount) 项风险")
+                                : "检查敏感数据与系统风险",
+                            isActive: app.destination == .riskCheck) {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            app.destination = .riskCheck
+                        }
+                    }
+
                     // App 卸载器（融合 Pearcleaner/PureMac）
                     ToolRow(icon: "app.dashed", title: "App 卸载器",
                             subtitle: "卸载 App 及其全部残留",

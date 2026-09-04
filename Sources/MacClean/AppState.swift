@@ -25,6 +25,12 @@ final class AppState: ObservableObject {
     /// AI 再筛查状态（AI 扫描）：脚本扫描之外的 AI 二次判断
     let aiReview = AIReviewState()
 
+    // MARK: - 风险检查（电脑风险提醒）
+    @Published var riskItems: [RiskItem] = []
+    @Published var isRiskScanning = false
+    @Published var riskScanned = false
+    @Published var riskLastError: String?
+
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -119,6 +125,34 @@ final class AppState: ObservableObject {
     func scanAll() {
         for cat in CleanCategory.allCases { scan(cat) }
     }
+
+    // MARK: - 风险检查（电脑风险提醒）
+
+    /// 执行电脑风险检查（只读，不删除任何文件）
+    func scanRisks() {
+        guard !isRiskScanning else { return }
+        isRiskScanning = true
+        riskLastError = nil
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let items = RiskScanner.scan { _ in }
+            DispatchQueue.main.async {
+                self?.riskItems = items
+                self?.riskScanned = true
+                self?.isRiskScanning = false
+            }
+        }
+    }
+
+    /// 风险统计：各严重度数量
+    var riskCounts: [RiskSeverity: Int] {
+        var counts: [RiskSeverity: Int] = [:]
+        for item in riskItems {
+            counts[item.severity, default: 0] += 1
+        }
+        return counts
+    }
+
+    var totalRiskCount: Int { riskItems.count }
 
     func cleanSelected(in cat: CleanCategory, permanently: Bool) {
         let st = state(for: cat)

@@ -34,6 +34,9 @@ struct DashboardView: View {
                     }
                 }
 
+                // 电脑风险提醒卡片（独立功能模块：风险项检查）
+                riskAlertCard
+
                 // 最近历史
                 if !app.history.isEmpty {
                     recentHistory
@@ -260,6 +263,86 @@ struct DashboardView: View {
                 .font(Theme.monoFont(13, weight: .semibold))
                 .foregroundColor(Theme.ink)
         }
+    }
+
+    // MARK: - 风险提醒卡片
+
+    private var riskAlertCard: some View {
+        Button {
+            app.destination = .riskCheck
+        } label: {
+            HStack(spacing: Theme.spaceMd) {
+                // 图标：有风险 → 橙色盾牌；检查过且干净 → 蓝色对勾盾
+                Image(systemName: app.isRiskScanning ? "stethoscope"
+                        : app.riskScanned && app.riskItems.isEmpty ? "checkmark.shield"
+                        : app.riskScanned ? "exclamationmark.shield" : "shield")
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundColor(app.isRiskScanning ? Theme.textWarning
+                        : app.riskScanned && app.riskItems.isEmpty ? Theme.actionBlue
+                        : app.riskScanned ? Theme.textWarning : Theme.inkMuted48)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(
+                        (app.isRiskScanning || (app.riskScanned && !app.riskItems.isEmpty)
+                            ? Theme.warningOrange : Theme.actionBlue).opacity(0.1)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("电脑风险提醒")
+                        .font(Theme.bodyFont(14, weight: .semibold))
+                        .foregroundColor(Theme.ink)
+                    if app.isRiskScanning {
+                        Text("正在检查敏感数据与系统风险…")
+                            .font(Theme.bodyFont(12))
+                            .foregroundColor(Theme.inkMuted48)
+                    } else if !app.riskScanned {
+                        Text("检查敏感数据泄露、网络暴露、可疑启动项")
+                            .font(Theme.bodyFont(12))
+                            .foregroundColor(Theme.inkMuted48)
+                    } else if app.riskItems.isEmpty {
+                        Text("检查通过：未发现风险项")
+                            .font(Theme.bodyFont(12, weight: .medium))
+                            .foregroundColor(Theme.actionBlue)
+                    } else {
+                        Text("发现 \(app.totalRiskCount) 项风险")
+                            .font(Theme.bodyFont(12, weight: .medium))
+                            .foregroundColor(Theme.textWarning)
+                    }
+                }
+                Spacer()
+                if app.riskScanned && !app.riskItems.isEmpty {
+                    HStack(spacing: 8) {
+                        Text("高 \(app.riskCounts[.high, default: 0])")
+                            .font(Theme.monoFont(13, weight: .semibold))
+                            .foregroundColor(Theme.textDanger)
+                        Text("中 \(app.riskCounts[.medium, default: 0])")
+                            .font(Theme.monoFont(13, weight: .semibold))
+                            .foregroundColor(Theme.textWarning)
+                        Text("低 \(app.riskCounts[.low, default: 0])")
+                            .font(Theme.monoFont(13, weight: .semibold))
+                            .foregroundColor(Theme.inkMuted48)
+                    }
+                }
+                if app.isRiskScanning {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.inkMuted48.opacity(0.7))
+                }
+            }
+            .padding(.horizontal, Theme.spaceMd)
+            .padding(.vertical, Theme.spaceSm)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusLg)
+                    .fill(Theme.canvas)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusLg)
+                            .stroke(Theme.hairline, lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("riskAlertCard")
     }
 
     // MARK: - 最近历史

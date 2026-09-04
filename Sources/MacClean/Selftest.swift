@@ -598,6 +598,69 @@ enum Selftest {
             return delete == "AI·可删" && keep == "AI·不建议删"
         }
 
+        // MARK: - 风险检查（电脑风险提醒）
+
+        check("风险检查：SSH 私钥权限过宽") {
+            let home = "/private/tmp/macclean-risk-\(UUID().uuidString)"
+            let ssh = home + "/.ssh"
+            try FileManager.default.createDirectory(atPath: ssh, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: home) }
+            let key = ssh + "/id_rsa"
+            FileManager.default.createFile(atPath: key, contents: Data("test".utf8))
+            // 权限 644（group/other 可读）→ 应报高风险
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: key)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: ssh)
+            let item = RiskScanner.checkSSHKeys(home: home)
+            return item?.severity == .high && item?.category == .sensitiveData
+        }
+        check("风险检查：SSH 目录权限过宽") {
+            let home = "/private/tmp/macclean-risk-\(UUID().uuidString)"
+            let ssh = home + "/.ssh"
+            try FileManager.default.createDirectory(atPath: ssh, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: home) }
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ssh)
+            let item = RiskScanner.checkSSHKeys(home: home)
+            return item?.severity == .medium
+        }
+        check("风险检查：明文密钥环境变量") {
+            let home = "/private/tmp/macclean-risk-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: home) }
+            let zshrc = home + "/.zshrc"
+            try "export OPENAI_KEY=sk-abcdef1234567890\n".write(toFile: zshrc, atomically: true, encoding: .utf8)
+            let item = RiskScanner.checkEnvSecrets(home: home)
+            guard let item, item.severity == .high else { return false }
+            // 检测详情不得包含明文密钥本身（安全边界）
+            return !item.detail.contains("sk-abcdef1234567890")
+        }
+        check("风险检查：敏感命名文件暴露") {
+            let home = "/private/tmp/macclean-risk-\(UUID().uuidString)"
+            let desktop = home + "/Desktop"
+            try FileManager.default.createDirectory(atPath: desktop, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: home) }
+            FileManager.default.createFile(atPath: desktop + "/passwords.txt",
+                                           contents: Data("a=b".utf8))
+            FileManager.default.createFile(atPath: desktop + "/normal.txt",
+                                           contents: Data("x".utf8))
+            let items = RiskScanner.checkSensitiveFiles(home: home)
+            return items.contains { $0.title == "发现疑似敏感文件" && $0.path?.hasSuffix("passwords.txt") == true }
+                && !items.contains { $0.path?.hasSuffix("normal.txt") == true }
+        }
+        check("风险检查：敏感项不含明文（边界）") {
+            // scan 全量时，任何 item 的 detail 不得包含常见密钥前缀明文
+            let items = RiskScanner.scan(home: "/private/tmp/macclean-risk-\(UUID().uuidString)") { _ in }
+            return items.allSatisfy {
+                !$0.detail.contains("sk-") && !$0.detail.contains("AKIA") && !$0.detail.contains("ghp_")
+            }
+        }
+        check("风险检查：RiskRow 渲染严重度徽标") {
+            let item = RiskItem(title: "测试", detail: "d", severity: .high,
+                                category: .sensitiveData, suggestion: "s")
+            let row = RiskRow(item: item)
+            _ = try row.inspect().find(text: "高风险")
+            return true
+        }
+
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")
         print("MacClean 自检完成：\(passed) 通过 / \(failures.count) 失败（\(elapsed)）")
