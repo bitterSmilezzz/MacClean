@@ -137,6 +137,34 @@ struct ChatMessage: Identifiable, Equatable {
     }
 }
 
+// MARK: - AI 再筛查（AI 扫描）：对已扫描结果逐项二次判断
+
+enum ReviewVerdict: String, Codable, Equatable {
+    case delete    // 可删
+    case caution   // 谨慎
+    case keep      // 不建议删
+    case unknown   // AI 未判定/无法判断
+
+    var label: String {
+        switch self {
+        case .delete: return "可删"
+        case .caution: return "谨慎"
+        case .keep: return "不建议删"
+        case .unknown: return "未判定"
+        }
+    }
+
+    /// 是否明确给出结论（非 unknown）
+    var isDecided: Bool { self != .unknown }
+}
+
+/// 单条 AI 筛查结论
+struct ItemReview: Equatable {
+    let itemID: UUID
+    let verdict: ReviewVerdict
+    let reason: String
+}
+
 // MARK: - 提问上下文（针对某个清理项/关联文件/列表）
 
 /// 列表模式下的单个条目（Top N 截断后）
@@ -272,6 +300,138 @@ enum AIService {
             throw AIError.badResponse
         }
         return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - AI 再筛查（AI 扫描）：批量判断已扫描结果值不值得删
+
+    /// 筛查提示词：要求模型按表格逐项给结论，并输出 JSON 数组
+    private static let reviewPrompt = """
+    你是 MacClean 的清理专家。用户会给你一张"已扫描清理候选"表格，每行包含：编号 | 名称 | 路径 | 大小 | 风险 | 最近使用。
+    请逐项判断是否值得删除，判断依据：
+    - 缓存/日志类即使最近在用也可删（可重建），但注明"频繁使用，删除后需重建"；
+    - App 数据/个人文件/配置类不建议删（即使大）；
+    - 长期未用（>90 天）且可重建的优先建议删；
+    - 不确定就写"无法判断"。
+    输出格式：严格只输出一个 JSON 数组，每个元素形如 {"name": "编号", "verdict": "可删|谨慎|不建议删|无法判断", "reason": "一句话理由"}。
+    不要输出 JSON 以外的任何文字（不要 markdown 代码块标记）。
+    """
+
+    /// 执行 AI 再筛查：返回逐项结论（按名称匹配回 item）
+    static func review(items: [CleanItem], progress: @escaping (String) -> Void) async throws -> [ItemReview] {
+        if networkDisabled {
+            throw AIError.network("自检模式：网络请求已禁用")
+        }
+        let config = AIConfig.load()
+        guard config.enabled, let apiKey = AIConfig.loadAPIKey(), !apiKey.isEmpty else {
+            throw AIError.notConfigured
+        }
+        guard let url = URL(string: config.baseURL.trimmingCharacters(in: .whitespaces))
+                .flatMap({ URL(string: $0.appendingPathComponent("/chat/completions").absoluteString) }) else {
+            throw AIError.network("无效的 baseURL")
+        }
+
+        // 分批：每批最多 60 项，避免超长请求
+        let batchSize = 60
+        var allReviews: [ItemReview] = []
+        var batchIndex = 0
+        while batchIndex < items.count {
+            let batch = Array(items[batchIndex..<min(batchIndex + batchSize, items.count)])
+            let table = batch.enumerated().map { i, item in
+                let usage = item.lastUsed.map { "\($0.relativeUsage) · \(item.usage.label)" } ?? item.usage.label
+                return "\(i + 1) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(item.risk.label) | \(usage)"
+            }.joined(separator: "\n")
+            let userContent = "表格：\n\(table)"
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 90
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            let body: [String: Any] = [
+                "model": config.model,
+                "messages": [
+                    ["role": "system", "content": reviewPrompt],
+                    ["role": "user", "content": userContent],
+                ],
+                "temperature": 0.2,
+                "stream": false,
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            progress("AI 筛查中（第 \(batchIndex / batchSize + 1) 批 / \(Int(ceil(Double(items.count) / Double(batchSize)))) 批）…")
+            let (data, response) = try await withTimeout(90) {
+                try await Self.session.data(for: request)
+            }
+            guard let http = response as? HTTPURLResponse else { throw AIError.network("无响应") }
+            guard http.statusCode == 200 else {
+                let msg = String(data: data, encoding: .utf8) ?? ""
+                throw AIError.network("HTTP \(http.statusCode)：\(msg.prefix(200))")
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let first = choices.first,
+                  let message = first["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                throw AIError.badResponse
+            }
+            // 解析模型输出 → 本批结论
+            let batchReviews = parseReviewOutput(content, items: batch)
+            allReviews.append(contentsOf: batchReviews)
+            batchIndex += batchSize
+        }
+        return allReviews
+    }
+
+    /// 容错解析：优先 JSON 数组；失败则按表格行 "编号 | ... | 结论 | 理由" 解析
+    static func parseReviewOutput(_ raw: String, items: [CleanItem]) -> [ItemReview] {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 1) JSON 数组（含可能的 ```json 围栏 / 前后说明文字）
+        if let jsonStart = text.firstIndex(of: "["),
+           let jsonEnd = text.lastIndex(of: "]"),
+           jsonStart < jsonEnd {
+            let jsonStr = String(text[jsonStart...jsonEnd])
+            if let data = jsonStr.data(using: .utf8),
+               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                var reviews: [ItemReview] = []
+                for obj in arr {
+                    guard let name = obj["name"] as? String,
+                          let verdictRaw = obj["verdict"] as? String else { continue }
+                    let reason = (obj["reason"] as? String) ?? ""
+                    let verdict: ReviewVerdict
+                    switch verdictRaw {
+                    case "可删": verdict = .delete
+                    case "谨慎": verdict = .caution
+                    case "不建议删": verdict = .keep
+                    default: verdict = .unknown
+                    }
+                    // 按编号或名称匹配回 item（enumerated 防强制解包）
+                    if let (idx, item) = items.enumerated().first(where: { $0.element.name == name || "\($0.offset + 1)" == name }) {
+                        _ = idx
+                        reviews.append(ItemReview(itemID: item.id, verdict: verdict, reason: reason))
+                    }
+                }
+                if !reviews.isEmpty { return reviews }
+            }
+        }
+
+        // 2) 表格行回退："1 | 名称 | 结论 | 理由"
+        var reviews: [ItemReview] = []
+        for line in text.split(separator: "\n") {
+            let parts = line.split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count >= 4, let idx = Int(parts[0]) else { continue }
+            let verdict: ReviewVerdict
+            switch parts[2] {
+            case "可删": verdict = .delete
+            case "谨慎": verdict = .caution
+            case "不建议删": verdict = .keep
+            default: verdict = .unknown
+            }
+            if idx >= 1, idx <= items.count {
+                reviews.append(ItemReview(itemID: items[idx - 1].id, verdict: verdict, reason: parts[3]))
+            }
+        }
+        return reviews
     }
 
     /// 连通性测试：发一条最小请求，验证 baseURL + key + 模型可用

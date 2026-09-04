@@ -47,6 +47,57 @@ struct CategoryDetailView: View {
                 .background(Theme.dangerRed.opacity(0.06))
             }
 
+            // AI 再筛查状态横幅（进度 / 错误 / 完成摘要）
+            if app.aiReview.isReviewing {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small).tint(Theme.actionBlue)
+                    Text(app.aiReview.progressText ?? "AI 筛查中…")
+                        .font(Theme.bodyFont(13, weight: .medium))
+                        .foregroundColor(Theme.inkMuted80)
+                    Spacer()
+                }
+                .padding(.horizontal, Theme.contentPadding)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.actionBlue.opacity(0.05))
+            } else if let reviewError = app.aiReview.lastError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textWarning)
+                    Text("AI 筛查失败：\(reviewError)")
+                        .font(Theme.bodyFont(13, weight: .medium))
+                        .foregroundColor(Theme.textWarning)
+                    Spacer()
+                    Button("重试") { app.aiReview.review(items: st.items) }
+                        .buttonStyle(.borderless)
+                        .font(Theme.bodyFont(13, weight: .medium))
+                        .foregroundColor(Theme.actionBlue)
+                        .disabled(st.items.isEmpty)
+                }
+                .padding(.horizontal, Theme.contentPadding)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.warningOrange.opacity(0.06))
+            } else {
+                let reviewSummary = app.aiReview.summary(for: st.items)
+                if !reviewSummary.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 12))
+                            .foregroundColor(Theme.actionBlue)
+                        Text("AI 再筛查：\(reviewSummary)")
+                            .font(Theme.bodyFont(13, weight: .medium))
+                            .foregroundColor(Theme.inkMuted80)
+                        Spacer()
+                    }
+                    .padding(.horizontal, Theme.contentPadding)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.actionBlue.opacity(0.05))
+                }
+            }
+
             if st.isScanning {
                 scanningView
             } else if !st.isScanned {
@@ -134,6 +185,30 @@ struct CategoryDetailView: View {
             .tint(Theme.actionBlue)
             .accessibilityIdentifier("scanButton")
             .disabled(st.isScanning)
+
+            // AI 再筛查（AI 扫描）：脚本扫描之外，用 AI 逐项二次判断值不值得删
+            if st.isScanned && !st.items.isEmpty {
+                Button {
+                    app.aiReview.review(items: st.items)
+                } label: {
+                    if app.aiReview.isReviewing {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small).tint(Theme.actionBlue)
+                            Text("AI 筛查中…")
+                                .font(Theme.bodyFont(13, weight: .medium))
+                        }
+                    } else {
+                        Label("AI 再筛查", systemImage: "sparkles.rectangle.stack")
+                            .font(Theme.bodyFont(13, weight: .medium))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .tint(Theme.actionBlue)
+                .accessibilityIdentifier("aiReviewButton")
+                .disabled(app.aiReview.isReviewing || st.isScanning)
+                .help("用 AI 对已扫描结果逐项二次判断：可删 / 谨慎 / 不建议删")
+            }
 
             // 列表内联过滤（仅过滤已扫描结果，不重新扫描）
             if st.isScanned && !st.items.isEmpty {
@@ -286,7 +361,8 @@ struct CategoryDetailView: View {
                                     isSelected: item.isSelected,
                                     onToggle: { selected in st.setSelected(item.id, selected) },
                                     onAskAI: { app.ai.askAbout(item: item) },
-                                    isDisabled: app.ai.isLoading
+                                    isDisabled: app.ai.isLoading,
+                                    aiReview: app.aiReview.review(for: item)
                                 )
                             }
                         }
@@ -378,13 +454,15 @@ struct CategoryDetailView: View {
     }
 }
 
-/// 单个清理项行（默认紧凑：名称+大小+风险+使用频率；点击展开路径/备注）
+/// 单个清理项行（默认紧凑：名称+大小+风险+使用频率+AI 结论；点击展开路径/备注）
 struct ItemRowView: View {
     let item: CleanItem
     let isSelected: Bool
     let onToggle: (Bool) -> Void
     var onAskAI: (() -> Void)? = nil
     var isDisabled: Bool = false   // LOW-2：AI 请求在途时禁用行内 ✨
+    /// AI 再筛查结论（无则 nil）
+    var aiReview: ItemReview? = nil
 
     @State private var isExpanded = false
 
@@ -409,8 +487,12 @@ struct ItemRowView: View {
                         RiskBadge(risk: item.risk)
                         // 使用频率徽标（用户诉求：最近是否在用/是否频繁，判断值不值得删）
                         UsageBadge(usage: item.usage)
+                        // AI 再筛查结论徽标（AI 扫描：可删/谨慎/不建议删）
+                        if let aiReview, aiReview.verdict.isDecided {
+                            ReviewBadge(verdict: aiReview.verdict)
+                        }
                     }
-                    // 展开后显示路径、使用情况与备注（密度优化：默认隐藏）
+                    // 展开后显示路径、使用情况、AI 理由与备注（密度优化：默认隐藏）
                     if isExpanded {
                         Text(item.path)
                             .font(Theme.bodyFont(12))
@@ -422,6 +504,14 @@ struct ItemRowView: View {
                             Text("最近使用：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
                                 .font(Theme.bodyFont(12, weight: .medium))
                                 .foregroundColor(item.usage.isRecentlyUsed ? Theme.textWarning : Theme.inkMuted48)
+                        }
+                        if let aiReview, !aiReview.reason.isEmpty {
+                            Text("AI 建议：\(aiReview.reason)")
+                                .font(Theme.bodyFont(12, weight: .medium))
+                                .foregroundColor(aiReview.verdict == .keep ? Theme.textDanger
+                                                : aiReview.verdict == .caution ? Theme.textWarning
+                                                : Theme.actionBlue)
+                                .lineLimit(2)
                         }
                         if !item.note.isEmpty {
                             Text(item.note)
@@ -541,5 +631,38 @@ struct UsageBadge: View {
             .padding(.vertical, 2)
             .background(Capsule().fill(bg.opacity(0.12)))
             .accessibilityLabel(usage.label)
+    }
+}
+
+/// AI 再筛查结论徽标（AI 扫描：可删/谨慎/不建议删）
+struct ReviewBadge: View {
+    let verdict: ReviewVerdict
+
+    private var color: Color {
+        switch verdict {
+        case .delete: return Theme.actionBlue
+        case .caution: return Theme.textWarning
+        case .keep: return Theme.textDanger
+        case .unknown: return Theme.inkMuted48
+        }
+    }
+
+    private var bg: Color {
+        switch verdict {
+        case .delete: return Theme.actionBlue
+        case .caution: return Theme.warningOrange
+        case .keep: return Theme.dangerRed
+        case .unknown: return Theme.hairline
+        }
+    }
+
+    var body: some View {
+        Text("AI·\(verdict.label)")
+            .font(Theme.bodyFont(11, weight: .semibold))
+            .foregroundColor(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(bg.opacity(0.12)))
+            .accessibilityLabel("AI 结论：\(verdict.label)")
     }
 }

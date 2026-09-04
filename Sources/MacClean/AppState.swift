@@ -22,6 +22,8 @@ final class AppState: ObservableObject {
     @Published var history: [CleanRecord] = []
     let uninstaller = UninstallerState()
     var ai = AIState()   // 需为 var：Binding（$app.ai.xxx）不能穿过 let 属性
+    /// AI 再筛查状态（AI 扫描）：脚本扫描之外的 AI 二次判断
+    let aiReview = AIReviewState()
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -41,7 +43,12 @@ final class AppState: ObservableObject {
         ai.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // AI 再筛查状态同样转发
+        aiReview.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         ai.app = self   // 弱引用：列表级提问需访问当前分类状态
+        aiReview.app = self
 
         history = HistoryStore.load()
         refreshDisk()
@@ -87,6 +94,9 @@ final class AppState: ObservableObject {
         guard !st.isScanning else { return }
         st.isScanning = true
         st.lastError = nil
+        // 重新扫描后该分类旧 AI 结论失效（item id 变化）——仅清当前分类的筛查结果
+        let oldIDs = Set(st.items.map(\.id))
+        aiReview.removeReviews(for: oldIDs)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let items = try Scanner.scan(cat)
