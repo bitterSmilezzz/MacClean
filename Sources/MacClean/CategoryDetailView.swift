@@ -163,22 +163,72 @@ struct CategoryDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - 结果列表
+    // MARK: - 结果列表（按风险分组，降低密度）
 
     private var itemList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(Array(st.items.enumerated()), id: \.element.id) { idx, item in
-                    ItemRowView(item: item, isSelected: item.isSelected) { selected in
-                        st.setSelected(item.id, selected)
-                    } onAskAI: {
-                        app.ai.askAbout(item: item)
+            LazyVStack(spacing: Theme.spaceMd) {
+                // 按风险分组：可安全清理 / 需确认 / 不建议
+                ForEach(RiskGroup.allCases, id: \.self) { group in
+                    let groupItems = st.items.filter { $0.risk == group.risk }
+                    if !groupItems.isEmpty {
+                        VStack(alignment: .leading, spacing: Theme.spaceSm) {
+                            // 分组标题
+                            HStack(spacing: 6) {
+                                Circle().fill(group.color).frame(width: 8, height: 8)
+                                Text(group.title)
+                                    .font(Theme.bodyFont(13, weight: .semibold))
+                                    .foregroundColor(Theme.ink)
+                                Text("\(groupItems.count) 项 · \(groupItems.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
+                                    .font(Theme.bodyFont(12))
+                                    .foregroundColor(Theme.inkMuted48)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 2)
+
+                            ForEach(Array(groupItems.enumerated()), id: \.element.id) { _, item in
+                                ItemRowView(item: item, isSelected: item.isSelected) { selected in
+                                    st.setSelected(item.id, selected)
+                                } onAskAI: {
+                                    app.ai.askAbout(item: item)
+                                }
+                            }
+                        }
                     }
                 }
             }
-            .padding(Theme.contentPadding)
+            .padding(Theme.spaceLg)
         }
         .background(Theme.parchment)
+    }
+
+    /// 风险分组（G4 三档）
+    private enum RiskGroup: CaseIterable {
+        case safe, review, danger
+
+        var risk: RiskLevel {
+            switch self {
+            case .safe: return .safe
+            case .review: return .review
+            case .danger: return .danger
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .safe: return "可安全清理"
+            case .review: return "需确认"
+            case .danger: return "不建议删除"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .safe: return Theme.actionBlue
+            case .review: return Theme.warningOrange
+            case .danger: return Theme.dangerRed
+            }
+        }
     }
 
     // MARK: - Footer（清理栏）
@@ -224,66 +274,88 @@ struct CategoryDetailView: View {
     }
 }
 
-/// 单个清理项行
+/// 单个清理项行（默认紧凑：名称+大小+风险；点击展开路径/备注）
 struct ItemRowView: View {
     let item: CleanItem
     let isSelected: Bool
     let onToggle: (Bool) -> Void
     var onAskAI: (() -> Void)? = nil
 
+    @State private var isExpanded = false
+
     var body: some View {
-        HStack(spacing: Theme.spaceSm) {
-            // 勾选框
-            Button(action: { onToggle(!isSelected) }) {
-                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 18))
-                    .foregroundColor(isSelected ? Theme.actionBlue : Theme.hairline)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("itemToggle")
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(item.name)
-                        .font(Theme.bodyFont(13, weight: .semibold))
-                        .foregroundColor(Theme.ink)
-                        .lineLimit(1)
-                    RiskBadge(risk: item.risk)
-                }
-                Text(item.path)
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if !item.note.isEmpty {
-                    Text(item.note)
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.inkMuted48.opacity(0.8))
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
-            Text(item.size.byteStringCN)
-                .font(Theme.bodyFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
-                .monospacedDigit()
-
-            // 问 AI：针对该项提问（用途/能否删/是否在用）
-            if let onAskAI {
-                Button(action: onAskAI) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Theme.actionBlue)
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+        VStack(spacing: 0) {
+            HStack(spacing: Theme.spaceSm) {
+                // 勾选框
+                Button(action: { onToggle(!isSelected) }) {
+                    Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 18))
+                        .foregroundColor(isSelected ? Theme.actionBlue : Theme.hairline)
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("askAIButton")
-                .help("问 AI：这个是什么？能删吗？")
+                .accessibilityIdentifier("itemToggle")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(item.name)
+                            .font(Theme.bodyFont(14, weight: .semibold))
+                            .foregroundColor(Theme.ink)
+                            .lineLimit(1)
+                        RiskBadge(risk: item.risk)
+                    }
+                    // 展开后显示路径与备注（密度优化：默认隐藏）
+                    if isExpanded {
+                        Text(item.path)
+                            .font(Theme.bodyFont(12))
+                            .foregroundColor(Theme.inkMuted48)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                        if !item.note.isEmpty {
+                            Text(item.note)
+                                .font(Theme.bodyFont(12))
+                                .foregroundColor(Theme.inkMuted48.opacity(0.8))
+                                .lineLimit(2)
+                        }
+                    }
+                }
+                Spacer()
+                Text(item.size.byteStringCN)
+                    .font(Theme.bodyFont(14, weight: .semibold))
+                    .foregroundColor(Theme.ink)
+                    .monospacedDigit()
+
+                // 展开/收起路径备注
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(Theme.inkMuted48)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Theme.parchment))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("itemExpandButton")
+                .help(isExpanded ? "收起路径" : "显示路径")
+
+                // 问 AI：针对该项提问（用途/能否删/是否在用）
+                if let onAskAI {
+                    Button(action: onAskAI) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(Theme.actionBlue)
+                            .frame(width: 26, height: 26)
+                            .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("askAIButton")
+                    .help("问 AI：这个是什么？能删吗？")
+                }
             }
+            .padding(.horizontal, Theme.spaceMd)
+            .padding(.vertical, Theme.spaceSm)
         }
-        .padding(.horizontal, Theme.spaceMd)
-        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)

@@ -61,7 +61,7 @@ struct SidebarView: View {
             Button(action: { app.scanAll() }) {
                 Label("扫描全部分类", systemImage: "arrow.clockwise")
                     .font(Theme.bodyFont(13, weight: .medium))
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -103,7 +103,7 @@ struct ToolRow: View {
             }
         }
         .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, 8)
+        .padding(.vertical, Theme.spaceXs)
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
@@ -150,7 +150,7 @@ struct CategoryRow: View {
             }
         }
         .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, 8)
+        .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)
