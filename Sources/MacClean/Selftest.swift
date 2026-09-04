@@ -228,6 +228,58 @@ enum Selftest {
             st.askAbout(item: item)
             return st.context != nil && st.context?.title == "CacheApp" && st.messages.count == 1
         }
+        check("AI：列表上下文 Top 50 截断与渲染") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            st.items = (0..<60).map { i in
+                CleanItem(name: "Item\(i)", path: "/tmp/item\(i)", size: Int64(i * 100),
+                          risk: .safe, category: .userCaches)
+            }
+            app.destination = .category(.userCaches)
+            app.ai.app = app
+            app.ai.askAboutCurrentList()
+            guard let ctx = app.ai.context, ctx.isListMode else { return false }
+            // Top 50 截断：最大 50 项，按大小降序
+            guard ctx.listItems.count == 50, ctx.listTotal == 60 else { return false }
+            guard ctx.listItems.first?.name == "Item59" else { return false }
+            // 渲染包含表头与截断说明
+            let text = AIService.render(context: ctx)
+            return text.contains("编号 | 名称 | 路径 | 大小 | 风险")
+                && text.contains("其余 10 项未列出")
+        }
+        check("AI：问全部每类 Top 20") {
+            let app = AppState()
+            for cat in CleanCategory.allCases {
+                let st = app.state(for: cat)
+                st.isScanned = true
+                st.items = (0..<30).map { i in
+                    CleanItem(name: "\(cat.rawValue)-\(i)", path: "/tmp/\(cat.rawValue)/\(i)",
+                              size: Int64(i), risk: .safe, category: cat)
+                }
+            }
+            app.ai.app = app
+            app.ai.askAboutAll()
+            guard let ctx = app.ai.context, ctx.isListMode else { return false }
+            // 6 类 × Top 20 = 120 项，总 180 项
+            return ctx.listItems.count == 120 && ctx.listTotal == 180
+        }
+        check("AI：首条自动携带与切换即换") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            st.items = [CleanItem(name: "A", path: "/tmp/a", size: 10,
+                                  risk: .safe, category: .userCaches)]
+            app.destination = .category(.userCaches)
+            app.ai.app = app
+            // 直接输入提问（未点任何按钮）→ 首条自动携带列表上下文
+            app.ai.draft = "这些能删吗？"
+            app.ai.send()
+            guard app.ai.context?.isListMode == true else { return false }
+            // 切换目标页 → 上下文作废（Q7 切换即换）
+            app.destination = .history
+            return app.ai.context == nil
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")

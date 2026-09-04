@@ -12,6 +12,9 @@ final class AIState: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// 弱引用 AppState（用于自动携带当前分类列表上下文）
+    weak var app: AppState?
+
     var canSend: Bool {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isLoading
     }
@@ -49,6 +52,89 @@ final class AIState: ObservableObject {
         ))
     }
 
+    // MARK: - 列表级提问（grill 共识：当前列表 Top 50 / 全部每类 Top 20）
+
+    /// 「问当前列表」：当前分类扫描结果打包（Top 50，按大小降序）
+    func askAboutCurrentList() {
+        guard let app, case .category(let cat) = app.destination else {
+            lastError = "当前不在分类页面"
+            return
+        }
+        let st = app.state(for: cat)
+        guard st.isScanned, !st.items.isEmpty else {
+            lastError = "当前分类尚未扫描或没有结果"
+            return
+        }
+        attachList(items: st.items, summary: "\(cat.title) · 共 \(st.items.count) 项",
+                   total: st.items.count, limit: 50,
+                   prompt: "请分析左侧当前分类列表（上下文已给出），按表格清单逐项判断哪些可以删除、哪些谨慎、哪些不建议删。")
+    }
+
+    /// 「问全部」：6 个分类各取 Top 20 打包
+    func askAboutAll() {
+        guard let app else { return }
+        var all: [AskListItem] = []
+        var summaryParts: [String] = []
+        var total = 0
+        var index = 1
+        for cat in CleanCategory.allCases {
+            let st = app.state(for: cat)
+            guard st.isScanned, !st.items.isEmpty else { continue }
+            let top = st.items.sorted { $0.size > $1.size }.prefix(20)
+            summaryParts.append("\(cat.title) \(st.items.count) 项")
+            total += st.items.count
+            for item in top {
+                all.append(AskListItem(index: index, name: item.name, path: item.path,
+                                       size: item.size, risk: item.risk.label))
+                index += 1
+            }
+        }
+        guard !all.isEmpty else {
+            lastError = "尚无任何扫描结果，请先扫描"
+            return
+        }
+        var ctx = AskContext(title: "全部扫描结果", path: "", size: 0,
+                             category: "全部", risk: "", note: "")
+        ctx.listItems = all
+        ctx.listTotal = total
+        ctx.listSummary = summaryParts.joined(separator: "、")
+        self.context = ctx
+        let prompt = "请分析所有分类的清理候选项（上下文已给出），按表格清单逐项判断哪些可以删除、哪些谨慎、哪些不建议删，并给出总体建议。"
+        messages.append(ChatMessage(role: .user, content: prompt))
+        lastError = nil
+        send()
+    }
+
+    /// 首条自动携带：输入框直接提问时若无可问上下文，自动附带当前分类列表（grill Q4/Q5）
+    func autoAttachContextIfNeeded() {
+        guard context == nil else { return }
+        guard let app, case .category(let cat) = app.destination else { return }
+        let st = app.state(for: cat)
+        guard st.isScanned, !st.items.isEmpty else { return }
+        attachList(items: st.items, summary: "\(cat.title) · 共 \(st.items.count) 项",
+                   total: st.items.count, limit: 50,
+                   prompt: nil)   // 不追加消息，上下文随系统提示词附带
+    }
+
+    private func attachList(items: [CleanItem], summary: String, total: Int,
+                            limit: Int, prompt: String?) {
+        let top = items.sorted { $0.size > $1.size }.prefix(limit)
+        var list: [AskListItem] = []
+        for (i, item) in top.enumerated() {
+            list.append(AskListItem(index: i + 1, name: item.name, path: item.path,
+                                    size: item.size, risk: item.risk.label))
+        }
+        var ctx = AskContext(title: summary, path: "", size: 0, category: "列表", risk: "", note: "")
+        ctx.listItems = list
+        ctx.listTotal = total
+        ctx.listSummary = summary
+        self.context = ctx
+        if let prompt {
+            messages.append(ChatMessage(role: .user, content: prompt))
+        }
+        lastError = nil
+    }
+
     private func ask(context: AskContext) {
         var ctx = context
         // 本地占用检测（lsof，只读）
@@ -62,6 +148,8 @@ final class AIState: ObservableObject {
 
     /// 发送当前 draft（或自动提问后的首条），调用 AI
     func send() {
+        // 首条自动携带列表上下文（仅当尚无上下文时）
+        if context == nil { autoAttachContextIfNeeded() }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isLoading else { return }
         messages.append(ChatMessage(role: .user, content: text))
@@ -104,5 +192,10 @@ final class AIState: ObservableObject {
         context = nil
         lastError = nil
         draft = ""
+    }
+
+    /// Q7 切换即换：仅作废旧上下文（保留对话消息，便于回溯）
+    func clearContext() {
+        context = nil
     }
 }

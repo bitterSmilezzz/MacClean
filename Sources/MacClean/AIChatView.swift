@@ -9,6 +9,36 @@ struct AIChatView: View {
             header
             Divider().overlay(Theme.hairline)
 
+            // 列表级提问入口（grill Q4：按钮 + 输入框自动携带）
+            HStack(spacing: 6) {
+                Button {
+                    app.ai.askAboutCurrentList()
+                } label: {
+                    Label("问当前列表", systemImage: "list.bullet")
+                        .font(Theme.bodyFont(11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Theme.actionBlue)
+                .disabled(app.ai.isLoading)
+
+                Button {
+                    app.ai.askAboutAll()
+                } label: {
+                    Label("问全部", systemImage: "square.grid.2x2")
+                        .font(Theme.bodyFont(11, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Theme.actionBlue)
+                .disabled(app.ai.isLoading)
+
+                Spacer()
+            }
+            .padding(.horizontal, Theme.spaceSm)
+            .padding(.vertical, 6)
+            .background(Theme.parchment)
+
             if app.ai.messages.isEmpty {
                 emptyState
             } else {
@@ -81,22 +111,34 @@ struct AIChatView: View {
                 Spacer()
             }
             if let ctx = app.ai.context {
-                Text(ctx.title)
-                    .font(Theme.bodyFont(12, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-                    .lineLimit(1)
-                Text("\(ctx.category) · \(ctx.sizeString) · 风险 \(ctx.risk)")
-                    .font(Theme.bodyFont(10))
-                    .foregroundColor(Theme.inkMuted48)
-                    .lineLimit(1)
-                if !ctx.inUseBy.isEmpty {
-                    Text("占用中：\(ctx.inUseBy.joined(separator: "、"))")
-                        .font(Theme.bodyFont(10, weight: .medium))
-                        .foregroundColor(Theme.warningOrange)
+                if ctx.isListMode {
+                    // 列表模式：显示汇总与截断信息
+                    Text(ctx.listSummary)
+                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .foregroundColor(Theme.ink)
                         .lineLimit(1)
+                    Text("列出最大 \(ctx.listItems.count) 项" + (ctx.listItems.count < ctx.listTotal ? " · 其余 \(ctx.listTotal - ctx.listItems.count) 项未列出" : ""))
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.inkMuted48)
+                        .lineLimit(1)
+                } else {
+                    Text(ctx.title)
+                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .foregroundColor(Theme.ink)
+                        .lineLimit(1)
+                    Text("\(ctx.category) · \(ctx.sizeString) · 风险 \(ctx.risk)")
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.inkMuted48)
+                        .lineLimit(1)
+                    if !ctx.inUseBy.isEmpty {
+                        Text("占用中：\(ctx.inUseBy.joined(separator: "、"))")
+                            .font(Theme.bodyFont(10, weight: .medium))
+                            .foregroundColor(Theme.warningOrange)
+                            .lineLimit(1)
+                    }
                 }
             } else {
-                Text("点击列表项旁的 ✨ 按钮即可针对该项提问")
+                Text("点「问当前列表/问全部」或列表项旁的 ✨ 提问")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.inkMuted48)
             }

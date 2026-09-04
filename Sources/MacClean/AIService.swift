@@ -87,7 +87,16 @@ struct ChatMessage: Identifiable, Equatable {
     }
 }
 
-// MARK: - 提问上下文（针对某个清理项/关联文件）
+// MARK: - 提问上下文（针对某个清理项/关联文件/列表）
+
+/// 列表模式下的单个条目（Top N 截断后）
+struct AskListItem: Equatable {
+    let index: Int       // 序号（对应左侧列表位置）
+    let name: String
+    let path: String
+    let size: Int64
+    let risk: String
+}
 
 struct AskContext: Equatable {
     var title: String        // 条目名
@@ -99,6 +108,12 @@ struct AskContext: Equatable {
     var kind: String = ""    // 文件类别（卸载器：Application Support 等）
     var inUseBy: [String] = []   // 本地检测到的占用进程
 
+    // 列表模式：非空时按"整表判断"提问（Q2: Top 50 截断 / Q6: 每类 Top 20）
+    var listItems: [AskListItem] = []
+    var listTotal: Int = 0       // 列表实际总条数（含未列出的）
+    var listSummary: String = "" // 如"用户缓存 · 124 项"
+
+    var isListMode: Bool { !listItems.isEmpty }
     var sizeString: String { size.byteStringCN }
 }
 
@@ -209,19 +224,40 @@ enum AIService {
     // MARK: 系统提示词（固定：判断用途/是否可删/是否在用）
 
     static let systemPrompt = """
-    你是 MacClean 清理助手的专家，帮助用户判断某个文件/目录是否可以安全清理。\
-    用户会给出一个清理候选项（路径、大小、类别、风险等级、本地检测到的占用进程等）。\
-    请用中文回答，按以下结构输出：
+    你是 MacClean 清理助手的专家，帮助用户判断文件/目录是否可以安全清理。\
+    用户会给出清理候选项的信息（单条模式：路径/大小/类别/风险/占用进程；\
+    列表模式：一张带序号的表格）。请用中文回答。
 
-    1. **用途**：根据路径/名称/上下文推断这个项目是什么（缓存、日志、App 数据、开发产物等），说明你的把握程度。
-    2. **是否适合删除**：给出明确结论（可删 / 谨慎 / 不建议删）与理由；注意：缓存/日志可重建，App 数据/个人文件不要建议删。
-    3. **当前是否正在使用**：结合"占用进程"信息判断；若列表为空说明当前无进程占用（但不排除未来使用）。
-    4. **建议**：一句话给出清理方式（直接删/移废纸篓/保留）。
+    【单条模式输出结构】
+    1. **用途**：推断这是什么（缓存、日志、App 数据、开发产物等），说明把握程度。
+    2. **是否适合删除**：明确结论（可删 / 谨慎 / 不建议删）与理由；缓存/日志可重建，App 数据/个人文件不要建议删。
+    3. **当前是否正在使用**：结合"占用进程"判断；为空说明当前无进程占用。
+    4. **建议**：一句话（直接删/移废纸篓/保留）。
 
-    回答要简洁（200 字内），不确定就明说"无法判断"，不要编造。
+    【列表模式输出结构】
+    逐项按表格清单回答，每行格式：`编号 | 名称 | 结论（可删/谨慎/不建议删） | 一句话理由`。\
+    最后给出**总体建议**：哪些可以放心清理、哪些需要人工确认、哪些建议保留。\
+    只对表格中列出的编号做判断；不要编造未列出的项。
+
+    回答要简洁（单条 200 字内；列表模式尽量紧凑），不确定就明说"无法判断"。
     """
 
     static func render(context: AskContext) -> String {
+        // 列表模式：按序号表格输出（Top N 截断）
+        if context.isListMode {
+            var lines: [String] = []
+            lines.append("列表：\(context.listSummary)")
+            lines.append("共 \(context.listTotal) 项，以下列出最大的 \(context.listItems.count) 项：")
+            lines.append("编号 | 名称 | 路径 | 大小 | 风险")
+            for item in context.listItems {
+                lines.append("\(item.index) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(item.risk)")
+            }
+            if context.listItems.count < context.listTotal {
+                lines.append("（其余 \(context.listTotal - context.listItems.count) 项未列出，均为更小的项）")
+            }
+            return lines.joined(separator: "\n")
+        }
+        // 单条模式
         var lines: [String] = []
         lines.append("- 名称：\(context.title)")
         lines.append("- 路径：\(context.path)")
