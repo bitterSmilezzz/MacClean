@@ -48,6 +48,10 @@ enum Theme {
     static func bodyFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .default)
     }
+    // Vercel 借鉴：路径/数字/标签用 monospace，开发者工具质感
+    static func monoFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
 
     // Radii
     static let radiusSm: CGFloat = 8

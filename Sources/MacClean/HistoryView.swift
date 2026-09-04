@@ -137,7 +137,7 @@ struct HistoryRow: View {
         .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(Theme.canvas)
+                .fill(Theme.pearl)
                 
         )
     }
