@@ -485,6 +485,14 @@ struct AISettingsView: View {
                 await MainActor.run {
                     testResult = (true, "连接成功，模型回复：\(reply.prefix(30))")
                     isTesting = false
+                    // 关键修复：测试成功即把配置写入 UserDefaults + key 文件，并置 enabled=true。
+                    // 否则用户测试成功但问答仍报「尚未配置」（问答读的是 AIConfig.load() 而非表单值）
+                    var cfg = AIConfig.load()
+                    cfg.baseURL = url
+                    cfg.model = mdl
+                    cfg.enabled = true
+                    cfg.save()
+                    AIConfig.saveAPIKey(key)
                 }
             } catch {
                 await MainActor.run {

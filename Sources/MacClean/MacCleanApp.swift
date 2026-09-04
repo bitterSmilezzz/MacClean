@@ -43,6 +43,34 @@ struct MacCleanApp: App {
             sem.wait()
             exit(0)
         }
+        // 真实问答链路诊断：--aitest2 走 AIService.send（与 App 内完全一致），定位"连接测试正常但问答不行"
+        if CommandLine.arguments.contains("--aitest2") {
+            setvbuf(stdout, nil, _IONBF, 0)
+            let cfg = AIConfig.load()
+            print("== MacClean 问答链路诊断 ==")
+            print("enabled: \(cfg.enabled)")
+            print("baseURL: \(cfg.baseURL)")
+            print("model:   \(cfg.model)")
+            let key = AIConfig.loadAPIKey()
+            print("apiKey:  \(key != nil ? "已读取（长度 \(key!.count)）" : "❌ 读不到")")
+            guard cfg.enabled, let key, !key.isEmpty else {
+                print("❌ 失败：enabled=\(cfg.enabled) 或 key 缺失 → AIService.send 会抛 notConfigured")
+                exit(2)
+            }
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached {
+                do {
+                    let msg = ChatMessage(role: .user, content: "回复 OK 两个字母即可")
+                    let reply = try await AIService.send(messages: [msg], context: nil)
+                    print("✅ send 成功，模型回复：\(reply)")
+                } catch {
+                    print("❌ send 失败：\(error.localizedDescription)")
+                }
+                sem.signal()
+            }
+            sem.wait()
+            exit(0)
+        }
         // 无头扫描模式：swift run MacClean --scan
         if CommandLine.arguments.contains("--scan") {
             print("MacClean headless scan")
