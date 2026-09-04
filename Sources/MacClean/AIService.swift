@@ -4,8 +4,9 @@ import Security
 // MARK: - AI 配置（baseURL/model 存 UserDefaults，apiKey 存钥匙串）
 
 struct AIConfig: Codable, Equatable {
-    var baseURL: String = "https://api.deepseek.com"   // OpenAI 兼容端点
-    var model: String = "deepseek-chat"
+    // 默认值：opencode go 网关（本机验证可达 https://opencode.ai/zen/go/v1）
+    var baseURL: String = "https://opencode.ai/zen/go/v1"
+    var model: String = "deepseek-v4-flash"
     var enabled: Bool = false
 
     static let defaultsKey = "aiConfig"
@@ -152,6 +153,43 @@ enum AIService {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw AIError.network("无响应") }
+        guard http.statusCode == 200 else {
+            let msg = String(data: data, encoding: .utf8) ?? ""
+            throw AIError.network("HTTP \(http.statusCode)：\(msg.prefix(200))")
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let first = choices.first,
+              let message = first["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw AIError.badResponse
+        }
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 连通性测试：发一条最小请求，验证 baseURL + key + 模型可用
+    static func testConnection(baseURL: String, apiKey: String, model: String) async throws -> String {
+        guard !baseURL.isEmpty, !apiKey.isEmpty, !model.isEmpty else {
+            throw AIError.notConfigured
+        }
+        guard let url = URL(string: baseURL.trimmingCharacters(in: .whitespaces))
+                .flatMap({ URL(string: $0.appendingPathComponent("/chat/completions").absoluteString) }) else {
+            throw AIError.network("无效的 baseURL")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [["role": "user", "content": "回复 OK 两个字母即可"]],
+            "max_tokens": 10,
+            "stream": false,
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw AIError.network("无响应") }
         guard http.statusCode == 200 else {

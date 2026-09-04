@@ -15,6 +15,27 @@ struct CategoryDetailView: View {
             header
             Divider().overlay(Theme.hairline)
 
+            // 扫描错误横幅（P4 健壮性：失败不静默）
+            if let err = st.lastError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.dangerRed)
+                    Text(err)
+                        .font(Theme.bodyFont(12, weight: .medium))
+                        .foregroundColor(Theme.dangerRed)
+                    Spacer()
+                    Button("重试") { app.scan(category) }
+                        .buttonStyle(.borderless)
+                        .font(Theme.bodyFont(12, weight: .medium))
+                        .foregroundColor(Theme.actionBlue)
+                }
+                .padding(.horizontal, Theme.contentPadding)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.dangerRed.opacity(0.06))
+            }
+
             if st.isScanning {
                 scanningView
             } else if !st.isScanned {

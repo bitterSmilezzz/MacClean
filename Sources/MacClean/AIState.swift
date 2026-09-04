@@ -90,6 +90,15 @@ final class AIState: ObservableObject {
         }
     }
 
+    /// 重试：错误后重新发送最后一条用户消息（网络抖动/超时恢复用）
+    func retry() {
+        guard !isLoading, lastError != nil,
+              let last = messages.last(where: { $0.role == .user }) else { return }
+        lastError = nil
+        messages.append(ChatMessage(role: .user, content: "（重试）" + last.content))
+        performRequest()
+    }
+
     func clear() {
         messages = []
         context = nil

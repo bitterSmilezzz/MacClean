@@ -56,12 +56,19 @@ final class AppState: ObservableObject {
         st.isScanning = true
         st.lastError = nil
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let items = Scanner.scan(cat)
-            DispatchQueue.main.async {
-                st.items = items
-                st.isScanned = true
-                st.isScanning = false
-                self?.refreshDisk()
+            do {
+                let items = try Scanner.scan(cat)
+                DispatchQueue.main.async {
+                    st.items = items
+                    st.isScanned = true
+                    st.isScanning = false
+                    self?.refreshDisk()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    st.isScanning = false
+                    st.lastError = "扫描失败：\(error.localizedDescription)"
+                }
             }
         }
     }

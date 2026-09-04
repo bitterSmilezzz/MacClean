@@ -40,6 +40,30 @@ swift build
 open dist/MacClean.app
 ```
 
+## 安装与首次打开
+
+> 本项目为个人项目，产物为 **ad-hoc 签名（未公证）**。首次打开请先解除 Gatekeeper 隔离：
+
+```bash
+# 解压后执行（把路径换成实际位置）
+xattr -cr /Applications/MacClean.app
+# 然后正常打开；或右键 → 打开 → 确认
+open /Applications/MacClean.app
+```
+
+**清理受 TCC 保护的位置**（Safari 数据、邮件附件等约 70% 深层垃圾）需要在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中把 MacClean 加进去，否则扫描会静默跳过这些目录（安全设计 G1）。
+
+## AI 助手配置（可选）
+
+侧边 AI 助手可针对任意清理项提问（用途/可否删除/是否在用）。首次使用：
+
+1. 点 AI 面板右上 **⚙️**（或空态「去配置 AI 接口」按钮）
+2. 默认已填 opencode go 网关（`https://opencode.ai/zen/go/v1` + `deepseek-v4-flash`），只需粘贴你的 API Key（存系统钥匙串）
+3. 点「测试连接」验证 → 保存
+4. 扫描后点任意条目旁的 ✨ 按钮提问
+
+也支持任何 OpenAI 兼容端点（DeepSeek 官方：`https://api.deepseek.com` + `deepseek-chat`）。
+
 ## 测试策略（零打断方案）
 
 本机无 Xcode/XCTest 框架，采用 **ViewInspector 进程内自检**（`Sources/MacClean/Selftest.swift`）：

@@ -120,10 +120,30 @@ struct AIChatView: View {
             Text("清理前先问一句")
                 .font(Theme.bodyFont(14, weight: .semibold))
                 .foregroundColor(Theme.ink)
-            Text("点击列表项旁的 ✨ 按钮\n让 AI 判断用途、是否可删、是否在用")
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.inkMuted48)
-                .multilineTextAlignment(.center)
+            if AIConfig.load().enabled {
+                Text("点击列表项旁的 ✨ 按钮\n让 AI 判断用途、是否可删、是否在用")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.inkMuted48)
+                    .multilineTextAlignment(.center)
+            } else {
+                // P3 首启引导：未配置 AI 时给明确入口
+                Text("首次使用：先配置 AI 接口\n（默认已填 opencode go 网关，只需粘贴 Key）")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.inkMuted48)
+                    .multilineTextAlignment(.center)
+                Button {
+                    app.ai.showSettings = true
+                } label: {
+                    Label("去配置 AI 接口", systemImage: "gearshape")
+                        .font(Theme.bodyFont(12, weight: .medium))
+                        .foregroundColor(.white)
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 18)
+                        .background(Capsule().fill(Theme.actionBlue))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
+            }
             contextCard
             Spacer()
         }
@@ -150,11 +170,22 @@ struct AIChatView: View {
                         .padding(.horizontal, Theme.spaceSm)
                     }
                     if let err = app.ai.lastError {
-                        Text(err)
-                            .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.dangerRed)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, Theme.spaceSm)
+                        HStack(spacing: 6) {
+                            Text(err)
+                                .font(Theme.bodyFont(11))
+                                .foregroundColor(Theme.dangerRed)
+                            Button {
+                                app.ai.retry()
+                            } label: {
+                                Label("重试", systemImage: "arrow.clockwise")
+                                    .font(Theme.bodyFont(11, weight: .medium))
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundColor(Theme.actionBlue)
+                            .disabled(app.ai.isLoading)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Theme.spaceSm)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -240,6 +271,8 @@ struct AISettingsView: View {
     @State private var apiKey = ""
     @State private var model = ""
     @State private var showKey = false
+    @State private var isTesting = false
+    @State private var testResult: (ok: Bool, message: String)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceMd) {
@@ -295,8 +328,39 @@ struct AISettingsView: View {
                     .font(Theme.bodyFont(12))
             }
 
+            // 连通性测试
+            if let result = testResult {
+                HStack(spacing: 6) {
+                    Image(systemName: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(result.ok ? Theme.actionBlue : Theme.dangerRed)
+                    Text(result.message)
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(result.ok ? Theme.inkMuted80 : Theme.dangerRed)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, Theme.spaceSm)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd)
+                    .fill((result.ok ? Theme.actionBlue : Theme.dangerRed).opacity(0.08)))
+            }
+
             HStack {
+                if isTesting {
+                    ProgressView().controlSize(.small).tint(Theme.actionBlue)
+                    Text("测试中…")
+                        .font(Theme.bodyFont(12))
+                        .foregroundColor(Theme.inkMuted48)
+                }
                 Spacer()
+                Button("测试连接") {
+                    testConnection()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(isTesting || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+                          || apiKey.trimmingCharacters(in: .whitespaces).isEmpty
+                          || model.trimmingCharacters(in: .whitespaces).isEmpty)
                 Button("取消") { dismiss() }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
@@ -324,6 +388,28 @@ struct AISettingsView: View {
             baseURL = cfg.baseURL
             model = cfg.model
             apiKey = AIConfig.loadAPIKey() ?? ""
+        }
+    }
+
+    private func testConnection() {
+        isTesting = true
+        testResult = nil
+        let url = baseURL.trimmingCharacters(in: .whitespaces)
+        let key = apiKey.trimmingCharacters(in: .whitespaces)
+        let mdl = model.trimmingCharacters(in: .whitespaces)
+        Task {
+            do {
+                let reply = try await AIService.testConnection(baseURL: url, apiKey: key, model: mdl)
+                await MainActor.run {
+                    testResult = (true, "连接成功，模型回复：\(reply.prefix(30))")
+                    isTesting = false
+                }
+            } catch {
+                await MainActor.run {
+                    testResult = (false, "连接失败：\(error.localizedDescription)")
+                    isTesting = false
+                }
+            }
         }
     }
 }
