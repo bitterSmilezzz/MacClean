@@ -97,6 +97,28 @@ struct DashboardView: View {
             .tint(Theme.actionBlue)
             .disabled(app.categories.contains { $0.isScanning })
 
+            // AI 再筛查全部（AI 扫描：对全部已扫描结果逐项二次判断）
+            Button {
+                let all = app.categories.flatMap { $0.items }
+                app.aiReview.review(items: all)
+            } label: {
+                if app.aiReview.isReviewing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small).tint(Theme.actionBlue)
+                        Text("AI 筛查中…")
+                            .font(Theme.bodyFont(13, weight: .medium))
+                    }
+                } else {
+                    Label("AI 再筛查全部", systemImage: "sparkles.rectangle.stack")
+                        .font(Theme.bodyFont(13, weight: .medium))
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .tint(Theme.actionBlue)
+            .disabled(app.aiReview.isReviewing || app.searchableItems.isEmpty)
+            .help("用 AI 对全部已扫描结果逐项二次判断：可删 / 谨慎 / 不建议删")
+
             Button {
                 showCleanSheet = true
             } label: {

@@ -71,7 +71,45 @@ struct MacCleanApp: App {
             sem.wait()
             exit(0)
         }
-        // 无头扫描模式：swift run MacClean --scan
+        // 无头 AI 再筛查模式：swift run MacClean --aireview [分类数限制]
+        // 用真实 AI 对扫描结果逐项二次判断，验证 AI 扫描链路
+        if CommandLine.arguments.contains("--aireview") {
+            setvbuf(stdout, nil, _IONBF, 0)
+            let limit = CommandLine.arguments.count > 2 ? Int(CommandLine.arguments[2]) ?? 10 : 10
+            print("== MacClean AI 再筛查诊断 ==")
+            let cfg = AIConfig.load()
+            print("enabled: \(cfg.enabled) | baseURL: \(cfg.baseURL) | model: \(cfg.model)")
+            guard cfg.enabled, AIConfig.loadAPIKey() != nil else {
+                print("❌ AI 未配置，无法筛查")
+                exit(2)
+            }
+            // 收集已扫描项（取各分类 Top，控制条数）
+            let all = CleanCategory.allCases.flatMap { cat -> [CleanItem] in
+                let items = (try? Scanner.scan(cat)) ?? []
+                return Array(items.prefix(limit / CleanCategory.allCases.count))
+            }
+            print("待筛查：\(all.count) 项（每分类 Top \(limit / CleanCategory.allCases.count)）")
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached {
+                do {
+                    let reviews = try await AIService.review(items: all) { msg in
+                        print("  进度：\(msg)")
+                    }
+                    print("✅ 筛查完成：\(reviews.count) 项有结论")
+                    let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+                    for r in reviews.prefix(12) {
+                        if let item = byID[r.itemID] {
+                            print("  [AI·\(r.verdict.label)] \(item.name) — \(r.reason)")
+                        }
+                    }
+                } catch {
+                    print("❌ 筛查失败：\(error.localizedDescription)")
+                }
+                sem.signal()
+            }
+            sem.wait()
+            exit(0)
+        }
         if CommandLine.arguments.contains("--scan") {
             print("MacClean headless scan")
             let results = CleanCategory.allCases.map { cat -> (String, [CleanItem]) in
