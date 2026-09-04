@@ -42,6 +42,54 @@ enum Selftest {
             Int64(1_500_000_000).byteStringCN == "1.5 GB" &&
             Int64(150_000_000_000).byteStringCN == "150 GB"
         }
+        check("UsageLevel 频率分级标签") {
+            UsageLevel.active.label == "频繁使用中" &&
+            UsageLevel.recent.label == "近期使用" &&
+            UsageLevel.occasional.label == "偶尔使用" &&
+            UsageLevel.dormant.label == "长期未用" &&
+            UsageLevel.active.isRecentlyUsed && UsageLevel.recent.isRecentlyUsed &&
+            !UsageLevel.occasional.isRecentlyUsed && !UsageLevel.dormant.isRecentlyUsed
+        }
+        check("FileSystem.usage 单文件分级（按 mtime 年龄）") {
+            let path = "/private/tmp/macclean-usage-\(UUID().uuidString)"
+            FileManager.default.createFile(atPath: path, contents: Data("x".utf8))
+            defer { try? FileManager.default.removeItem(atPath: path) }
+            let now = Date()
+            let day: TimeInterval = 86400
+            // 用修改时间模拟不同活跃度（mtime 为主判据）
+            func setAge(_ age: TimeInterval) {
+                let d = now.addingTimeInterval(-age)
+                try? FileManager.default.setAttributes([.modificationDate: d], ofItemAtPath: path)
+            }
+            setAge(2 * day)
+            guard FileSystem.usage(of: path).level == .active else { return false }
+            setAge(15 * day)
+            guard FileSystem.usage(of: path).level == .recent else { return false }
+            setAge(60 * day)
+            guard FileSystem.usage(of: path).level == .occasional else { return false }
+            setAge(200 * day)
+            return FileSystem.usage(of: path).level == .dormant
+        }
+        check("FileSystem.usage 不存在路径返回 unknown") {
+            let info = FileSystem.usage(of: "/private/tmp/macclean-ghost-\(UUID().uuidString)")
+            return info.level == .unknown && info.lastUsed == nil
+        }
+        check("CleanItem 标注与相对时间文案") {
+            let item = CleanItem(name: "X", path: "/tmp/x", size: 1, risk: .safe,
+                                 category: .userCaches, lastUsed: Date().addingTimeInterval(-3 * 86400),
+                                 usage: .active)
+            guard item.usage == .active, item.lastUsed != nil else { return false }
+            // 3 天前应输出 "3 天前"；刚刚为 "刚刚"
+            return item.lastUsed!.relativeUsage == "3 天前" && Date().relativeUsage == "刚刚"
+        }
+        check("AI 上下文渲染包含使用信息") {
+            let ctx = AskContext(title: "TestCache", path: "/private/tmp/x", size: 1500,
+                                 category: "用户缓存", risk: "安全", note: "可重建",
+                                 lastUsed: Date().addingTimeInterval(-3 * 86400),
+                                 usage: .active)
+            let text = AIService.render(context: ctx)
+            return text.contains("最近使用：") && text.contains("使用频率：频繁使用中")
+        }
         check("CleanPaths.expand ~ 展开") {
             CleanPaths.expand("~/Library/Caches") == NSHomeDirectory() + "/Library/Caches" &&
             CleanPaths.expand("/private/tmp") == "/private/tmp"

@@ -66,6 +66,81 @@ enum FileSystem {
         return (try? url.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate)
     }
 
+    // MARK: - 使用频率检测（用户诉求：最近使用时间 + 使用频率，判断值不值得删）
+
+    /// 轻量使用检测结果
+    struct UsageInfo {
+        var lastUsed: Date?      // 最近使用时间（文件 accessDate/mtime 较新者；目录为样本内最新）
+        var level: UsageLevel    // 使用频率分级
+    }
+
+    /// 检测路径最近使用情况。
+    /// - 单文件：取 accessDate 与 mtime 较新者，按距今天数分级。
+    /// - 目录：先看目录自身 mtime（快速路径）；较旧时抽样枚举内部文件（限深度 3、样本 2000，
+    ///   找到近期修改文件即提前终止），统计最新修改时间与近期文件数来分级。
+    /// 性能约束：最坏情况枚举 2000 个文件元数据，远轻于 directorySize 的 20 万上限。
+    static func usage(of path: String) -> UsageInfo {
+        let now = Date()
+        let day: TimeInterval = 86400
+
+        func level(for age: TimeInterval) -> UsageLevel {
+            switch age {
+            case ..<(7 * day): return .active
+            case ..<(30 * day): return .recent
+            case ..<(90 * day): return .occasional
+            default: return .dormant
+            }
+        }
+
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else {
+            return UsageInfo(lastUsed: nil, level: .unknown)
+        }
+
+        // 单文件：以修改时间为主判据（macOS atime 默认 lazy 更新，不可靠）
+        if !isDir.boolValue {
+            guard let m = modificationDate(path) else { return UsageInfo(lastUsed: nil, level: .unknown) }
+            return UsageInfo(lastUsed: m, level: level(for: now.timeIntervalSince(m)))
+        }
+
+        // 目录：快速路径——目录自身 mtime 距今 < 7 天直接判活跃
+        if let dm = modificationDate(path), now.timeIntervalSince(dm) < 7 * day {
+            return UsageInfo(lastUsed: dm, level: .active)
+        }
+
+        // 抽样路径：枚举内部文件（限深度 3、样本 2000）
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isDirectoryKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: path, isDirectory: true),
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, _ in true }
+        ) else { return UsageInfo(lastUsed: nil, level: .unknown) }
+
+        var newest: Date?
+        var sampleCount = 0
+        var recent7 = 0   // 7 天内修改过的文件数（活跃度信号）
+        for case let url as URL in enumerator {
+            sampleCount += 1
+            if sampleCount > 2000 { break }
+            if let values = try? url.resourceValues(forKeys: Set(keys)) {
+                if let m = values.contentModificationDate {
+                    newest = max(newest ?? m, m)
+                    if now.timeIntervalSince(m) < 7 * day { recent7 += 1 }
+                }
+            }
+            if recent7 >= 5 { break }   // 已确认活跃，提前终止
+        }
+        guard let newest else {
+            // 空目录：退化为目录自身 mtime
+            if let dm = modificationDate(path) {
+                return UsageInfo(lastUsed: dm, level: level(for: now.timeIntervalSince(dm)))
+            }
+            return UsageInfo(lastUsed: nil, level: .unknown)
+        }
+        return UsageInfo(lastUsed: newest, level: level(for: now.timeIntervalSince(newest)))
+    }
+
     /// 安全检查：路径是否允许操作（G1/G6）
     static func isSafeToClean(_ path: String) -> Bool {
         let home = NSHomeDirectory()

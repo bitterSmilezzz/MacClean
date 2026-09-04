@@ -73,7 +73,8 @@ struct CategoryDetailView: View {
                 hasPermanent: st.selectedItems.contains { $0.permanentDelete },
                 hasDanger: st.selectedItems.contains { $0.risk == .danger },
                 permanent: $permanentMode,
-                hint: hiddenSelected > 0 ? "含隐藏已选 \(hiddenSelected) 项" : nil
+                hint: hiddenSelected > 0 ? "含隐藏已选 \(hiddenSelected) 项" : nil,
+                recentlyUsedCount: st.selectedItems.filter { $0.usage.isRecentlyUsed }.count
             ) { permanent in
                 app.cleanSelected(in: category, permanently: permanent)
             }
@@ -377,7 +378,7 @@ struct CategoryDetailView: View {
     }
 }
 
-/// 单个清理项行（默认紧凑：名称+大小+风险；点击展开路径/备注）
+/// 单个清理项行（默认紧凑：名称+大小+风险+使用频率；点击展开路径/备注）
 struct ItemRowView: View {
     let item: CleanItem
     let isSelected: Bool
@@ -406,8 +407,10 @@ struct ItemRowView: View {
                             .foregroundColor(Theme.ink)
                             .lineLimit(1)
                         RiskBadge(risk: item.risk)
+                        // 使用频率徽标（用户诉求：最近是否在用/是否频繁，判断值不值得删）
+                        UsageBadge(usage: item.usage)
                     }
-                    // 展开后显示路径与备注（密度优化：默认隐藏）
+                    // 展开后显示路径、使用情况与备注（密度优化：默认隐藏）
                     if isExpanded {
                         Text(item.path)
                             .font(Theme.bodyFont(12))
@@ -415,6 +418,11 @@ struct ItemRowView: View {
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
+                        if let lastUsed = item.lastUsed {
+                            Text("最近使用：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
+                                .font(Theme.bodyFont(12, weight: .medium))
+                                .foregroundColor(item.usage.isRecentlyUsed ? Theme.textWarning : Theme.inkMuted48)
+                        }
                         if !item.note.isEmpty {
                             Text(item.note)
                                 .font(Theme.bodyFont(12))
@@ -500,5 +508,38 @@ struct RiskBadge: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
             .background(Capsule().fill(bg.opacity(0.12)))
+    }
+}
+
+/// 使用频率徽标（用户诉求：标注最近是否在用/是否频繁，辅助判断值不值得删）
+struct UsageBadge: View {
+    let usage: UsageLevel
+
+    private var color: Color {
+        switch usage {
+        case .active: return Theme.textDanger       // 频繁使用中 → 警示
+        case .recent: return Theme.textWarning      // 近期使用 → 提醒
+        case .occasional: return Theme.textWarning.opacity(0.8)
+        case .dormant: return Theme.inkMuted48      // 长期未用 → 中性
+        case .unknown: return Theme.inkMuted48.opacity(0.7)
+        }
+    }
+
+    private var bg: Color {
+        switch usage {
+        case .active: return Theme.dangerRed
+        case .recent, .occasional: return Theme.warningOrange
+        case .dormant, .unknown: return Theme.hairline
+        }
+    }
+
+    var body: some View {
+        Text(usage.label)
+            .font(Theme.bodyFont(11, weight: .semibold))
+            .foregroundColor(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(bg.opacity(0.12)))
+            .accessibilityLabel(usage.label)
     }
 }

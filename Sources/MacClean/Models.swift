@@ -73,6 +73,31 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+// MARK: - 使用频率（用户诉求：判断"是否最近在频繁使用"，决定值不值得删）
+
+enum UsageLevel: Int, Codable {
+    case active       // 7 天内使用过：频繁使用中
+    case recent       // 30 天内使用过：近期使用
+    case occasional   // 90 天内使用过：偶尔使用
+    case dormant      // 超过 90 天未用：长期未用
+    case unknown      // 无法判定
+
+    var label: String {
+        switch self {
+        case .active: return "频繁使用中"
+        case .recent: return "近期使用"
+        case .occasional: return "偶尔使用"
+        case .dormant: return "长期未用"
+        case .unknown: return "使用情况未知"
+        }
+    }
+
+    /// 是否属于"最近在用"（active/recent）——清理时应提示/确认
+    var isRecentlyUsed: Bool {
+        self == .active || self == .recent
+    }
+}
+
 // MARK: - 清理项
 
 struct CleanItem: Identifiable, Equatable {
@@ -83,16 +108,21 @@ struct CleanItem: Identifiable, Equatable {
     /// 实际要清理的全部路径（默认 [path]）
     let paths: [String]
     let size: Int64
-    let risk: RiskLevel
+    var risk: RiskLevel
     let category: CleanCategory
     let note: String
     /// 已在废纸篓内的项：清理 = 彻底删除（无法再移入废纸篓）
     let permanentDelete: Bool
+    /// 最近使用时间（扫描时标注；无则 nil）
+    var lastUsed: Date?
+    /// 使用频率（扫描时标注）
+    var usage: UsageLevel = .unknown
     /// 用户勾选（默认不勾选，遵守 G2）
     var isSelected: Bool = false
 
     init(name: String, path: String, paths: [String]? = nil, size: Int64, risk: RiskLevel,
-         category: CleanCategory, note: String = "", permanentDelete: Bool = false) {
+         category: CleanCategory, note: String = "", permanentDelete: Bool = false,
+         lastUsed: Date? = nil, usage: UsageLevel = .unknown) {
         self.name = name
         self.path = path
         self.paths = paths ?? [path]
@@ -101,6 +131,8 @@ struct CleanItem: Identifiable, Equatable {
         self.category = category
         self.note = note
         self.permanentDelete = permanentDelete
+        self.lastUsed = lastUsed
+        self.usage = usage
     }
 }
 
@@ -167,5 +199,27 @@ extension Int64 {
         }
         if v == 0 { return "0 KB" }
         return String(format: "%.0f B", v)
+    }
+}
+
+// MARK: - 日期工具（最近使用时间展示，UI 与 AI 上下文共用）
+
+extension Date {
+    /// 最近使用时间格式化（"2026-09-01 14:30"）
+    static let usageFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
+
+    /// 相对时间描述（"刚刚" / "3 小时前" / "3 天前" / "2 个月前" / "1 年前"）
+    var relativeUsage: String {
+        let interval = Date().timeIntervalSince(self)
+        let day: TimeInterval = 86400
+        if interval < 3600 { return "刚刚" }
+        if interval < day { return "\(Int(interval / 3600)) 小时前" }
+        if interval < 30 * day { return "\(Int(interval / day)) 天前" }
+        if interval < 365 * day { return "\(Int(interval / (30 * day))) 个月前" }
+        return "\(Int(interval / (365 * day))) 年前"
     }
 }

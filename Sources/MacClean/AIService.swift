@@ -146,6 +146,8 @@ struct AskListItem: Equatable {
     let path: String
     let size: Int64
     let risk: String
+    /// 最近使用描述（如"3 天前 · 频繁使用中"；未知为空）
+    var usageDesc: String = ""
 }
 
 struct AskContext: Equatable {
@@ -157,6 +159,10 @@ struct AskContext: Equatable {
     var note: String         // 扫描器备注
     var kind: String = ""    // 文件类别（卸载器：Application Support 等）
     var inUseBy: [String] = []   // 本地检测到的占用进程
+    /// 最近使用时间（用户诉求：判断值不值得删）
+    var lastUsed: Date?
+    /// 使用频率（用户诉求）
+    var usage: UsageLevel = .unknown
 
     // 列表模式：非空时按"整表判断"提问（Q2: Top 50 截断 / Q6: 每类 Top 20）
     var listItems: [AskListItem] = []
@@ -334,9 +340,9 @@ enum AIService {
             var lines: [String] = []
             lines.append("列表：\(context.listSummary)")
             lines.append("共 \(context.listTotal) 项，以下列出最大的 \(context.listItems.count) 项：")
-            lines.append("编号 | 名称 | 路径 | 大小 | 风险")
+            lines.append("编号 | 名称 | 路径 | 大小 | 风险 | 最近使用")
             for item in context.listItems {
-                lines.append("\(item.index) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(item.risk)")
+                lines.append("\(item.index) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(item.risk) | \(item.usageDesc.isEmpty ? "未知" : item.usageDesc)")
             }
             if context.listItems.count < context.listTotal {
                 lines.append("（其余 \(context.listTotal - context.listItems.count) 项未列出，均为更小的项）")
@@ -352,6 +358,13 @@ enum AIService {
         lines.append("- 风险等级：\(context.risk)")
         if !context.kind.isEmpty { lines.append("- 文件类别：\(context.kind)") }
         if !context.note.isEmpty { lines.append("- 扫描备注：\(context.note)") }
+        // 最近使用时间 + 使用频率（用户诉求：判断值不值得删）
+        if let lastUsed = context.lastUsed {
+            lines.append("- 最近使用：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
+            lines.append("- 使用频率：\(context.usage.label)")
+        } else if context.usage != .unknown {
+            lines.append("- 使用频率：\(context.usage.label)")
+        }
         if context.inUseBy.isEmpty {
             lines.append("- 占用进程：无（本地 lsof 检测）")
         } else {

@@ -10,17 +10,20 @@ struct CleanConfirmSheet: View {
     let hasDanger: Bool
     /// 附加提示（如"含隐藏已选 N 项"），非必填
     var hint: String? = nil
+    /// 其中近期使用中的项数（用户诉求：清理前明确提示"最近在用"）
+    var recentlyUsedCount: Int = 0
     let onConfirm: (Bool) -> Void
     @Binding var permanent: Bool
 
     init(count: Int, size: Int64, hasPermanent: Bool, hasDanger: Bool,
-         permanent: Binding<Bool>, hint: String? = nil,
+         permanent: Binding<Bool>, hint: String? = nil, recentlyUsedCount: Int = 0,
          onConfirm: @escaping (Bool) -> Void) {
         self.count = count
         self.size = size
         self.hasPermanent = hasPermanent
         self.hasDanger = hasDanger
         self.hint = hint
+        self.recentlyUsedCount = recentlyUsedCount
         self.onConfirm = onConfirm
         self._permanent = permanent
     }
@@ -36,6 +39,13 @@ struct CleanConfirmSheet: View {
                 Text("将清理 \(count) 项，共 \(size.byteStringCN)" + (hint.map { "（\($0)）" } ?? ""))
                     .font(Theme.bodyFont(13))
                     .foregroundColor(Theme.inkMuted48)
+                // 近期使用警告（用户诉求：最近在用/频繁使用的项先提醒）
+                if recentlyUsedCount > 0 {
+                    Text("⚠️ 其中 \(recentlyUsedCount) 项近期或频繁使用中，确认删除前请留意")
+                        .font(Theme.bodyFont(13, weight: .semibold))
+                        .foregroundColor(Theme.textWarning)
+                        .padding(.top, 2)
+                }
             }
 
             // 方式选择（G3）
