@@ -25,12 +25,63 @@ struct AIConfig: Codable, Equatable {
         }
     }
 
-    // MARK: Keychain（apiKey 不落盘、不进日志）
+    // MARK: 旧钥匙串（仅用于迁移读取；新 Key 存 0600 文件）
 
     private static let keychainService = "com.macclean.app"
     private static let keychainAccount = "aiApiKey"
 
+    private static var keyFileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = base.appendingPathComponent("MacClean", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("ai.key")
+    }
+
+    /// 测试注入（自检不碰真实 Key 文件）
+    static var keyFileURLOverride: URL?
+
+    private static var effectiveKeyFileURL: URL {
+        keyFileURLOverride ?? keyFileURL
+    }
+
     static func loadAPIKey() -> String? {
+        // 1) 文件优先
+        if let s = try? String(contentsOf: effectiveKeyFileURL, encoding: .utf8),
+           !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // 2) 兼容迁移：尝试读旧钥匙串（可能因 ACL 挂起 → 后台线程 + 3s 超时保护）
+        let sem = DispatchSemaphore(value: 0)
+        var migrated: String?
+        DispatchQueue.global().async {
+            migrated = keychainLoad()
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 3)
+        if let m = migrated?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty {
+            saveAPIKey(m)
+            keychainDelete()
+            return m
+        }
+        return nil
+    }
+
+    static func saveAPIKey(_ key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        try? trimmed.write(to: effectiveKeyFileURL, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                               ofItemAtPath: effectiveKeyFileURL.path)
+        // 异步清理旧钥匙串条目（避免潜在 ACL 阻塞）
+        DispatchQueue.global().async { Self.keychainDelete() }
+    }
+
+    static func clearAPIKey() {
+        try? FileManager.default.removeItem(at: effectiveKeyFileURL)
+        keychainDelete()
+    }
+
+    private static func keychainLoad() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -44,26 +95,7 @@ struct AIConfig: Codable, Equatable {
         return String(data: data, encoding: .utf8)
     }
 
-    static func saveAPIKey(_ key: String) {
-        let keyData = Data(key.utf8)
-        // 先删旧值再写入
-        let deleteQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-        ]
-        SecItemDelete(deleteQuery as CFDictionary)
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount,
-            kSecValueData as String: keyData,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
-        ]
-        SecItemAdd(addQuery as CFDictionary, nil)
-    }
-
-    static func clearAPIKey() {
+    private static func keychainDelete() {
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -134,6 +166,31 @@ enum AIService {
         }
     }
 
+    /// 专用会话（P4 根因修复）：绕过系统代理直连。
+    /// 根因：系统代理 127.0.0.1:7890 对网关请求挂起（curl 直连 200 / URLSession 挂死 90s+）
+    private static let session: URLSession = {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.connectionProxyDictionary = [:]   // 空字典 = 禁用系统代理，直连
+        cfg.timeoutIntervalForRequest = 45
+        cfg.timeoutIntervalForResource = 60
+        return URLSession(configuration: cfg)
+    }()
+
+    /// 强制超时兜底：URLSession 超时在代理半挂起场景可能不触发，任务组 race 强制中断
+    private static func withTimeout<T>(_ seconds: TimeInterval,
+                                       _ op: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await op() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw AIError.network("请求超时（\(Int(seconds))s）：网关无响应，请检查网络/代理设置")
+            }
+            guard let first = try await group.next() else { throw AIError.badResponse }
+            group.cancelAll()
+            return first
+        }
+    }
+
     /// 发送对话，返回助手回复
     static func send(messages: [ChatMessage], context: AskContext?) async throws -> String {
         let config = AIConfig.load()
@@ -147,7 +204,7 @@ enum AIService {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 60
+        request.timeoutInterval = 45
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
@@ -168,7 +225,9 @@ enum AIService {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await withTimeout(50) {
+            try await Self.session.data(for: request)
+        }
         guard let http = response as? HTTPURLResponse else { throw AIError.network("无响应") }
         guard http.statusCode == 200 else {
             let msg = String(data: data, encoding: .utf8) ?? ""
@@ -205,7 +264,9 @@ enum AIService {
             "stream": false,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await withTimeout(35) {
+            try await Self.session.data(for: request)
+        }
         guard let http = response as? HTTPURLResponse else { throw AIError.network("无响应") }
         guard http.statusCode == 200 else {
             let msg = String(data: data, encoding: .utf8) ?? ""
