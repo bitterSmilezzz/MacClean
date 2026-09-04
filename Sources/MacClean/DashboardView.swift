@@ -60,7 +60,8 @@ struct DashboardView: View {
             size: all.reduce(Int64(0)) { $0 + $1.size },
             hasPermanent: all.contains { $0.permanentDelete },
             hasDanger: all.contains { $0.risk == .danger },
-            permanent: $permanentMode
+            permanent: $permanentMode,
+            recentlyUsedCount: all.filter { $0.usage.isRecentlyUsed }.count
         ) { permanent in
             app.cleanSelectedAcrossCategories(permanently: permanent)
         }

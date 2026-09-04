@@ -81,14 +81,26 @@ final class Scanner {
     // MARK: - 入口
 
     static func scan(_ category: CleanCategory) throws -> [CleanItem] {
+        let items: [CleanItem]
         switch category {
-        case .userCaches: return scanUserCaches()
-        case .logsAndTemp: return scanLogsAndTemp()
-        case .devResidue: return scanDevResidue()
-        case .appResidue: return scanAppResidue()
-        case .largeFiles: return scanLargeFiles()
-        case .browserAndSystem: return scanBrowserAndSystem()
+        case .userCaches: items = scanUserCaches()
+        case .logsAndTemp: items = scanLogsAndTemp()
+        case .devResidue: items = scanDevResidue()
+        case .appResidue: items = scanAppResidue()
+        case .largeFiles: items = scanLargeFiles()
+        case .browserAndSystem: items = scanBrowserAndSystem()
         }
+        // 使用频率标注（用户诉求）：逐项检测"最近使用时间 + 使用频率"，供 UI 判断值不值得删
+        return items.map { annotateUsage($0) }
+    }
+
+    /// 标注最近使用时间与使用频率（对主路径检测；聚合项主路径为父目录，抽样反映整体活跃度）
+    private static func annotateUsage(_ item: CleanItem) -> CleanItem {
+        let info = FileSystem.usage(of: item.path)
+        var copy = item
+        copy.lastUsed = info.lastUsed
+        copy.usage = info.level
+        return copy
     }
 
     // MARK: - 1. 用户缓存 C1–C6

@@ -30,7 +30,9 @@ final class AIState: ObservableObject {
             size: item.size,
             category: item.category.title,
             risk: item.risk.label,
-            note: item.note
+            note: item.note,
+            lastUsed: item.lastUsed,
+            usage: item.usage
         ))
     }
 
@@ -128,8 +130,15 @@ final class AIState: ObservableObject {
         let top = items.sorted { $0.size > $1.size }.prefix(limit)
         var list: [AskListItem] = []
         for (i, item) in top.enumerated() {
+            var usageDesc = ""
+            if let lastUsed = item.lastUsed {
+                usageDesc = "\(lastUsed.relativeUsage) · \(item.usage.label)"
+            } else if item.usage != .unknown {
+                usageDesc = item.usage.label
+            }
             list.append(AskListItem(index: i + 1, name: item.name, path: item.path,
-                                    size: item.size, risk: item.risk.label))
+                                    size: item.size, risk: item.risk.label,
+                                    usageDesc: usageDesc))
         }
         var ctx = AskContext(title: summary, path: "", size: 0, category: "列表", risk: "", note: "")
         ctx.listItems = list

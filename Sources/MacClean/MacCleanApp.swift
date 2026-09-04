@@ -84,7 +84,8 @@ struct MacCleanApp: App {
                 total += sum
                 print("== \(title): \(items.count) 项, \(sum.byteString)")
                 for item in items.prefix(10) {
-                    print("   [\(item.risk.label)] \(item.name) — \(item.size.byteString) — \(item.path)")
+                    let usage = item.lastUsed.map { "\($0.relativeUsage) · \(item.usage.label)" } ?? item.usage.label
+                    print("   [\(item.risk.label)] \(item.name) — \(item.size.byteString) — \(item.path) — 使用:\(usage)")
                 }
             }
             print("== 总计可清理: \(total.byteString)")
