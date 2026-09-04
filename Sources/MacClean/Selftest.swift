@@ -571,6 +571,27 @@ enum Selftest {
             return !app.aiReview.isReviewing
                 && (app.aiReview.lastError != nil || app.aiReview.reviews.isEmpty)
         }
+        check("AI 筛查：启动自动开抽屉 + 思考过程日志") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            st.items = [CleanItem(name: "A", path: "/tmp/a", size: 10, risk: .safe, category: .userCaches)]
+            app.aiReview.review(items: st.items)
+            // 启动即开抽屉 + 记录日志（即使后续失败，过程也可见）
+            let opened = app.aiReview.isDrawerOpen
+            let hasLog = !app.aiReview.processLog.isEmpty
+            let hasName = app.aiReview.itemNames.values.contains("A")
+            return opened && hasLog && hasName
+        }
+        check("AI 筛查：抽屉与对话抽屉互斥") {
+            let app = AppState()
+            app.ai.openDrawer()
+            let chatOpened = app.ai.isDrawerOpen
+            let reviewClosedByChat = !app.aiReview.isDrawerOpen
+            app.aiReview.openDrawer()
+            return chatOpened && reviewClosedByChat
+                && app.aiReview.isDrawerOpen && !app.ai.isDrawerOpen
+        }
         check("AI 筛查：ReviewBadge 渲染") {
             let delete = try ReviewBadge(verdict: .delete).inspect().text().string()
             let keep = try ReviewBadge(verdict: .keep).inspect().text().string()
