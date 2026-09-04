@@ -11,9 +11,10 @@ struct InstalledApp: Identifiable, Equatable {
     let size: Int64
 
     var isSystemApp: Bool { bundleID?.hasPrefix("com.apple.") == true }
+    /// MED-2（终检）：实时查询运行态，不依赖进程启动时的静态快照
     var isRunning: Bool {
         guard let bundleID else { return false }
-        return CleanPaths.runningBundleIDs.contains(bundleID)
+        return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleID }
     }
 }
 
@@ -39,10 +40,13 @@ final class UninstallerState: ObservableObject {
     @Published var isUninstalling = false
 
     func loadApps() {
+        // 三巡：置 isScanning 避免首次进入闪现"未发现可卸载 App"空态
+        isScanning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let apps = UninstallerScanner.scanApps()
             DispatchQueue.main.async {
                 self?.apps = apps
+                self?.isScanning = false
             }
         }
     }
@@ -87,15 +91,28 @@ final class UninstallerState: ObservableObject {
             CleanItem(name: $0.name, path: $0.path, size: $0.size, risk: .review,
                       category: .appResidue, note: "\($0.kind) · App 卸载残留")
         }
-        let result = Cleaner.clean(items, permanently: permanently) { _ in }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let done = Set(files.map(\.id))
-            self.related = self.related.filter { !done.contains($0.id) }
-            self.isUninstalling = false
-            var parts = ["已卸载 \(result.succeeded) 项，释放 \(result.releasedBytes.byteStringCN)"]
-            if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
-            self.lastSummary = parts.joined(separator: "，")
+        // L5（数据层审查）：避免主线程同步执行大目录 trashItem 阻塞 UI——后台执行 + 主线程回写
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = Cleaner.clean(items, permanently: permanently) { _ in }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let failed = result.failedPaths
+                let done = Set(files.map(\.id))
+                // #1（二轮）：filter 保留快照外新勾选项（卸载期间用户勾选的新文件不被误移）
+                self.related = self.related.map { f in
+                    guard f.isSelected, done.contains(f.id) else { return f }
+                    if failed.contains(f.path) {
+                        var copy = f
+                        copy.isSelected = false
+                        return copy
+                    }
+                    return f
+                }.filter { !$0.isSelected || !done.contains($0.id) }
+                self.isUninstalling = false
+                var parts = ["已卸载 \(result.succeeded) 项，释放 \(result.releasedBytes.byteStringCN)"]
+                if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
+                self.lastSummary = parts.joined(separator: "，")
+            }
         }
         return true
     }
@@ -173,7 +190,10 @@ enum UninstallerScanner {
             }
         }
 
-        // 3) Application Support / Logs：名称归一化匹配（双向子串，防误伤）
+        // 3) Application Support / Logs：名称匹配（N5：收紧防误删他 App 数据）
+        // 只允许「目录名 == app 名」或「目录名包含完整 app 名」——
+        // 不允许短 vendor 目录（Google/Microsoft）因"app 名包含它"被整体列入
+        // LOW-5（终检）：Group Containers 中 iCloud 系统容器（group.com.apple.*）永远白名单跳过
         for (root, kind) in [
             ("\(home)/Library/Application Support", "Application Support"),
             ("\(home)/Library/Logs", "Logs"),
@@ -182,9 +202,14 @@ enum UninstallerScanner {
             for child in FileSystem.children(of: root) {
                 let dirName = (child as NSString).lastPathComponent
                 if dirName.hasPrefix(".") { continue }
+                // iCloud 系统组容器（Notes/Calendar 等）不与任何第三方 App 卸载关联
+                if kind == "Group Containers", dirName.hasPrefix("group.com.apple.") { continue }
                 let norm = normalize(dirName)
                 guard norm.count >= 3 else { continue }
-                if norm == normName || norm.contains(normName) || normName.contains(norm) {
+                // 等价：app 名 == 目录名；或目录名包含完整 app 名（含分隔符边界）
+                if norm == normName {
+                    add(child, kind: kind)
+                } else if norm.count > normName.count, norm.contains(normName) {
                     add(child, kind: kind)
                 }
             }

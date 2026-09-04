@@ -8,15 +8,19 @@ struct CleanConfirmSheet: View {
     let size: Int64
     let hasPermanent: Bool
     let hasDanger: Bool
+    /// 附加提示（如"含隐藏已选 N 项"），非必填
+    var hint: String? = nil
     let onConfirm: (Bool) -> Void
     @Binding var permanent: Bool
 
     init(count: Int, size: Int64, hasPermanent: Bool, hasDanger: Bool,
-         permanent: Binding<Bool>, onConfirm: @escaping (Bool) -> Void) {
+         permanent: Binding<Bool>, hint: String? = nil,
+         onConfirm: @escaping (Bool) -> Void) {
         self.count = count
         self.size = size
         self.hasPermanent = hasPermanent
         self.hasDanger = hasDanger
+        self.hint = hint
         self.onConfirm = onConfirm
         self._permanent = permanent
     }
@@ -29,7 +33,7 @@ struct CleanConfirmSheet: View {
                     .font(Theme.displayFont(22, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundColor(Theme.ink)
-                Text("将清理 \(count) 项，共 \(size.byteStringCN)")
+                Text("将清理 \(count) 项，共 \(size.byteStringCN)" + (hint.map { "（\($0)）" } ?? ""))
                     .font(Theme.bodyFont(13))
                     .foregroundColor(Theme.inkMuted48)
             }
@@ -124,7 +128,7 @@ struct CleanConfirmSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .tint(permanent ? Theme.dangerRed : Theme.actionBlue)
+                .tint(permanent ? Theme.textDanger : Theme.actionBlue)
                 .accessibilityIdentifier("confirmButton")
             }
         }
@@ -133,13 +137,15 @@ struct CleanConfirmSheet: View {
     }
 
     private func warningRow(icon: String, text: String, color: Color) -> some View {
-        HStack(spacing: 8) {
+        // 三巡：警示文字用深色变体（亮色 2.2:1/3.5:1 不达标），图标保留亮色
+        let textColor: Color = color == Theme.dangerRed ? Theme.textDanger : Theme.textWarning
+        return HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 12))
                 .foregroundColor(color)
             Text(text)
                 .font(Theme.bodyFont(12, weight: .medium))
-                .foregroundColor(color)
+                .foregroundColor(textColor)
         }
         .padding(.horizontal, Theme.spaceSm)
         .padding(.vertical, 8)

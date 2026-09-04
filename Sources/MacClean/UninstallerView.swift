@@ -129,9 +129,13 @@ struct UninstallerView: View {
             ScrollView {
                 VStack(spacing: Theme.spaceSm) {
                     ForEach(filteredApps) { app in
-                        AppRow(app: app, isSelected: uninstaller.selectedApp == app)
-                            .contentShape(Rectangle())
-                            .onTapGesture { uninstaller.select(app) }
+                        Button {
+                            uninstaller.select(app)
+                        } label: {
+                            AppRow(app: app, isSelected: uninstaller.selectedApp == app)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("uninstallAppRow")
                     }
                 }
                 .padding(.horizontal, Theme.spaceSm)
@@ -178,10 +182,10 @@ struct UninstallerView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .font(.system(size: 12))
-                            .foregroundColor(Theme.warningOrange)
+                            .foregroundColor(Theme.textWarning)
                         Text("该 App 正在运行，关联文件扫描已暂停。请先退出后再卸载。")
                             .font(Theme.bodyFont(14, weight: .medium))
-                            .foregroundColor(Theme.warningOrange)
+                            .foregroundColor(Theme.textWarning)
                     }
                     .padding(.horizontal, Theme.spaceMd)
                     .padding(.vertical, 10)
@@ -255,6 +259,9 @@ struct UninstallerView: View {
                         RelatedFileRow(file: file)
                             .contentShape(Rectangle())
                             .onTapGesture { uninstaller.toggle(file.id, !file.isSelected) }
+                            // 行内 checkbox 已是真 Button（键盘可激活）；整行点击补 VO 按钮语义
+                            .accessibilityAddTraits(file.isSelected ? [.isSelected] : [])
+                            .accessibilityLabel("\(file.name)，\(file.size.byteStringCN)")
                     }
                 }
                 .padding(.horizontal, Theme.spaceMd)
@@ -396,7 +403,7 @@ struct RelatedFileRow: View {
                 .foregroundColor(Theme.ink)
                 .monospacedDigit()
 
-            // 问 AI：针对该关联文件提问
+            // 问 AI：针对该关联文件提问（LOW-2：请求在途时禁用）
             Button {
                 app.ai.askAbout(file: file)
             } label: {
@@ -404,11 +411,12 @@ struct RelatedFileRow: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(Theme.actionBlue)
                     .frame(width: 24, height: 24)
-                    .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+                    .background(Circle().fill(Theme.actionBlue.opacity(app.ai.isLoading ? 0.05 : 0.12)))
             }
             .buttonStyle(.plain)
+            .disabled(app.ai.isLoading)
             .accessibilityIdentifier("askAIFileButton")
-            .help("问 AI：这个残留是什么？能删吗？")
+            .help(app.ai.isLoading ? "AI 回复中，请稍候" : "问 AI：这个残留是什么？能删吗？")
         }
         .padding(.horizontal, Theme.spaceMd)
         .padding(.vertical, Theme.spaceXs)

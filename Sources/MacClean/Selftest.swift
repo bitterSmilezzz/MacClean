@@ -29,6 +29,9 @@ enum Selftest {
         setvbuf(stdout, nil, _IONBF, 0)
         failures = []
         passed = 0
+        // MED#7：自检全程禁用真实网络（AI 状态机照走，请求被短路）
+        AIService.networkDisabled = true
+        defer { AIService.networkDisabled = false }
         let start = Date()
 
         check("byteStringCN 格式化") {
@@ -51,6 +54,17 @@ enum Selftest {
             !FileSystem.isSafeToClean(NSHomeDirectory() + "/.ssh") &&
             FileSystem.isSafeToClean(NSHomeDirectory() + "/Library/Caches/TestApp") &&
             FileSystem.isSafeToClean("/private/tmp/testfile")
+        }
+        check("isSafeToClean Homebrew Cellar 边界") {
+            // D12 规则专用：仅放行 Cellar/<formula>/<version> 具体版本；拒绝根/公式/穿越
+            FileSystem.isSafeToClean("/opt/homebrew/Cellar/openssl/3.0.0") &&
+            FileSystem.isSafeToClean("/usr/local/Cellar/python@3.11/3.11.9_1") &&
+            !FileSystem.isSafeToClean("/opt/homebrew/Cellar") &&
+            !FileSystem.isSafeToClean("/opt/homebrew/Cellar/openssl") &&
+            !FileSystem.isSafeToClean("/opt/homebrew/Cellar/.hidden") &&
+            !FileSystem.isSafeToClean("/opt/homebrew/Cellar/openssl/archive") &&
+            !FileSystem.isSafeToClean("/opt/homebrew/Cellar/openssl/../etc/passwd") &&
+            !FileSystem.isSafeToClean("/opt/homebrew/Cellar/openssl/3.0.0/../..")
         }
         check("CategoryState 勾选逻辑") {
             let st = CategoryState(category: .userCaches)
@@ -91,7 +105,15 @@ enum Selftest {
             try Data("hello".utf8).write(to: URL(fileURLWithPath: dir + "/file.txt"))
             let item = CleanItem(name: "test", path: dir, size: 5, risk: .safe, category: .logsAndTemp)
             let result = Cleaner.clean([item], permanently: false) { _ in }
-            return result.succeeded == 1 && !FileManager.default.fileExists(atPath: dir)
+            let ok = result.succeeded == 1 && !FileManager.default.fileExists(atPath: dir)
+            // LOW#8：清掉废纸篓里的测试残留（移入后目录名前缀 macclean-test-）
+            let trash = (NSHomeDirectory() as NSString).appendingPathComponent(".Trash")
+            if let children = try? FileManager.default.contentsOfDirectory(atPath: trash) {
+                for name in children where name.hasPrefix("macclean-test-") {
+                    try? FileManager.default.removeItem(atPath: (trash as NSString).appendingPathComponent(name))
+                }
+            }
+            return ok
         }
         check("Cleaner 拒绝不安全路径") {
             let item = CleanItem(name: "bad", path: "/System/Library/Foo", size: 1,
@@ -111,6 +133,16 @@ enum Selftest {
             let view = ItemRowView(item: item, isSelected: false) { toggledTo = $0 }
             try button("itemToggle", in: view).tap()
             return toggledTo == true
+        }
+        check("ItemRow 行内 ✨ 禁用态（LOW-2 终检）") {
+            let item = CleanItem(name: "CacheApp", path: "/tmp/x", size: 1024,
+                                 risk: .safe, category: .userCaches)
+            let enabled = ItemRowView(item: item, isSelected: false,
+                                      onToggle: { _ in }, onAskAI: {}, isDisabled: false)
+            let disabled = ItemRowView(item: item, isSelected: false,
+                                       onToggle: { _ in }, onAskAI: {}, isDisabled: true)
+            return try !button("askAIButton", in: enabled).isDisabled()
+                && button("askAIButton", in: disabled).isDisabled()
         }
         check("确认弹窗默认废纸篓") {
             var confirmValue: Bool?
@@ -136,6 +168,14 @@ enum Selftest {
                                           hasDanger: true, permanent: .init(get: { permanent }, set: { permanent = $0 })) { _ in }
             _ = try sheet.inspect().find(text: "包含废纸篓内容，将直接彻底删除")
             _ = try sheet.inspect().find(text: "包含高风险项，建议仅移入废纸篓并逐一确认")
+            return true
+        }
+        check("确认弹窗 hint 渲染（终检 #4）") {
+            var permanent = false
+            let sheet = CleanConfirmSheet(count: 3, size: 1024, hasPermanent: false,
+                                          hasDanger: false, permanent: .init(get: { permanent }, set: { permanent = $0 }),
+                                          hint: "含隐藏已选 2 项") { _ in }
+            _ = try sheet.inspect().find(text: "将清理 3 项，共 1.0 KB（含隐藏已选 2 项）")
             return true
         }
         check("分类详情空态与清理按钮禁用") {
@@ -228,6 +268,31 @@ enum Selftest {
             st.askAbout(item: item)
             return st.context != nil && st.context?.title == "CacheApp" && st.messages.count == 1
         }
+        check("AI：提问确实发起请求（HIGH#2 回归）") {
+            // 首轮审查 bug：ask/问列表/问全部只追加消息、从不调 performRequest（isLoading 恒 false）
+            // 修复后：sendPendingUserMessage 应把 isLoading 置 true（自检 networkDisabled 下请求被短路）
+            let st = AIState()
+            let item = CleanItem(name: "RegCache", path: "/private/tmp/regcache", size: 10,
+                                 risk: .safe, category: .userCaches)
+            st.askAbout(item: item)
+            guard st.isLoading else { return false }
+            // 等请求错误返回后 isLoading 复位（networkDisabled → 立即抛错）
+            let deadline = Date().addingTimeInterval(2)
+            while st.isLoading && Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            return !st.isLoading && st.lastError != nil
+        }
+        check("AI：sendPendingUserMessage 不重复发（防抖）") {
+            let st = AIState()
+            let item = CleanItem(name: "DupCache", path: "/private/tmp/dup", size: 10,
+                                 risk: .safe, category: .userCaches)
+            st.askAbout(item: item)
+            let msgCount = st.messages.count
+            // isLoading 期间再次 ask → 应被 guard 拦截，不追加消息
+            st.askAbout(item: item)
+            return st.messages.count == msgCount
+        }
         check("AI：列表上下文 Top 50 截断与渲染") {
             let app = AppState()
             let st = app.state(for: .userCaches)
@@ -279,6 +344,126 @@ enum Selftest {
             // 切换目标页 → 上下文作废（Q7 切换即换）
             app.destination = .history
             return app.ai.context == nil
+        }
+
+        // MARK: - v1.6 全局检索 / 概览 / 扫描增强
+
+        check("GlobalSearch：按名称与路径匹配") {
+            let items = [
+                CleanItem(name: "ChromeCache", path: "/tmp/chrome", size: 10,
+                          risk: .safe, category: .userCaches),
+                CleanItem(name: "WeChat", path: "/tmp/wechat", size: 20,
+                          risk: .review, category: .appResidue),
+            ]
+            let byName = GlobalSearch.search(query: "chrome", items: items, history: [])
+            let byPath = GlobalSearch.search(query: "wechat", items: items, history: [])
+            return byName.count == 1 && byName[0].name == "ChromeCache"
+                && byPath.count == 1 && byPath[0].kind == .item(.appResidue)
+        }
+        check("GlobalSearch：大小写不敏感与去空白") {
+            let items = [CleanItem(name: "DeepSeekData", path: "/tmp/ds", size: 1,
+                                   risk: .safe, category: .browserAndSystem)]
+            let r = GlobalSearch.search(query: "  deepseek  ", items: items, history: [])
+            return r.count == 1
+        }
+        check("GlobalSearch：空查询与上限 200") {
+            guard GlobalSearch.search(query: "  ", items: [], history: []).isEmpty else { return false }
+            let items = (0..<300).map { CleanItem(name: "Hit\($0)", path: "/tmp/hit", size: Int64($0),
+                                                  risk: .safe, category: .userCaches) }
+            return GlobalSearch.search(query: "Hit", items: items, history: []).count == 200
+        }
+        check("GlobalSearch：历史分类名检索") {
+            let record = CleanRecord(categoryName: "开发残留", itemCount: 3, bytes: 999,
+                                     mode: "废纸篓", failures: 0)
+            let r = GlobalSearch.search(query: "开发", items: [], history: [record])
+            guard r.count == 1, case .history = r[0].kind else { return false }
+            return r[0].name == "开发残留"
+        }
+        check("AppState 聚合统计（scanned/total/risk）") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            st.items = [
+                CleanItem(name: "A", path: "/tmp/a", size: 100, risk: .safe, category: .userCaches),
+                CleanItem(name: "B", path: "/tmp/b", size: 50, risk: .review, category: .userCaches),
+            ]
+            guard app.scannedCount == 1, app.totalCleanable == 150 else { return false }
+            let risks = app.riskTotals
+            return risks[.safe] == 100 && risks[.review] == 50
+        }
+        check("Dashboard：清理按钮默认禁用、全选后可点") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            st.items = [CleanItem(name: "TestCache", path: "/private/tmp/macclean-dash",
+                                  size: 1024, risk: .safe, category: .userCaches)]
+            let view = DashboardView().environmentObject(app)
+            guard try button("dashboardCleanButton", in: view).isDisabled() else { return false }
+            st.setSelected(st.items[0].id, true)
+            return try !button("dashboardCleanButton", in: view).isDisabled()
+        }
+        check("SearchView：结果行渲染与跳转") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            st.items = [CleanItem(name: "UniqueCache", path: "/tmp/uc", size: 10,
+                                  risk: .safe, category: .userCaches)]
+            // 渲染一个结果行
+            let result = SearchResult.from(item: st.items[0])
+            let row = SearchResultRow(result: result, onOpen: { app.destination = .category(.userCaches) })
+            _ = try row.inspect().find(text: "UniqueCache")
+            row.onOpen()
+            return app.destination == .category(.userCaches)
+        }
+        check("L5 旋转日志规则：不匹配普通日志") {
+            // 正则会匹配 *.log.N / *.N.log / *.gz；普通 .log 不应误判
+            let good = "System.log"
+            let rotated1 = "System.log.3"
+            let rotated2 = "System.2.log"
+            let gz = "archive.log.gz"
+            let bad = "README.md"
+            return !Scanner.isRotatedLogName(good) && Scanner.isRotatedLogName(rotated1)
+                && Scanner.isRotatedLogName(rotated2) && Scanner.isRotatedLogName(gz) && !Scanner.isRotatedLogName(bad)
+        }
+        check("N5 卸载器：短 vendor 目录不再误配他 App") {
+            // 卸载 "Google Chrome" 不应把 "Google"（可能含 Drive/Earth 数据）整体列为关联文件
+            let chrome = InstalledApp(name: "Google Chrome", path: "/Applications/Google Chrome.app",
+                                      bundleID: "com.google.Chrome", size: 0)
+            let files = UninstallerScanner.relatedFiles(for: chrome)
+            return !files.contains { $0.path == NSHomeDirectory() + "/Library/Application Support/Google" }
+        }
+        check("N1 大文件去重：T2/T3 同路径不重复") {
+            // 直接验证 Cleaner 对"路径已不存在"的 item 计成功但不计字节（N4/N1 联动）
+            let dir = "/private/tmp/macclean-n1-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try Data("hello".utf8).write(to: URL(fileURLWithPath: dir + "/f.txt"))
+            let item = CleanItem(name: "gone", path: dir, size: 100, risk: .review,
+                                 category: .largeFiles)
+            let r1 = Cleaner.clean([item], permanently: true) { _ in }
+            guard r1.succeeded == 1, r1.releasedBytes > 0 else { return false }
+            // 路径已不存在：再次清理 → 成功（跳过）但不计字节
+            let r2 = Cleaner.clean([item], permanently: true) { _ in }
+            return r2.succeeded == 1 && r2.releasedBytes == 0 && r2.failures.isEmpty
+        }
+        check("cleanSelected：失败项保留、新勾选保留、成功项移除") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            let okItem = CleanItem(name: "OK", path: "/private/tmp/macclean-ok-\(UUID().uuidString)",
+                                   size: 10, risk: .safe, category: .userCaches)
+            let badItem = CleanItem(name: "Bad", path: "/System/Library/Denied",
+                                    size: 20, risk: .safe, category: .userCaches)
+            try FileManager.default.createDirectory(atPath: okItem.path, withIntermediateDirectories: true)
+            st.items = [okItem, badItem]
+            st.setAllSelected(true)
+            app.cleanSelected(in: .userCaches, permanently: true)
+            // 等后台清理完成
+            let deadline = Date().addingTimeInterval(3)
+            while app.isCleaning && Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            // 成功项（okItem）被移除；失败项（badItem）保留且取消勾选
+            return !st.items.contains { $0.id == okItem.id }
+                && st.items.contains { $0.id == badItem.id && !$0.isSelected }
         }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
