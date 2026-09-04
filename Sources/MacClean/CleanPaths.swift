@@ -63,11 +63,15 @@ enum CleanPaths {
     static let trash = "~/.Trash"
     static let downloads = "~/Downloads"
     static let bigFileRoots = ["~/Downloads", "~/Documents", "~/Desktop", "~/Movies"]
+    static let mobileSync = "~/Library/Application Support/MobileSync"
+    static let homebrewCellar = "/opt/homebrew/Cellar"   // Apple Silicon
+    static let homebrewCellarIntel = "/usr/local/Cellar"  // Intel
 
     // MARK: 6. 浏览器与系统数据 B1–B3
     static let safariLocalStorage = "~/Library/Safari/LocalStorage"
     static let safariWebsiteData = "~/Library/Safari/WebsiteData"
     static let safariContainerCaches = "~/Library/Containers/com.apple.Safari/Data/Library/Caches"
+    static let safariContainerStorages = "~/Library/Containers/com.apple.Safari/Data/Library/WebKit/WebsiteData"
     static let chromiumCaches = [
         ("Google Chrome", "~/Library/Application Support/Google/Chrome"),
         ("Microsoft Edge", "~/Library/Application Support/Microsoft Edge"),
@@ -77,10 +81,12 @@ enum CleanPaths {
     ]
 
     // MARK: 运行中应用排除（G5）
-    static let runningBundleIDs: Set<String> = {
+    // OBS-2（终验）：改实时计算——每次访问取当前运行态，避免进程级静态快照过期
+    // 导致运行中新启动的 Xcode/模拟器/浏览器缓存被列出
+    static var runningBundleIDs: Set<String> {
         let apps = NSWorkspace.shared.runningApplications
         return Set(apps.compactMap { $0.bundleIdentifier })
-    }()
+    }
 
     /// 展开 ~ 前缀
     static func expand(_ p: String) -> String {

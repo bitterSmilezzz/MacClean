@@ -45,7 +45,17 @@ struct AIConfig: Codable, Equatable {
     }
 
     static func loadAPIKey() -> String? {
-        // 1) 文件优先
+        // 1) 文件优先（MED#4：校验 0600 权限，宽松权限的 key 文件拒绝读取）
+        if keyFileURLOverride == nil, let attrs = try? FileManager.default.attributesOfItem(atPath: effectiveKeyFileURL.path),
+           let perms = attrs[.posixPermissions] as? NSNumber, perms.intValue != 0o600 {
+            // 权限不符：尝试纠正后仍不符则视为不可信，走迁移/回退
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: effectiveKeyFileURL.path)
+            if let perms2 = try? FileManager.default.attributesOfItem(atPath: effectiveKeyFileURL.path)[.posixPermissions] as? NSNumber,
+               perms2.intValue != 0o600 {
+                return nil
+            }
+        }
         if let s = try? String(contentsOf: effectiveKeyFileURL, encoding: .utf8),
            !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return s.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -69,9 +79,17 @@ struct AIConfig: Codable, Equatable {
     static func saveAPIKey(_ key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        try? trimmed.write(to: effectiveKeyFileURL, atomically: true, encoding: .utf8)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                               ofItemAtPath: effectiveKeyFileURL.path)
+        // LOW-MED：先写临时文件并设 0600，再原子替换——避免"先 0644 后改权限"的窗口期
+        let url = effectiveKeyFileURL
+        let tmp = url.appendingPathExtension("tmp")
+        try? FileManager.default.removeItem(at: tmp)
+        do {
+            try trimmed.write(to: tmp, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        } catch {
+            try? FileManager.default.removeItem(at: tmp)
+        }
         // 异步清理旧钥匙串条目（避免潜在 ACL 阻塞）
         DispatchQueue.global().async { Self.keychainDelete() }
     }
@@ -152,6 +170,9 @@ struct AskContext: Equatable {
 // MARK: - AI 服务（OpenAI 兼容 chat/completions）
 
 enum AIService {
+    /// 自检模式禁用真实网络（AI 提问链路只验证状态机，不实际发请求）
+    static var networkDisabled = false
+
     enum AIError: LocalizedError {
         case notConfigured
         case badResponse
@@ -193,6 +214,10 @@ enum AIService {
 
     /// 发送对话，返回助手回复
     static func send(messages: [ChatMessage], context: AskContext?) async throws -> String {
+        // MED#7：自检模式禁用真实网络（状态机仍走通，请求被短路）
+        if networkDisabled {
+            throw AIError.network("自检模式：网络请求已禁用")
+        }
         let config = AIConfig.load()
         guard config.enabled, let apiKey = AIConfig.loadAPIKey(), !apiKey.isEmpty else {
             throw AIError.notConfigured

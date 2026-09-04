@@ -64,11 +64,11 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
     var ruleRef: String {
         switch self {
         case .userCaches: return "C1–C6"
-        case .logsAndTemp: return "L1–L4"
-        case .devResidue: return "D1–D11"
+        case .logsAndTemp: return "L1–L5"
+        case .devResidue: return "D1–D12"
         case .appResidue: return "A1–A4"
-        case .largeFiles: return "T1–T4"
-        case .browserAndSystem: return "B1–B3"
+        case .largeFiles: return "T1–T5"
+        case .browserAndSystem: return "B1–B4"
         }
     }
 }

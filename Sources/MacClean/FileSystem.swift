@@ -23,8 +23,11 @@ enum FileSystem {
         var count = 0
         for case let fileURL as URL in enumerator {
             count += 1
-            if count % 512 == 0 { autoreleasepool {} }
-            guard let values = try? fileURL.resourceValues(forKeys: Set(keys)) else { continue }
+            // N10：autoreleasepool 应包住资源读取，而非空调用
+            let values = autoreleasepool { () -> URLResourceValues? in
+                try? fileURL.resourceValues(forKeys: Set(keys))
+            }
+            guard let values else { continue }
             if values.isSymbolicLink == true { continue }
             if values.isRegularFile == true {
                 total += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
@@ -69,6 +72,27 @@ enum FileSystem {
         let expanded = CleanPaths.expand(path)
         // 绝对禁止删除用户主目录本身
         guard expanded != home, expanded != "/" else { return false }
+
+        // 特殊放行：Homebrew Cellar 具体版本目录（Cellar/<formula>/<version>，至少三层）
+        // D12 规则专用——只允许删除某个 formula 的某个具体版本，不允许整 Cellar 或整 formula
+        // 先归一化路径（解析 ./ 与 ../ 段），防止 "../.." 穿越绕过护栏
+        let normalized = (expanded as NSString).standardizingPath
+        for cellar in [CleanPaths.homebrewCellar, CleanPaths.homebrewCellarIntel] {
+            let cellarPath = (CleanPaths.expand(cellar) as NSString).standardizingPath
+            let prefix = cellarPath + "/"
+            guard normalized.hasPrefix(prefix) else { continue }
+            let rel = normalized.dropFirst(prefix.count)
+            let parts = rel.split(separator: "/")
+            // 需要 formula 名 + 版本号（≥2 段，且版本段以数字/v 开头防误删目录）
+            if parts.count >= 2, !parts[0].isEmpty, parts[0].first != "." {
+                let version = parts[1]
+                if version.first?.isNumber == true || version.hasPrefix("v") {
+                    return true
+                }
+            }
+            return false
+        }
+
         // 只允许操作主目录内 或 /private/tmp /private/var/tmp
         let allowedRoots = [home, "/private/tmp", "/private/var/tmp"]
         guard allowedRoots.contains(where: { expanded == $0 || expanded.hasPrefix($0 + "/") }) else { return false }

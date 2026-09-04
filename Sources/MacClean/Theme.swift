@@ -31,7 +31,8 @@ enum Theme {
     static let ink = Color(hex: 0x1d1d1f)
     static let bodyMuted = Color(hex: 0xcccccc)
     static let inkMuted80 = Color(hex: 0x333333)
-    static let inkMuted48 = Color(hex: 0x7a7a7a)
+    // M7（WCAG AA）：#7a7a7a 白底仅 4.3:1 → 加深至 #6f6f6f（≈4.6:1）
+    static let inkMuted48 = Color(hex: 0x6f6f6f)
 
     // Hairlines
     static let dividerSoft = Color(hex: 0xf0f0f0)
@@ -40,6 +41,9 @@ enum Theme {
     // Risk accents (system red/orange for danger semantics)
     static let dangerRed = Color(hex: 0xff3b30)
     static let warningOrange = Color(hex: 0xff9500)
+    // M7：风险色用于文字时用深色变体（#ff3b30 白底 3.5:1 / #ff9500 2.2:1 均不达标）
+    static let textDanger = Color(hex: 0xd70015)      // ≈5.9:1
+    static let textWarning = Color(hex: 0xb25000)     // ≈4.6:1
 
     // Typography helpers
     static func displayFont(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {

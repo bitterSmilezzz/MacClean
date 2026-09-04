@@ -86,20 +86,10 @@ struct ContentView: View {
         } detail: {
             ZStack(alignment: .trailing) {
                 // 主内容（抽屉收起时占满全部宽度）
-                switch app.destination {
-                case .category(let cat):
-                    CategoryDetailView(category: cat)
-                case .uninstaller:
-                    UninstallerView()
-                case .history:
-                    HistoryView()
-                case nil:
-                    Text("选择一个功能开始")
-                        .font(Theme.bodyFont(17))
-                        .foregroundColor(Theme.inkMuted48)
-                }
+                mainContent
 
                 // AI 抽屉：覆盖在右侧，不挤占内容宽度（深度优化 d1）
+                // M8：抽屉展开时主内容加右侧留白，避免遮住右侧主操作（清理/搜索框）
                 if app.ai.isDrawerOpen {
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
@@ -110,8 +100,29 @@ struct ContentView: View {
                     .zIndex(10)
                 }
             }
+            .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
         }
         .background(Theme.parchment)
         .onAppear { app.refreshDisk() }
+    }
+
+    private var mainContent: some View {
+        Group {
+            switch app.destination {
+            case .dashboard:
+                DashboardView()
+            case .category(let cat):
+                // M4：.id(cat) 强制分类切换时重建视图，避免 filterQuery 等 @State 残留
+                CategoryDetailView(category: cat).id(cat)
+            case .uninstaller:
+                UninstallerView()
+            case .history:
+                HistoryView()
+            case .search:
+                SearchView()
+            }
+        }
+        .padding(.trailing, app.ai.isDrawerOpen ? 344 : 0)
+        .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
     }
 }

@@ -117,7 +117,7 @@ struct HistoryRow: View {
                         .foregroundColor(Theme.ink)
                     Text(record.mode)
                         .font(Theme.bodyFont(12, weight: .medium))
-                        .foregroundColor(record.mode == "彻底删除" ? Theme.dangerRed : Theme.actionBlue)
+                        .foregroundColor(record.mode == "彻底删除" ? Theme.textDanger : Theme.actionBlue)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
                         .background(Capsule().fill((record.mode == "彻底删除" ? Theme.dangerRed : Theme.actionBlue).opacity(0.1)))

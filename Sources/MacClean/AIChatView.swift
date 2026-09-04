@@ -4,6 +4,17 @@ import SwiftUI
 struct AIChatView: View {
     @EnvironmentObject private var app: AppState
 
+    /// 是否处于分类页（「问当前列表」的前置条件）
+    private var isOnCategoryPage: Bool {
+        if case .category = app.destination { return true }
+        return false
+    }
+
+    /// 是否已有任一分类完成扫描（「问全部」的前置条件）
+    private var hasAnyScanned: Bool {
+        app.categories.contains { $0.isScanned && !$0.items.isEmpty }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -21,7 +32,8 @@ struct AIChatView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(Theme.actionBlue)
-                .disabled(app.ai.isLoading)
+                .disabled(app.ai.isLoading || !isOnCategoryPage)
+                .help(isOnCategoryPage ? "分析当前分类扫描结果" : "请先进入一个分类")
 
                 Button {
                     app.ai.askAboutAll()
@@ -33,7 +45,8 @@ struct AIChatView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .tint(Theme.actionBlue)
-                .disabled(app.ai.isLoading)
+                .disabled(app.ai.isLoading || !hasAnyScanned)
+                .help(hasAnyScanned ? "分析全部已扫描分类" : "请先扫描至少一个分类")
 
                 Spacer()
             }
@@ -80,6 +93,7 @@ struct AIChatView: View {
                 }
                 .buttonStyle(.borderless)
                 .foregroundColor(Theme.inkMuted48)
+                .accessibilityLabel("清空对话")
                 .help("清空对话")
             }
 
@@ -92,6 +106,7 @@ struct AIChatView: View {
             }
             .buttonStyle(.borderless)
             .foregroundColor(Theme.inkMuted48)
+            .accessibilityLabel("AI 设置")
             .help("AI 设置")
 
             // 关闭抽屉（d1 抽屉式）
@@ -103,6 +118,7 @@ struct AIChatView: View {
             }
             .buttonStyle(.borderless)
             .foregroundColor(Theme.inkMuted48)
+            .accessibilityLabel("收起 AI 面板")
             .help("收起 AI 面板")
             .accessibilityIdentifier("aiCloseDrawer")
         }
@@ -147,7 +163,7 @@ struct AIChatView: View {
                     if !ctx.inUseBy.isEmpty {
                         Text("占用中：\(ctx.inUseBy.joined(separator: "、"))")
                             .font(Theme.bodyFont(13, weight: .medium))
-                            .foregroundColor(Theme.warningOrange)
+                            .foregroundColor(Theme.textWarning)
                             .lineLimit(1)
                     }
                 }
@@ -170,6 +186,15 @@ struct AIChatView: View {
     private var emptyState: some View {
         VStack(spacing: Theme.spaceSm) {
             Spacer()
+            // MED#3：空态也渲染 lastError（如「当前不在分类页面」），避免静默
+            if let err = app.ai.lastError {
+                Text(err)
+                    .font(Theme.bodyFont(13, weight: .medium))
+                    .foregroundColor(Theme.textDanger)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Theme.dangerRed.opacity(0.08)))
+            }
             Image(systemName: "sparkles")
                 .font(.system(size: 30, weight: .light))
                 .foregroundColor(Theme.actionBlue.opacity(0.5))
@@ -229,7 +254,7 @@ struct AIChatView: View {
                         HStack(spacing: 6) {
                             Text(err)
                                 .font(Theme.bodyFont(13))
-                                .foregroundColor(Theme.dangerRed)
+                                .foregroundColor(Theme.textDanger)
                             Button {
                                 app.ai.retry()
                             } label: {
@@ -388,7 +413,7 @@ struct AISettingsView: View {
                         .foregroundColor(result.ok ? Theme.actionBlue : Theme.dangerRed)
                     Text(result.message)
                         .font(Theme.bodyFont(13))
-                        .foregroundColor(result.ok ? Theme.inkMuted80 : Theme.dangerRed)
+                        .foregroundColor(result.ok ? Theme.inkMuted80 : Theme.textDanger)
                         .lineLimit(2)
                 }
                 .padding(.horizontal, Theme.spaceSm)
@@ -440,7 +465,11 @@ struct AISettingsView: View {
             let cfg = AIConfig.load()
             baseURL = cfg.baseURL
             model = cfg.model
-            apiKey = AIConfig.loadAPIKey() ?? ""
+            // MED#5：钥匙串迁移路径可能阻塞 3s——后台读取后回主线程填充
+            DispatchQueue.global(qos: .userInitiated).async {
+                let key = AIConfig.loadAPIKey() ?? ""
+                DispatchQueue.main.async { apiKey = key }
+            }
         }
     }
 

@@ -59,6 +59,7 @@ final class AIState: ObservableObject {
 
     /// 「问当前列表」：当前分类扫描结果打包（Top 50，按大小降序）
     func askAboutCurrentList() {
+        guard !isLoading else { return }
         guard let app, case .category(let cat) = app.destination else {
             lastError = "当前不在分类页面"
             return
@@ -71,10 +72,13 @@ final class AIState: ObservableObject {
         attachList(items: st.items, summary: "\(cat.title) · 共 \(st.items.count) 项",
                    total: st.items.count, limit: 50,
                    prompt: "请分析左侧当前分类列表（上下文已给出），按表格清单逐项判断哪些可以删除、哪些谨慎、哪些不建议删。")
+        openDrawer()
+        sendPendingUserMessage()
     }
 
     /// 「问全部」：6 个分类各取 Top 20 打包
     func askAboutAll() {
+        guard !isLoading else { return }
         guard let app else { return }
         var all: [AskListItem] = []
         var summaryParts: [String] = []
@@ -105,7 +109,7 @@ final class AIState: ObservableObject {
         let prompt = "请分析所有分类的清理候选项（上下文已给出），按表格清单逐项判断哪些可以删除、哪些谨慎、哪些不建议删，并给出总体建议。"
         messages.append(ChatMessage(role: .user, content: prompt))
         lastError = nil
-        send()
+        sendPendingUserMessage()
     }
 
     /// 首条自动携带：输入框直接提问时若无可问上下文，自动附带当前分类列表（grill Q4/Q5）
@@ -139,6 +143,7 @@ final class AIState: ObservableObject {
     }
 
     private func ask(context: AskContext) {
+        guard !isLoading else { return }
         var ctx = context
         // 本地占用检测（lsof，只读）
         ctx.inUseBy = AIService.detectProcesses(using: ctx.path)
@@ -147,10 +152,10 @@ final class AIState: ObservableObject {
         messages.append(ChatMessage(role: .user, content: prompt))
         lastError = nil
         openDrawer()
-        send()
+        sendPendingUserMessage()
     }
 
-    /// 发送当前 draft（或自动提问后的首条），调用 AI
+    /// 发送当前 draft（仅限用户手动输入路径；ask*/自动携带路径走 sendPendingUserMessage）
     func send() {
         // 首条自动携带列表上下文（仅当尚无上下文时）
         if context == nil { autoAttachContextIfNeeded() }
@@ -162,20 +167,33 @@ final class AIState: ObservableObject {
         performRequest()
     }
 
+    /// 发送刚追加的用户消息（ask / askAboutAll / askAboutCurrentList 路径专用）
+    /// 修复：提问只加消息不发请求（首轮 HIGH #2）+ 空 draft 手动 Enter 不误触发（二轮 #1）
+    private func sendPendingUserMessage() {
+        guard !isLoading, messages.last?.role == .user else { return }
+        lastError = nil
+        performRequest()
+    }
+
+    private var requestTask: Task<Void, Never>?   // 终检 MED-1：持有在途请求句柄，clear 可取消
+
     private func performRequest() {
         isLoading = true
         let history = messages
         let ctx = context
-        Task {
+        requestTask?.cancel()
+        requestTask = Task {
             do {
                 let reply = try await AIService.send(messages: history, context: ctx)
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }   // clear() 取消后丢弃旧回复
                     messages.append(ChatMessage(role: .assistant, content: reply))
                     isLoading = false
                     scheduleAutoCollapse()
                 }
             } catch {
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     lastError = error.localizedDescription
                     isLoading = false
                 }
@@ -187,8 +205,8 @@ final class AIState: ObservableObject {
     private func scheduleAutoCollapse() {
         guard isDrawerOpen else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-            // 若期间用户又发了新消息（isLoading），则不收起
-            guard let self, !self.isLoading else { return }
+            // 若期间用户又发了新消息（isLoading）或正开着设置弹窗，则不收起（三巡）
+            guard let self, !self.isLoading, !self.showSettings else { return }
             withAnimation(.easeOut(duration: 0.25)) { self.isDrawerOpen = false }
         }
     }
@@ -212,10 +230,14 @@ final class AIState: ObservableObject {
     }
 
     func clear() {
+        // 终检 MED-1：取消在途请求，防止旧回复污染新会话
+        requestTask?.cancel()
+        requestTask = nil
         messages = []
         context = nil
         lastError = nil
         draft = ""
+        isLoading = false
     }
 
     /// Q7 切换即换：仅作废旧上下文（保留对话消息，便于回溯）
