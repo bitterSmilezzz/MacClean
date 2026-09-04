@@ -34,7 +34,7 @@ struct MacCleanApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(app)
-                .frame(minWidth: 900, minHeight: 580)
+                .frame(minWidth: 1000, minHeight: 640)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
@@ -48,7 +48,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             NavigationSplitView {
                 SidebarView()
-                    .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 300)
             } detail: {
                 switch app.destination {
                 case .category(let cat):

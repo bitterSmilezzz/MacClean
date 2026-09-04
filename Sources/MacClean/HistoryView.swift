@@ -134,7 +134,7 @@ struct HistoryRow: View {
                 .monospacedDigit()
         }
         .padding(.horizontal, Theme.spaceMd)
-        .padding(.vertical, 10)
+        .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)

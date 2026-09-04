@@ -119,7 +119,7 @@ struct UninstallerView: View {
                     .font(Theme.bodyFont(12))
             }
             .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, 8)
+            .padding(.vertical, Theme.spaceXs)
             .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.canvas))
             .overlay(RoundedRectangle(cornerRadius: Theme.radiusMd).stroke(Theme.hairline, lineWidth: 1))
             .padding(.horizontal, Theme.contentPadding)
@@ -127,7 +127,7 @@ struct UninstallerView: View {
             .padding(.bottom, Theme.spaceSm)
 
             ScrollView {
-                VStack(spacing: 6) {
+                VStack(spacing: Theme.spaceSm) {
                     ForEach(filteredApps) { app in
                         AppRow(app: app, isSelected: uninstaller.selectedApp == app)
                             .contentShape(Rectangle())
@@ -138,7 +138,7 @@ struct UninstallerView: View {
                 .padding(.bottom, Theme.contentPadding)
             }
         }
-        .frame(width: 260)
+        .frame(width: 280)
         .background(Theme.parchment)
     }
 
@@ -247,10 +247,10 @@ struct UninstallerView: View {
                     .foregroundColor(Theme.inkMuted48)
             }
             .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, 6)
+            .padding(.vertical, Theme.spaceXs)
 
             ScrollView {
-                LazyVStack(spacing: 6) {
+                LazyVStack(spacing: Theme.spaceSm) {
                     ForEach(Array(uninstaller.related.enumerated()), id: \.element.id) { _, file in
                         RelatedFileRow(file: file)
                             .contentShape(Rectangle())
@@ -345,7 +345,7 @@ struct AppRow: View {
             }
         }
         .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, 6)
+        .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(isSelected ? Theme.actionBlue.opacity(0.08) : Theme.canvas)
@@ -414,7 +414,7 @@ struct RelatedFileRow: View {
             .help("问 AI：这个残留是什么？能删吗？")
         }
         .padding(.horizontal, Theme.spaceMd)
-        .padding(.vertical, 8)
+        .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)

@@ -15,7 +15,7 @@ struct AIChatView: View {
                     app.ai.askAboutCurrentList()
                 } label: {
                     Label("问当前列表", systemImage: "list.bullet")
-                        .font(Theme.bodyFont(11, weight: .medium))
+                        .font(Theme.bodyFont(13, weight: .medium))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -26,7 +26,7 @@ struct AIChatView: View {
                     app.ai.askAboutAll()
                 } label: {
                     Label("问全部", systemImage: "square.grid.2x2")
-                        .font(Theme.bodyFont(11, weight: .medium))
+                        .font(Theme.bodyFont(13, weight: .medium))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -48,7 +48,7 @@ struct AIChatView: View {
             Divider().overlay(Theme.hairline)
             inputBar
         }
-        .frame(width: 300)
+        .frame(width: 340)
         .background(Theme.canvas)
         .sheet(isPresented: $app.ai.showSettings) {
             AISettingsView()
@@ -74,7 +74,7 @@ struct AIChatView: View {
                     app.ai.clear()
                 } label: {
                     Image(systemName: "trash")
-                        .font(.system(size: 11))
+                        .font(.system(size: 13))
                 }
                 .buttonStyle(.borderless)
                 .foregroundColor(Theme.inkMuted48)
@@ -86,7 +86,7 @@ struct AIChatView: View {
                 app.ai.showSettings = true
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
             }
             .buttonStyle(.borderless)
             .foregroundColor(Theme.inkMuted48)
@@ -106,7 +106,7 @@ struct AIChatView: View {
                     .font(.system(size: 10))
                     .foregroundColor(Theme.actionBlue)
                 Text("当前询问目标")
-                    .font(Theme.bodyFont(10, weight: .semibold))
+                    .font(Theme.bodyFont(13, weight: .semibold))
                     .foregroundColor(Theme.inkMuted48)
                 Spacer()
             }
@@ -114,32 +114,32 @@ struct AIChatView: View {
                 if ctx.isListMode {
                     // 列表模式：显示汇总与截断信息
                     Text(ctx.listSummary)
-                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .font(Theme.bodyFont(13, weight: .semibold))
                         .foregroundColor(Theme.ink)
                         .lineLimit(1)
                     Text("列出最大 \(ctx.listItems.count) 项" + (ctx.listItems.count < ctx.listTotal ? " · 其余 \(ctx.listTotal - ctx.listItems.count) 项未列出" : ""))
-                        .font(Theme.bodyFont(10))
+                        .font(Theme.bodyFont(13))
                         .foregroundColor(Theme.inkMuted48)
                         .lineLimit(1)
                 } else {
                     Text(ctx.title)
-                        .font(Theme.bodyFont(12, weight: .semibold))
+                        .font(Theme.bodyFont(13, weight: .semibold))
                         .foregroundColor(Theme.ink)
                         .lineLimit(1)
                     Text("\(ctx.category) · \(ctx.sizeString) · 风险 \(ctx.risk)")
-                        .font(Theme.bodyFont(10))
+                        .font(Theme.bodyFont(13))
                         .foregroundColor(Theme.inkMuted48)
                         .lineLimit(1)
                     if !ctx.inUseBy.isEmpty {
                         Text("占用中：\(ctx.inUseBy.joined(separator: "、"))")
-                            .font(Theme.bodyFont(10, weight: .medium))
+                            .font(Theme.bodyFont(13, weight: .medium))
                             .foregroundColor(Theme.warningOrange)
                             .lineLimit(1)
                     }
                 }
             } else {
                 Text("点「问当前列表/问全部」或列表项旁的 ✨ 提问")
-                    .font(Theme.bodyFont(11))
+                    .font(Theme.bodyFont(13))
                     .foregroundColor(Theme.inkMuted48)
             }
         }
@@ -164,20 +164,20 @@ struct AIChatView: View {
                 .foregroundColor(Theme.ink)
             if AIConfig.load().enabled {
                 Text("点击列表项旁的 ✨ 按钮\n让 AI 判断用途、是否可删、是否在用")
-                    .font(Theme.bodyFont(11))
+                    .font(Theme.bodyFont(13))
                     .foregroundColor(Theme.inkMuted48)
                     .multilineTextAlignment(.center)
             } else {
                 // P3 首启引导：未配置 AI 时给明确入口
                 Text("首次使用：先配置 AI 接口\n（默认已填 opencode go 网关，只需粘贴 Key）")
-                    .font(Theme.bodyFont(11))
+                    .font(Theme.bodyFont(13))
                     .foregroundColor(Theme.inkMuted48)
                     .multilineTextAlignment(.center)
                 Button {
                     app.ai.showSettings = true
                 } label: {
                     Label("去配置 AI 接口", systemImage: "gearshape")
-                        .font(Theme.bodyFont(12, weight: .medium))
+                        .font(Theme.bodyFont(13, weight: .medium))
                         .foregroundColor(.white)
                         .padding(.vertical, 8)
                         .padding(.horizontal, 18)
@@ -205,7 +205,7 @@ struct AIChatView: View {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small).tint(Theme.actionBlue)
                             Text("AI 思考中…")
-                                .font(Theme.bodyFont(11))
+                                .font(Theme.bodyFont(13))
                                 .foregroundColor(Theme.inkMuted48)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -214,13 +214,13 @@ struct AIChatView: View {
                     if let err = app.ai.lastError {
                         HStack(spacing: 6) {
                             Text(err)
-                                .font(Theme.bodyFont(11))
+                                .font(Theme.bodyFont(13))
                                 .foregroundColor(Theme.dangerRed)
                             Button {
                                 app.ai.retry()
                             } label: {
                                 Label("重试", systemImage: "arrow.clockwise")
-                                    .font(Theme.bodyFont(11, weight: .medium))
+                                    .font(Theme.bodyFont(13, weight: .medium))
                             }
                             .buttonStyle(.borderless)
                             .foregroundColor(Theme.actionBlue)
@@ -249,7 +249,7 @@ struct AIChatView: View {
         HStack(spacing: 6) {
             TextField("补充问题…（Enter 发送）", text: $app.ai.draft, axis: .vertical)
                 .textFieldStyle(.plain)
-                .font(Theme.bodyFont(12))
+                .font(Theme.bodyFont(13))
                 .lineLimit(1...4)
                 .onSubmit { app.ai.send() }
 
@@ -284,7 +284,7 @@ struct MessageBubble: View {
         HStack {
             if message.role == .user { Spacer(minLength: 30) }
             Text(message.content)
-                .font(Theme.bodyFont(12))
+                .font(Theme.bodyFont(13))
                 .foregroundColor(message.role == .user ? .white : Theme.ink)
                 .textSelection(.enabled)
                 .padding(.horizontal, Theme.spaceSm)
@@ -324,21 +324,21 @@ struct AISettingsView: View {
                 .foregroundColor(Theme.ink)
 
             Text("OpenAI 兼容接口。API Key 存入系统钥匙串，不写入代码、日志或任何文件。")
-                .font(Theme.bodyFont(12))
+                .font(Theme.bodyFont(13))
                 .foregroundColor(Theme.inkMuted48)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Base URL")
-                    .font(Theme.bodyFont(12, weight: .semibold))
+                    .font(Theme.bodyFont(13, weight: .semibold))
                     .foregroundColor(Theme.inkMuted80)
                 TextField("https://api.deepseek.com", text: $baseURL)
                     .textFieldStyle(.roundedBorder)
-                    .font(Theme.bodyFont(12))
+                    .font(Theme.bodyFont(13))
             }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("API Key")
-                    .font(Theme.bodyFont(12, weight: .semibold))
+                    .font(Theme.bodyFont(13, weight: .semibold))
                     .foregroundColor(Theme.inkMuted80)
                 HStack {
                     Group {
@@ -349,12 +349,12 @@ struct AISettingsView: View {
                         }
                     }
                     .textFieldStyle(.roundedBorder)
-                    .font(Theme.bodyFont(12))
+                    .font(Theme.bodyFont(13))
                     Button {
                         showKey.toggle()
                     } label: {
                         Image(systemName: showKey ? "eye.slash" : "eye")
-                            .font(.system(size: 12))
+                            .font(.system(size: 13))
                     }
                     .buttonStyle(.borderless)
                     .foregroundColor(Theme.inkMuted48)
@@ -363,11 +363,11 @@ struct AISettingsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("模型")
-                    .font(Theme.bodyFont(12, weight: .semibold))
+                    .font(Theme.bodyFont(13, weight: .semibold))
                     .foregroundColor(Theme.inkMuted80)
                 TextField("deepseek-chat", text: $model)
                     .textFieldStyle(.roundedBorder)
-                    .font(Theme.bodyFont(12))
+                    .font(Theme.bodyFont(13))
             }
 
             // 连通性测试
@@ -376,7 +376,7 @@ struct AISettingsView: View {
                     Image(systemName: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundColor(result.ok ? Theme.actionBlue : Theme.dangerRed)
                     Text(result.message)
-                        .font(Theme.bodyFont(11))
+                        .font(Theme.bodyFont(13))
                         .foregroundColor(result.ok ? Theme.inkMuted80 : Theme.dangerRed)
                         .lineLimit(2)
                 }
@@ -391,7 +391,7 @@ struct AISettingsView: View {
                 if isTesting {
                     ProgressView().controlSize(.small).tint(Theme.actionBlue)
                     Text("测试中…")
-                        .font(Theme.bodyFont(12))
+                        .font(Theme.bodyFont(13))
                         .foregroundColor(Theme.inkMuted48)
                 }
                 Spacer()

@@ -51,17 +51,17 @@ enum Theme {
 
     // Radii
     static let radiusSm: CGFloat = 8
-    static let radiusMd: CGFloat = 11
+    static let radiusMd: CGFloat = 12
     static let radiusLg: CGFloat = 18
     static let radiusPill: CGFloat = 9999
 
-    // Spacing (8px base)
-    static let spaceXs: CGFloat = 8
-    static let spaceSm: CGFloat = 12
-    static let spaceMd: CGFloat = 17
-    static let spaceLg: CGFloat = 24
-    static let spaceXl: CGFloat = 32
+    // Spacing（2026-09-04 精修：放大一档，缓解全局密度过高）
+    static let spaceXs: CGFloat = 12
+    static let spaceSm: CGFloat = 16
+    static let spaceMd: CGFloat = 20
+    static let spaceLg: CGFloat = 28
+    static let spaceXl: CGFloat = 36
 
-    // HIG 标准内容边距（macOS 原生窗口内容距边缘 20pt）
-    static let contentPadding: CGFloat = 20
+    // HIG 标准内容边距（macOS 原生窗口内容距边缘）
+    static let contentPadding: CGFloat = 24
 }
