@@ -13,7 +13,7 @@ struct MacCleanApp: App {
         if CommandLine.arguments.contains("--scan") {
             print("MacClean headless scan")
             let results = CleanCategory.allCases.map { cat -> (String, [CleanItem]) in
-                let items = Scanner.scan(cat)
+                let items = (try? Scanner.scan(cat)) ?? []
                 return (cat.title, items)
             }
             var total: Int64 = 0

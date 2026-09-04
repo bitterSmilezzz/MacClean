@@ -62,7 +62,7 @@ final class Scanner {
 
     // MARK: - 入口
 
-    static func scan(_ category: CleanCategory) -> [CleanItem] {
+    static func scan(_ category: CleanCategory) throws -> [CleanItem] {
         switch category {
         case .userCaches: return scanUserCaches()
         case .logsAndTemp: return scanLogsAndTemp()
