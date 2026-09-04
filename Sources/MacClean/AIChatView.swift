@@ -13,6 +13,7 @@ struct AIChatView: View {
             HStack(spacing: 6) {
                 Button {
                     app.ai.askAboutCurrentList()
+                    app.ai.openDrawer()
                 } label: {
                     Label("问当前列表", systemImage: "list.bullet")
                         .font(Theme.bodyFont(13, weight: .medium))
@@ -24,6 +25,7 @@ struct AIChatView: View {
 
                 Button {
                     app.ai.askAboutAll()
+                    app.ai.openDrawer()
                 } label: {
                     Label("问全部", systemImage: "square.grid.2x2")
                         .font(Theme.bodyFont(13, weight: .medium))
@@ -91,6 +93,18 @@ struct AIChatView: View {
             .buttonStyle(.borderless)
             .foregroundColor(Theme.inkMuted48)
             .help("AI 设置")
+
+            // 关闭抽屉（d1 抽屉式）
+            Button {
+                app.ai.closeDrawer()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .foregroundColor(Theme.inkMuted48)
+            .help("收起 AI 面板")
+            .accessibilityIdentifier("aiCloseDrawer")
         }
         .padding(.horizontal, Theme.spaceSm)
         .padding(.vertical, 10)
@@ -146,7 +160,7 @@ struct AIChatView: View {
         .padding(Theme.spaceSm)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.parchment))
-        .overlay(RoundedRectangle(cornerRadius: Theme.radiusMd).stroke(Theme.hairline, lineWidth: 1))
+        
         .padding(.horizontal, Theme.spaceSm)
         .padding(.vertical, 6)
     }
@@ -269,7 +283,7 @@ struct AIChatView: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.parchment)
-                .overlay(RoundedRectangle(cornerRadius: Theme.radiusMd).stroke(Theme.hairline, lineWidth: 1))
+                
         )
         .padding(Theme.spaceSm)
     }
@@ -293,10 +307,7 @@ struct MessageBubble: View {
                     RoundedRectangle(cornerRadius: Theme.radiusMd)
                         .fill(message.role == .user ? Theme.actionBlue : Theme.canvas)
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(message.role == .user ? Color.clear : Theme.hairline, lineWidth: 1)
-                )
+                
             if message.role == .assistant { Spacer(minLength: 30) }
         }
         .padding(.horizontal, Theme.spaceSm)

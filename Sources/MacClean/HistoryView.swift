@@ -18,7 +18,7 @@ struct HistoryView: View {
                         .font(.system(size: 36, weight: .light))
                         .foregroundColor(Theme.inkMuted48.opacity(0.6))
                     Text("暂无清理记录")
-                        .font(Theme.displayFont(18, weight: .semibold))
+                        .font(Theme.displayFont(22, weight: .semibold))
                         .foregroundColor(Theme.ink)
                     Text("完成一次清理后，记录会显示在这里")
                         .font(Theme.bodyFont(13))
@@ -55,7 +55,7 @@ struct HistoryView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("清理历史")
-                    .font(Theme.displayFont(24, weight: .semibold))
+                    .font(Theme.displayFont(28, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundColor(Theme.ink)
                 Text("记录每一次清理动作，可追溯 · 借鉴 Mole mo history")
@@ -75,7 +75,7 @@ struct HistoryView: View {
                 .font(Theme.bodyFont(12))
                 .foregroundColor(Theme.inkMuted48)
             Text("累计释放 \(totalBytes.byteStringCN)")
-                .font(Theme.bodyFont(12, weight: .semibold))
+                .font(Theme.bodyFont(14, weight: .semibold))
                 .foregroundColor(Theme.inkMuted80)
             Spacer()
             Button {
@@ -113,10 +113,10 @@ struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(record.categoryName)
-                        .font(Theme.bodyFont(13, weight: .semibold))
+                        .font(Theme.bodyFont(15, weight: .semibold))
                         .foregroundColor(Theme.ink)
                     Text(record.mode)
-                        .font(Theme.bodyFont(10, weight: .medium))
+                        .font(Theme.bodyFont(12, weight: .medium))
                         .foregroundColor(record.mode == "彻底删除" ? Theme.dangerRed : Theme.actionBlue)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
@@ -129,7 +129,7 @@ struct HistoryRow: View {
             }
             Spacer()
             Text(record.bytes.byteStringCN)
-                .font(Theme.bodyFont(13, weight: .semibold))
+                .font(Theme.bodyFont(15, weight: .semibold))
                 .foregroundColor(Theme.ink)
                 .monospacedDigit()
         }
@@ -138,10 +138,7 @@ struct HistoryRow: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(Theme.hairline, lineWidth: 1)
-                )
+                
         )
     }
 }

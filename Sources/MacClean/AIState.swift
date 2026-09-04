@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import SwiftUI
 
 /// AI 对话状态：消息、上下文、加载、设置弹窗
 final class AIState: ObservableObject {
@@ -9,6 +10,8 @@ final class AIState: ObservableObject {
     @Published var isLoading = false
     @Published var lastError: String?
     @Published var showSettings = false
+    /// 抽屉式面板：默认收起，提问/打开设置时滑出，回复到达后自动收起（深度优化共识 d1）
+    @Published var isDrawerOpen = false
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -143,6 +146,7 @@ final class AIState: ObservableObject {
         let prompt = "请分析这个清理项（上下文已给出），告诉我：1) 它是做什么的 2) 是否适合删除 3) 当前是否正在被使用。"
         messages.append(ChatMessage(role: .user, content: prompt))
         lastError = nil
+        openDrawer()
         send()
     }
 
@@ -168,6 +172,7 @@ final class AIState: ObservableObject {
                 await MainActor.run {
                     messages.append(ChatMessage(role: .assistant, content: reply))
                     isLoading = false
+                    scheduleAutoCollapse()
                 }
             } catch {
                 await MainActor.run {
@@ -176,6 +181,25 @@ final class AIState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// 抽屉共识（d1）：回复到达后延迟收起，给一点阅读缓冲；用户再次提问会重新打开
+    private func scheduleAutoCollapse() {
+        guard isDrawerOpen else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            // 若期间用户又发了新消息（isLoading），则不收起
+            guard let self, !self.isLoading else { return }
+            withAnimation(.easeOut(duration: 0.25)) { self.isDrawerOpen = false }
+        }
+    }
+
+    /// 打开抽屉（✨ / 问列表 / 设置入口统一走这里）
+    func openDrawer() {
+        withAnimation(.easeOut(duration: 0.25)) { isDrawerOpen = true }
+    }
+
+    func closeDrawer() {
+        withAnimation(.easeOut(duration: 0.25)) { isDrawerOpen = false }
     }
 
     /// 重试：错误后重新发送最后一条用户消息（网络抖动/超时恢复用）

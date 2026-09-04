@@ -11,7 +11,7 @@ struct SidebarView: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(Theme.actionBlue)
                 Text("MacClean")
-                    .font(Theme.displayFont(17, weight: .semibold))
+                    .font(Theme.displayFont(20, weight: .semibold))
                     .tracking(-0.3)
                     .foregroundColor(Theme.ink)
                 Spacer()
@@ -60,7 +60,7 @@ struct SidebarView: View {
             // 底部扫描全部（原生 macOS 主按钮，居中不贴边）
             Button(action: { app.scanAll() }) {
                 Label("扫描全部分类", systemImage: "arrow.clockwise")
-                    .font(Theme.bodyFont(13, weight: .medium))
+                    .font(Theme.bodyFont(15, weight: .medium))
                     .padding(.vertical, 6)
             }
             .buttonStyle(.borderedProminent)
@@ -91,7 +91,7 @@ struct ToolRow: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(Theme.bodyFont(13, weight: .medium))
+                    .font(Theme.bodyFont(15, weight: .medium))
                     .foregroundColor(Theme.ink)
                 Text(subtitle)
                     .font(Theme.bodyFont(11))
@@ -108,10 +108,7 @@ struct ToolRow: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(isActive ? Theme.actionBlue.opacity(0.08) : Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(isActive ? Theme.actionBlue.opacity(0.5) : Theme.hairline, lineWidth: 1)
-                )
+                
         )
         .onTapGesture(perform: action)
     }
@@ -131,7 +128,7 @@ struct CategoryRow: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(category.title)
-                    .font(Theme.bodyFont(13, weight: .medium))
+                    .font(Theme.bodyFont(15, weight: .medium))
                     .foregroundColor(Theme.ink)
                 Text(state.isScanned ? "已扫描 · \(state.items.count) 项" : "未扫描")
                     .font(Theme.bodyFont(11))
@@ -144,7 +141,7 @@ struct CategoryRow: View {
             }
             if state.isScanned && state.totalSize > 0 && !state.isScanning {
                 Text(state.totalSize.byteStringCN)
-                    .font(Theme.bodyFont(12, weight: .semibold))
+                    .font(Theme.bodyFont(14, weight: .semibold))
                     .foregroundColor(Theme.inkMuted48)
                     .monospacedDigit()
             }
@@ -154,10 +151,7 @@ struct CategoryRow: View {
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
                 .fill(Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .stroke(Theme.hairline, lineWidth: 1)
-                )
+                
         )
     }
 }
