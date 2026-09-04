@@ -167,22 +167,34 @@ struct CategoryDetailView: View {
 
     private var itemList: some View {
         ScrollView {
-            LazyVStack(spacing: Theme.spaceMd) {
+            LazyVStack(spacing: Theme.spaceLg) {
                 // 按风险分组：可安全清理 / 需确认 / 不建议
                 ForEach(RiskGroup.allCases, id: \.self) { group in
                     let groupItems = st.items.filter { $0.risk == group.risk }
                     if !groupItems.isEmpty {
                         VStack(alignment: .leading, spacing: Theme.spaceSm) {
-                            // 分组标题
-                            HStack(spacing: 6) {
+                            // 分组标题（eyebrow 模式：大写小字 + 宽字距 + mono 计数）
+                            HStack(spacing: 8) {
                                 Circle().fill(group.color).frame(width: 8, height: 8)
-                                Text(group.title)
-                                    .font(Theme.bodyFont(15, weight: .semibold))
-                                    .foregroundColor(Theme.ink)
+                                Text(group.title.uppercased())
+                                    .font(Theme.bodyFont(12, weight: .semibold))
+                                    .tracking(1.2)
+                                    .foregroundColor(Theme.inkMuted80)
                                 Text("\(groupItems.count) 项 · \(groupItems.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
-                                    .font(Theme.bodyFont(12))
+                                    .font(Theme.monoFont(12))
                                     .foregroundColor(Theme.inkMuted48)
                                 Spacer()
+                                // 组级快捷勾选（仍走 G2 确认弹窗，只是快捷方式）
+                                Button(groupItems.allSatisfy(\.isSelected) ? "取消本组" : "勾选本组") {
+                                    let target = !groupItems.allSatisfy(\.isSelected)
+                                    for item in groupItems {
+                                        st.setSelected(item.id, target)
+                                    }
+                                }
+                                .buttonStyle(.borderless)
+                                .font(Theme.bodyFont(12, weight: .medium))
+                                .foregroundColor(group == .danger ? Theme.inkMuted48 : Theme.actionBlue)
+                                .disabled(group == .danger)   // 危险组不支持一键勾选（安全护栏）
                             }
                             .padding(.horizontal, 2)
 

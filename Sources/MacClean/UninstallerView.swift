@@ -348,7 +348,7 @@ struct AppRow: View {
         .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(isSelected ? Theme.actionBlue.opacity(0.08) : Theme.canvas)
+                .fill(isSelected ? Theme.actionBlue.opacity(0.08) : Theme.pearl)
                 
         )
     }
@@ -414,7 +414,7 @@ struct RelatedFileRow: View {
         .padding(.vertical, Theme.spaceXs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(Theme.canvas)
+                .fill(Theme.pearl)
                 
         )
     }
