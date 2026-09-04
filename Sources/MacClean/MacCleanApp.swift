@@ -155,7 +155,7 @@ struct ContentView: View {
                 // 主内容（抽屉收起时占满全部宽度）
                 mainContent
 
-                // AI 抽屉：覆盖在右侧，不挤占内容宽度（深度优化 d1）
+                // AI 对话抽屉：覆盖在右侧，不挤占内容宽度（深度优化 d1）
                 // M8：抽屉展开时主内容加右侧留白，避免遮住右侧主操作（清理/搜索框）
                 if app.ai.isDrawerOpen {
                     HStack(spacing: 0) {
@@ -166,8 +166,20 @@ struct ContentView: View {
                     }
                     .zIndex(10)
                 }
+
+                // AI 再筛查抽屉：筛查时弹出，展示思考过程（进度/日志/结论流）
+                if app.aiReview.isDrawerOpen {
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        AIReviewView()
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
+                            .shadow(color: .black.opacity(0.10), radius: 18, x: -4, y: 0)
+                    }
+                    .zIndex(11)
+                }
             }
             .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
+            .animation(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
         }
         .background(Theme.parchment)
         .onAppear { app.refreshDisk() }
@@ -189,7 +201,9 @@ struct ContentView: View {
                 SearchView()
             }
         }
-        .padding(.trailing, app.ai.isDrawerOpen ? 344 : 0)
+        // 任一抽屉展开都留白（AI 对话 / AI 再筛查）
+        .padding(.trailing, (app.ai.isDrawerOpen || app.aiReview.isDrawerOpen) ? 344 : 0)
         .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
+        .animation(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
     }
 }

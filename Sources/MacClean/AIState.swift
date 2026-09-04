@@ -221,8 +221,10 @@ final class AIState: ObservableObject {
     }
 
     /// 打开抽屉（✨ / 问列表 / 设置入口统一走这里）
+    /// 与 AI 筛查抽屉互斥：开对话抽屉时收起筛查抽屉
     func openDrawer() {
         withAnimation(.easeOut(duration: 0.25)) { isDrawerOpen = true }
+        app?.aiReview.closeDrawer()
     }
 
     func closeDrawer() {
