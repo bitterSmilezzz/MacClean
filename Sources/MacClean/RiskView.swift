@@ -41,7 +41,7 @@ struct RiskView: View {
                 riskList
             }
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
     }
 
     // MARK: - Header
@@ -50,18 +50,19 @@ struct RiskView: View {
         HStack(spacing: Theme.spaceMd) {
             Image(systemName: "exclamationmark.shield")
                 .font(.system(size: 20, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundColor(Theme.textWarning)
                 .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.warningOrange.opacity(0.1)))
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.warningOrange.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("电脑风险提醒")
-                    .font(Theme.displayFont(28, weight: .semibold))
+                    .font(Theme.displayFont(26, weight: .semibold))
                     .tracking(-0.3)
-                    .foregroundColor(Theme.ink)
+                    .foregroundColor(Theme.labelPrimary)
                 Text("检查敏感数据泄露、网络暴露、系统安全与可疑启动项 · 只读检测，不删除任何文件")
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelSecondary)
             }
             Spacer()
 
@@ -75,7 +76,7 @@ struct RiskView: View {
                         .foregroundColor(Theme.textWarning)
                     Text("· \(app.riskCounts[.low, default: 0]) 低")
                         .font(Theme.monoFont(13, weight: .semibold))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
                 }
             }
 
@@ -92,7 +93,7 @@ struct RiskView: View {
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceMd)
-        .background(Theme.canvas)
+        .frostedBar()
     }
 
     // MARK: - 状态视图
@@ -224,14 +225,14 @@ struct RiskRow: View {
                 Image(systemName: iconName)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(color)
-                    .frame(width: 26, height: 26)
+                    .frame(width: 28, height: 28)
                     .background(Circle().fill(bg.opacity(0.12)))
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(item.title)
                             .font(Theme.bodyFont(15, weight: .semibold))
-                            .foregroundColor(Theme.ink)
+                            .foregroundColor(Theme.labelPrimary)
                             .lineLimit(1)
                         Text(item.severity.label)
                             .font(Theme.bodyFont(11, weight: .semibold))
@@ -242,11 +243,11 @@ struct RiskRow: View {
                     }
                     Text(item.category.label)
                         .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
                     if isExpanded {
                         Text(item.detail)
                             .font(Theme.bodyFont(13))
-                            .foregroundColor(Theme.inkMuted80)
+                            .foregroundColor(Theme.labelSecondary)
                             .padding(.top, 4)
                             .textSelection(.enabled)
                         // 修复建议
@@ -256,13 +257,13 @@ struct RiskRow: View {
                                 .foregroundColor(Theme.textWarning)
                             Text(item.suggestion)
                                 .font(Theme.bodyFont(13, weight: .medium))
-                                .foregroundColor(Theme.inkMuted80)
+                                .foregroundColor(Theme.labelSecondary)
                         }
                         .padding(.top, 6)
                         if let path = item.path {
                             Text(path)
                                 .font(Theme.monoFont(11))
-                                .foregroundColor(Theme.inkMuted48)
+                                .foregroundColor(Theme.labelTertiary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
@@ -277,9 +278,9 @@ struct RiskRow: View {
                 } label: {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
                         .frame(width: 22, height: 22)
-                        .background(Circle().fill(Theme.parchment))
+                        .background(Circle().fill(Color.primary.opacity(0.05)))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isExpanded ? "收起详情" : "查看详情与建议")
@@ -287,10 +288,7 @@ struct RiskRow: View {
             .padding(.horizontal, Theme.spaceMd)
             .padding(.vertical, Theme.spaceSm)
         }
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(Theme.canvas)
-        )
+        .modernCard(cornerRadius: Theme.radiusMd)
     }
 
     private var iconName: String {

@@ -27,7 +27,7 @@ struct SidebarView: View {
 
             // 导航列表
             ScrollView {
-                VStack(spacing: 8) {
+                VStack(spacing: 6) {
                     // 概览仪表页
                     ToolRow(icon: "square.grid.2x2", title: "概览",
                             subtitle: "磁盘与清理总览",
@@ -45,7 +45,7 @@ struct SidebarView: View {
                         }
                     }
 
-                    Divider().overlay(Theme.hairline).padding(.vertical, Theme.spaceXs)
+                    Divider().overlay(Theme.separator).padding(.vertical, 4)
 
                     ForEach(CleanCategory.allCases) { cat in
                         let st = app.state(for: cat)
@@ -60,7 +60,7 @@ struct SidebarView: View {
                         .accessibilityIdentifier("sidebarCategory_\(cat.rawValue)")
                     }
 
-                    Divider().overlay(Theme.hairline).padding(.vertical, Theme.spaceXs)
+                    Divider().overlay(Theme.separator).padding(.vertical, 4)
 
                     // 电脑风险提醒（独立于文件清理的风险检查模块）
                     ToolRow(icon: "exclamationmark.shield", title: "风险提醒",
@@ -89,24 +89,26 @@ struct SidebarView: View {
                 .padding(.horizontal, Theme.spaceSm)
             }
 
-            // 统计条（已扫描 X/6 · 可清理 Y）——化废为用：接入侧栏底部
+            // 统计条（已扫描 X/6 · 可清理 Y）
             statsLine
                 .padding(.horizontal, Theme.contentPadding)
                 .padding(.top, Theme.spaceXs)
 
-            // 底部扫描全部（原生 macOS 主按钮，居中不贴边）
+            // 底部扫描全部
             Button(action: { app.scanAll() }) {
                 Label("扫描全部分类", systemImage: "arrow.clockwise")
-                    .font(Theme.bodyFont(15, weight: .medium))
-                    .padding(.vertical, 6)
+                    .font(Theme.bodyFont(14, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(Theme.actionBlue)
+            .padding(.horizontal, Theme.contentPadding)
             .padding(.top, Theme.spaceSm)
             .padding(.bottom, Theme.contentPadding)
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
     }
 
     /// 概览统计（Dashboard / 侧栏底部统计条共用）
@@ -114,18 +116,26 @@ struct SidebarView: View {
         HStack(spacing: 0) {
             Text("\(app.scannedCount)/\(CleanCategory.allCases.count)")
                 .font(Theme.monoFont(12, weight: .semibold))
-                .foregroundColor(Theme.inkMuted80)
+                .foregroundColor(Theme.labelSecondary)
+                .monospacedDigit()
             Text(" 已扫描")
                 .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.inkMuted48)
+                .foregroundColor(Theme.labelTertiary)
             Spacer()
             Text(app.totalCleanable.byteStringCN)
                 .font(Theme.monoFont(12, weight: .semibold))
                 .foregroundColor(Theme.actionBlue)
+                .monospacedDigit()
             Text(" 可清理")
                 .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.inkMuted48)
+                .foregroundColor(Theme.labelTertiary)
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule()
+                .fill(Color.primary.opacity(0.04))
+        )
     }
 }
 
@@ -141,30 +151,36 @@ struct ToolRow: View {
         Button(action: action) {
             HStack(spacing: Theme.spaceSm) {
                 Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Theme.actionBlue)
-                    .frame(width: 26, height: 26)
-                    .background(Circle().fill(Theme.actionBlue.opacity(0.1)))
+                    .font(.system(size: 14, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundColor(isActive ? Theme.actionBlue : Theme.labelSecondary)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.primary.opacity(0.04))
+                    )
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
-                        .font(Theme.bodyFont(15, weight: .medium))
-                        .foregroundColor(Theme.ink)
+                        .font(Theme.bodyFont(14, weight: isActive ? .semibold : .medium))
+                        .foregroundColor(isActive ? Theme.actionBlue : Theme.labelPrimary)
                     Text(subtitle)
                         .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
                 }
                 Spacer()
                 if isActive {
-                    Circle().fill(Theme.actionBlue).frame(width: 7, height: 7)
+                    Capsule()
+                        .fill(Theme.actionBlue)
+                        .frame(width: 4, height: 16)
                 }
             }
-            .padding(.horizontal, Theme.spaceSm)
-            .padding(.vertical, Theme.spaceXs)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: Theme.radiusMd)
-                    .fill(isActive ? Theme.actionBlue.opacity(0.08) : Theme.canvas)
+                RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                    .fill(isActive ? Theme.actionBlue.opacity(0.1) : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -175,23 +191,28 @@ struct ToolRow: View {
 struct CategoryRow: View {
     let category: CleanCategory
     @ObservedObject var state: CategoryState
-    var isActive: Bool = false   // 三巡：分类行激活高亮，与 ToolRow 一致
+    var isActive: Bool = false
 
     var body: some View {
         HStack(spacing: Theme.spaceSm) {
             Image(systemName: category.icon)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(Theme.actionBlue)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Theme.actionBlue.opacity(0.1)))
+                .font(.system(size: 14, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundColor(isActive ? Theme.actionBlue : Theme.labelSecondary)
+                .frame(width: 28, height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                        .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.primary.opacity(0.04))
+                )
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(category.title)
-                    .font(Theme.bodyFont(15, weight: .medium))
-                    .foregroundColor(Theme.ink)
+                    .font(Theme.bodyFont(14, weight: isActive ? .semibold : .medium))
+                    .foregroundColor(isActive ? Theme.actionBlue : Theme.labelPrimary)
                 Text(state.isScanned ? "已扫描 · \(state.items.count) 项" : "未扫描")
                     .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelTertiary)
+                    .monospacedDigit()
             }
             Spacer()
             if state.isScanning {
@@ -200,19 +221,23 @@ struct CategoryRow: View {
             }
             if state.isScanned && state.totalSize > 0 && !state.isScanning {
                 Text(state.totalSize.byteStringCN)
-                    .font(Theme.bodyFont(14, weight: .semibold))
-                    .foregroundColor(Theme.inkMuted48)
+                    .font(Theme.monoFont(12, weight: .semibold))
+                    .foregroundColor(Theme.labelSecondary)
                     .monospacedDigit()
             }
             if isActive {
-                Circle().fill(Theme.actionBlue).frame(width: 7, height: 7)
+                Capsule()
+                    .fill(Theme.actionBlue)
+                    .frame(width: 4, height: 16)
             }
         }
-        .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, Theme.spaceXs)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
         .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(isActive ? Theme.actionBlue.opacity(0.08) : Theme.canvas)
+            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                .fill(isActive ? Theme.actionBlue.opacity(0.1) : Color.clear)
         )
     }
 }
+

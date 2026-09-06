@@ -10,17 +10,22 @@ APP_DIR="dist/$APP_NAME.app"
 echo "==> Release 构建"
 swift build -c release
 
-echo "==> 生成图标"
-ICON_DIR="/tmp/macclean-icon.iconset"
-rm -rf "$ICON_DIR"
-swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
-iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
+echo "==> 配置图标"
+if [ -f "Resources/AppIcon.icns" ]; then
+    ICON_SRC="Resources/AppIcon.icns"
+else
+    ICON_DIR="/tmp/macclean-icon.iconset"
+    rm -rf "$ICON_DIR"
+    swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
+    iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
+    ICON_SRC="$ICON_DIR/AppIcon.icns"
+fi
 
 echo "==> 组装 .app"
 rm -rf "dist"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/"
-cp "$ICON_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
+cp "$ICON_SRC" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,8 +35,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>MacClean</string>
     <key>CFBundleDisplayName</key><string>MacClean</string>
     <key>CFBundleIdentifier</key><string>com.macclean.app</string>
-    <key>CFBundleVersion</key><string>1.0.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleVersion</key><string>1.8.0</string>
+    <key>CFBundleShortVersionString</key><string>1.8.0</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>MacClean</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>

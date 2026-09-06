@@ -72,4 +72,126 @@ enum Theme {
 
     // HIG 标准内容边距（macOS 原生窗口内容距边缘）
     static let contentPadding: CGFloat = 24
+
+    // MARK: - Adaptive Semantic Colors (macOS 13+)
+    static let windowBackground = Color(nsColor: .windowBackgroundColor)
+    static let controlBackground = Color(nsColor: .controlBackgroundColor)
+    static let labelPrimary = Color(nsColor: .labelColor)
+    static let labelSecondary = Color(nsColor: .secondaryLabelColor)
+    static let labelTertiary = Color(nsColor: .tertiaryLabelColor)
+    static let separator = Color(nsColor: .separatorColor)
+
+    // Gradients
+    static let accentGradient = LinearGradient(
+        colors: [Color(hex: 0x0071e3), Color(hex: 0x005bb5)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let diskUsedGradient = LinearGradient(
+        colors: [Color(hex: 0x2997ff), Color(hex: 0x0071e3)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let diskWarningGradient = LinearGradient(
+        colors: [Color(hex: 0xff9f0a), Color(hex: 0xff375f)],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+}
+
+// MARK: - Modern Card & Material Modifiers
+
+struct ModernCardModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    var cornerRadius: CGFloat = Theme.radiusLg
+    var isHovered: Bool = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(colorScheme == .dark
+                          ? Color(nsColor: .controlBackgroundColor).opacity(0.55)
+                          : Color.white.opacity(0.82))
+            )
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: colorScheme == .dark
+                                ? [Color.white.opacity(0.18), Color.white.opacity(0.04)]
+                                : [Color.white.opacity(0.9), Color.black.opacity(0.06)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(
+                color: colorScheme == .dark
+                    ? Color.black.opacity(isHovered ? 0.4 : 0.2)
+                    : Color.black.opacity(isHovered ? 0.08 : 0.035),
+                radius: isHovered ? 12 : 6,
+                x: 0,
+                y: isHovered ? 4 : 2
+            )
+    }
+}
+
+struct FrostedBarModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                Rectangle()
+                    .fill(colorScheme == .dark
+                          ? Color(nsColor: .windowBackgroundColor).opacity(0.75)
+                          : Color.white.opacity(0.85))
+            )
+            .background(
+                Rectangle()
+                    .fill(.regularMaterial)
+            )
+    }
+}
+
+struct SoftTagModifier: ViewModifier {
+    var bg: Color
+    var fg: Color
+    var radius: CGFloat = Theme.radiusPill
+
+    func body(content: Content) -> some View {
+        content
+            .font(Theme.monoFont(11, weight: .semibold))
+            .foregroundColor(fg)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(bg)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(fg.opacity(0.18), lineWidth: 0.5)
+            )
+    }
+}
+
+extension View {
+    func modernCard(cornerRadius: CGFloat = Theme.radiusLg, isHovered: Bool = false) -> some View {
+        modifier(ModernCardModifier(cornerRadius: cornerRadius, isHovered: isHovered))
+    }
+
+    func frostedBar() -> some View {
+        modifier(FrostedBarModifier())
+    }
+
+    func softTag(bg: Color, fg: Color, radius: CGFloat = Theme.radiusPill) -> some View {
+        modifier(SoftTagModifier(bg: bg, fg: fg, radius: radius))
+    }
 }

@@ -38,7 +38,7 @@ struct HistoryView: View {
 
             footer
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
         .confirmationDialog("清空历史记录？", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("清空", role: .destructive) { app.clearHistory() }
             Button("取消", role: .cancel) {}
@@ -49,34 +49,37 @@ struct HistoryView: View {
         HStack(spacing: Theme.spaceMd) {
             Image(systemName: "clock.arrow.circlepath")
                 .font(.system(size: 20, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundColor(Theme.actionBlue)
                 .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.actionBlue.opacity(0.1)))
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.actionBlue.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("清理历史")
-                    .font(Theme.displayFont(28, weight: .semibold))
+                    .font(Theme.displayFont(26, weight: .semibold))
                     .tracking(-0.3)
-                    .foregroundColor(Theme.ink)
+                    .foregroundColor(Theme.labelPrimary)
                 Text("记录每一次清理动作，可追溯 · 借鉴 Mole mo history")
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelSecondary)
             }
             Spacer()
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceMd)
-        .background(Theme.canvas)
+        .frostedBar()
     }
 
     private var footer: some View {
         HStack {
             Text("共 \(app.history.count) 次清理")
                 .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.inkMuted48)
+                .foregroundColor(Theme.labelTertiary)
+                .monospacedDigit()
             Text("累计释放 \(totalBytes.byteStringCN)")
                 .font(Theme.bodyFont(14, weight: .semibold))
-                .foregroundColor(Theme.inkMuted80)
+                .foregroundColor(Theme.labelPrimary)
+                .monospacedDigit()
             Spacer()
             Button {
                 confirmClear = true
@@ -89,9 +92,10 @@ struct HistoryView: View {
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceSm)
-        .background(Theme.canvas.overlay(alignment: .top) {
-            Divider().overlay(Theme.hairline)
-        })
+        .frostedBar()
+        .overlay(alignment: .top) {
+            Divider().overlay(Theme.separator)
+        }
     }
 }
 
@@ -114,31 +118,29 @@ struct HistoryRow: View {
                 HStack(spacing: 6) {
                     Text(record.categoryName)
                         .font(Theme.bodyFont(15, weight: .semibold))
-                        .foregroundColor(Theme.ink)
+                        .foregroundColor(Theme.labelPrimary)
                     Text(record.mode)
-                        .font(Theme.bodyFont(12, weight: .medium))
+                        .font(Theme.bodyFont(11, weight: .medium))
                         .foregroundColor(record.mode == "彻底删除" ? Theme.textDanger : Theme.actionBlue)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
-                        .background(Capsule().fill((record.mode == "彻底删除" ? Theme.dangerRed : Theme.actionBlue).opacity(0.1)))
+                        .background(Capsule().fill((record.mode == "彻底删除" ? Theme.dangerRed : Theme.actionBlue).opacity(0.12)))
                 }
                 Text(Self.formatter.string(from: record.date) + " · \(record.itemCount) 项" +
                      (record.failures > 0 ? " · \(record.failures) 项失败" : ""))
                     .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelTertiary)
+                    .monospacedDigit()
             }
             Spacer()
             Text(record.bytes.byteStringCN)
-                .font(Theme.bodyFont(15, weight: .semibold))
-                .foregroundColor(Theme.ink)
+                .font(Theme.monoFont(14, weight: .semibold))
+                .foregroundColor(Theme.labelPrimary)
                 .monospacedDigit()
         }
         .padding(.horizontal, Theme.spaceMd)
         .padding(.vertical, Theme.spaceXs)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(Theme.pearl)
-                
-        )
+        .modernCard(cornerRadius: Theme.radiusMd)
     }
 }
+

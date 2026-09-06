@@ -235,7 +235,7 @@ struct AIChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 8) {
+                LazyVStack(spacing: 10) {
                     contextCard
                     ForEach(app.ai.messages) { msg in
                         MessageBubble(message: msg)
@@ -245,7 +245,7 @@ struct AIChatView: View {
                             ProgressView().controlSize(.small).tint(Theme.actionBlue)
                             Text("AI 思考中…")
                                 .font(Theme.bodyFont(13))
-                                .foregroundColor(Theme.inkMuted48)
+                                .foregroundColor(Theme.labelSecondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, Theme.spaceSm)
@@ -279,7 +279,7 @@ struct AIChatView: View {
                 withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
             }
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
     }
 
     // MARK: - 输入栏
@@ -297,7 +297,7 @@ struct AIChatView: View {
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 22))
-                    .foregroundColor(app.ai.canSend ? Theme.actionBlue : Theme.inkMuted48.opacity(0.4))
+                    .foregroundColor(app.ai.canSend ? Theme.actionBlue : Theme.labelTertiary.opacity(0.4))
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("aiSendButton")
@@ -306,9 +306,12 @@ struct AIChatView: View {
         .padding(.horizontal, Theme.spaceSm)
         .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(Theme.parchment)
-                
+            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                        .stroke(Theme.separator, lineWidth: 0.5)
+                )
         )
         .padding(Theme.spaceSm)
     }
@@ -324,13 +327,24 @@ struct MessageBubble: View {
             if message.role == .user { Spacer(minLength: 30) }
             Text(message.content)
                 .font(Theme.bodyFont(13))
-                .foregroundColor(message.role == .user ? .white : Theme.ink)
+                .foregroundColor(message.role == .user ? .white : Theme.labelPrimary)
                 .textSelection(.enabled)
                 .padding(.horizontal, Theme.spaceSm)
                 .padding(.vertical, 8)
                 .background(
-                    RoundedRectangle(cornerRadius: Theme.radiusMd)
-                        .fill(message.role == .user ? Theme.actionBlue : Theme.canvas)
+                    Group {
+                        if message.role == .user {
+                            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                                .fill(Theme.accentGradient)
+                        } else {
+                            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                                        .stroke(Theme.separator, lineWidth: 0.5)
+                                )
+                        }
+                    }
                 )
                 
             if message.role == .assistant { Spacer(minLength: 30) }
@@ -338,6 +352,7 @@ struct MessageBubble: View {
         .padding(.horizontal, Theme.spaceSm)
     }
 }
+
 
 // MARK: - 设置弹窗
 

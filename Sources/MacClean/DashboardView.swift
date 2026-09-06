@@ -26,7 +26,7 @@ struct DashboardView: View {
                     Text("清理分类")
                         .font(Theme.bodyFont(12, weight: .semibold))
                         .tracking(1.2)
-                        .foregroundColor(Theme.inkMuted80)
+                        .foregroundColor(Theme.labelSecondary)
                     LazyVGrid(columns: columns, spacing: 12) {
                         ForEach(CleanCategory.allCases) { cat in
                             DashboardCategoryCard(category: cat)
@@ -44,7 +44,7 @@ struct DashboardView: View {
             }
             .padding(Theme.spaceLg)
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
         // UI 审查 M1：跨分类清理必须走与详情页一致的确认弹窗（permanentDelete/danger 项需显式警告）
         .sheet(isPresented: $showCleanSheet) {
             cleanSheet
@@ -74,18 +74,20 @@ struct DashboardView: View {
 
     private var summaryBar: some View {
         HStack(spacing: Theme.spaceMd) {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("可清理总量")
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    .foregroundColor(Theme.labelSecondary)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(app.totalCleanable.byteStringCN)
                         .font(Theme.displayFont(34, weight: .bold))
                         .tracking(-0.5)
-                        .foregroundColor(Theme.ink)
+                        .foregroundColor(Theme.labelPrimary)
+                        .monospacedDigit()
                     Text("\(app.scannedCount)/\(CleanCategory.allCases.count) 分类已扫")
                         .font(Theme.monoFont(12))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
+                        .monospacedDigit()
                 }
             }
             Spacer()
@@ -134,14 +136,7 @@ struct DashboardView: View {
             .accessibilityIdentifier("dashboardCleanButton")
         }
         .padding(Theme.spaceMd)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusLg)
-                .fill(Theme.canvas)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusLg)
-                        .stroke(Theme.hairline, lineWidth: 1)
-                )
-        )
+        .modernCard(cornerRadius: Theme.radiusLg)
     }
 
     // MARK: - 磁盘卡
@@ -151,28 +146,29 @@ struct DashboardView: View {
             Text("磁盘空间")
                 .font(Theme.bodyFont(12, weight: .semibold))
                 .tracking(1.2)
-                .foregroundColor(Theme.inkMuted80)
+                .foregroundColor(Theme.labelSecondary)
 
             HStack(spacing: Theme.spaceMd) {
                 ZStack {
                     Circle()
-                        .stroke(Theme.hairline, lineWidth: 12)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 11)
                     Circle()
                         .trim(from: 0, to: max(0.02, app.usedRatio))
                         .stroke(
-                            app.usedRatio > 0.9 ? Theme.dangerRed : Theme.actionBlue,
-                            style: StrokeStyle(lineWidth: 12, lineCap: .round)
+                            app.usedRatio > 0.88 ? Theme.diskWarningGradient : Theme.diskUsedGradient,
+                            style: StrokeStyle(lineWidth: 11, lineCap: .round)
                         )
                         .rotationEffect(.degrees(-90))
                         .animation(.easeOut(duration: 0.6), value: app.usedRatio)
                     VStack(spacing: 2) {
                         Text(app.diskUsed.byteStringCN)
-                            .font(Theme.displayFont(24, weight: .bold))
+                            .font(Theme.displayFont(22, weight: .bold))
                             .tracking(-0.3)
-                            .foregroundColor(Theme.ink)
+                            .foregroundColor(Theme.labelPrimary)
+                            .monospacedDigit()
                         Text("已用")
                             .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.inkMuted48)
+                            .foregroundColor(Theme.labelTertiary)
                     }
                 }
                 .frame(width: 120, height: 120)
@@ -186,21 +182,19 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Theme.spaceMd)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusLg)
-                .fill(Theme.canvas)
-        )
+        .modernCard(cornerRadius: Theme.radiusLg)
     }
 
     private func statRow(_ label: String, _ value: String) -> some View {
         HStack(spacing: 6) {
             Text(label)
                 .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.inkMuted48)
+                .foregroundColor(Theme.labelTertiary)
                 .frame(width: 48, alignment: .leading)
             Text(value)
                 .font(Theme.monoFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
+                .foregroundColor(Theme.labelPrimary)
+                .monospacedDigit()
         }
     }
 
@@ -214,24 +208,24 @@ struct DashboardView: View {
             Text("风险分布")
                 .font(Theme.bodyFont(12, weight: .semibold))
                 .tracking(1.2)
-                .foregroundColor(Theme.inkMuted80)
+                .foregroundColor(Theme.labelSecondary)
 
-            // 堆叠条
-            HStack(spacing: 2) {
+            // 堆叠条（带圆角和微柔光）
+            HStack(spacing: 3) {
                 if totals[.safe, default: 0] > 0 {
-                    RoundedRectangle(cornerRadius: 2)
+                    Capsule()
                         .fill(Theme.actionBlue)
-                        .frame(width: max(4, CGFloat(totals[.safe, default: 0]) / CGFloat(total) * 260))
+                        .frame(width: max(6, CGFloat(totals[.safe, default: 0]) / CGFloat(total) * 250))
                 }
                 if totals[.review, default: 0] > 0 {
-                    RoundedRectangle(cornerRadius: 2)
+                    Capsule()
                         .fill(Theme.warningOrange)
-                        .frame(width: max(4, CGFloat(totals[.review, default: 0]) / CGFloat(total) * 260))
+                        .frame(width: max(6, CGFloat(totals[.review, default: 0]) / CGFloat(total) * 250))
                 }
                 if totals[.danger, default: 0] > 0 {
-                    RoundedRectangle(cornerRadius: 2)
+                    Capsule()
                         .fill(Theme.dangerRed)
-                        .frame(width: max(4, CGFloat(totals[.danger, default: 0]) / CGFloat(total) * 260))
+                        .frame(width: max(6, CGFloat(totals[.danger, default: 0]) / CGFloat(total) * 250))
                 }
             }
             .frame(height: 8, alignment: .leading)
@@ -246,10 +240,7 @@ struct DashboardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Theme.spaceMd)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusLg)
-                .fill(Theme.canvas)
-        )
+        .modernCard(cornerRadius: Theme.radiusLg)
     }
 
     private func riskRow(_ label: String, _ bytes: Int64, _ color: Color) -> some View {
@@ -257,11 +248,12 @@ struct DashboardView: View {
             Circle().fill(color).frame(width: 7, height: 7)
             Text(label)
                 .font(Theme.bodyFont(13))
-                .foregroundColor(Theme.inkMuted80)
+                .foregroundColor(Theme.labelSecondary)
             Spacer()
             Text(bytes.byteStringCN)
                 .font(Theme.monoFont(13, weight: .semibold))
-                .foregroundColor(Theme.ink)
+                .foregroundColor(Theme.labelPrimary)
+                .monospacedDigit()
         }
     }
 
@@ -274,29 +266,29 @@ struct DashboardView: View {
             HStack(spacing: Theme.spaceMd) {
                 // 图标：有风险 → 橙色盾牌；检查过且干净 → 蓝色对勾盾
                 Image(systemName: app.isRiskScanning ? "stethoscope"
-                        : app.riskScanned && app.riskItems.isEmpty ? "checkmark.shield"
-                        : app.riskScanned ? "exclamationmark.shield" : "shield")
+                        : app.riskScanned && app.riskItems.isEmpty ? "checkmark.shield.fill"
+                        : app.riskScanned ? "exclamationmark.shield.fill" : "shield")
                     .font(.system(size: 20, weight: .medium))
                     .foregroundColor(app.isRiskScanning ? Theme.textWarning
                         : app.riskScanned && app.riskItems.isEmpty ? Theme.actionBlue
-                        : app.riskScanned ? Theme.textWarning : Theme.inkMuted48)
+                        : app.riskScanned ? Theme.textWarning : Theme.labelTertiary)
                     .frame(width: 44, height: 44)
                     .background(Circle().fill(
                         (app.isRiskScanning || (app.riskScanned && !app.riskItems.isEmpty)
-                            ? Theme.warningOrange : Theme.actionBlue).opacity(0.1)))
+                            ? Theme.warningOrange : Theme.actionBlue).opacity(0.12)))
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text("电脑风险提醒")
                         .font(Theme.bodyFont(14, weight: .semibold))
-                        .foregroundColor(Theme.ink)
+                        .foregroundColor(Theme.labelPrimary)
                     if app.isRiskScanning {
                         Text("正在检查敏感数据与系统风险…")
                             .font(Theme.bodyFont(12))
-                            .foregroundColor(Theme.inkMuted48)
+                            .foregroundColor(Theme.labelSecondary)
                     } else if !app.riskScanned {
                         Text("检查敏感数据泄露、网络暴露、可疑启动项")
                             .font(Theme.bodyFont(12))
-                            .foregroundColor(Theme.inkMuted48)
+                            .foregroundColor(Theme.labelSecondary)
                     } else if app.riskItems.isEmpty {
                         Text("检查通过：未发现风险项")
                             .font(Theme.bodyFont(12, weight: .medium))
@@ -311,14 +303,14 @@ struct DashboardView: View {
                 if app.riskScanned && !app.riskItems.isEmpty {
                     HStack(spacing: 8) {
                         Text("高 \(app.riskCounts[.high, default: 0])")
-                            .font(Theme.monoFont(13, weight: .semibold))
+                            .font(Theme.monoFont(12, weight: .semibold))
                             .foregroundColor(Theme.textDanger)
                         Text("中 \(app.riskCounts[.medium, default: 0])")
-                            .font(Theme.monoFont(13, weight: .semibold))
+                            .font(Theme.monoFont(12, weight: .semibold))
                             .foregroundColor(Theme.textWarning)
                         Text("低 \(app.riskCounts[.low, default: 0])")
-                            .font(Theme.monoFont(13, weight: .semibold))
-                            .foregroundColor(Theme.inkMuted48)
+                            .font(Theme.monoFont(12, weight: .semibold))
+                            .foregroundColor(Theme.labelTertiary)
                     }
                 }
                 if app.isRiskScanning {
@@ -326,20 +318,13 @@ struct DashboardView: View {
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Theme.inkMuted48.opacity(0.7))
+                        .foregroundColor(Theme.labelTertiary.opacity(0.8))
                 }
             }
             .padding(.horizontal, Theme.spaceMd)
             .padding(.vertical, Theme.spaceSm)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radiusLg)
-                    .fill(Theme.canvas)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusLg)
-                            .stroke(Theme.hairline, lineWidth: 1)
-                    )
-            )
+            .modernCard(cornerRadius: Theme.radiusLg)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("riskAlertCard")
@@ -353,7 +338,7 @@ struct DashboardView: View {
                 Text("最近清理")
                     .font(Theme.bodyFont(12, weight: .semibold))
                     .tracking(1.2)
-                    .foregroundColor(Theme.inkMuted80)
+                    .foregroundColor(Theme.labelSecondary)
                 Spacer()
                 Button("查看全部 →") { app.destination = .history }
                     .buttonStyle(.borderless)
@@ -381,18 +366,20 @@ struct DashboardCategoryCard: View {
         } label: {
             HStack(spacing: Theme.spaceSm) {
                 Image(systemName: category.icon)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 16, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundColor(Theme.actionBlue)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.actionBlue.opacity(0.1)))
+                    .frame(width: 34, height: 34)
+                    .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.actionBlue.opacity(0.12)))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(category.title)
                         .font(Theme.bodyFont(14, weight: .semibold))
-                        .foregroundColor(Theme.ink)
+                        .foregroundColor(Theme.labelPrimary)
                     Text(st.isScanned ? "\(st.items.count) 项 · \(st.totalSize.byteStringCN)" : "未扫描")
                         .font(Theme.bodyFont(11))
-                        .foregroundColor(st.isScanned ? Theme.inkMuted80 : Theme.inkMuted48)
+                        .foregroundColor(st.isScanned ? Theme.labelSecondary : Theme.labelTertiary)
+                        .monospacedDigit()
                 }
                 Spacer()
                 if st.isScanning {
@@ -400,20 +387,13 @@ struct DashboardCategoryCard: View {
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Theme.inkMuted48.opacity(0.7))
+                        .foregroundColor(Theme.labelTertiary.opacity(0.8))
                 }
             }
             .padding(.horizontal, Theme.spaceSm)
             .padding(.vertical, Theme.spaceXs)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radiusMd)
-                    .fill(Theme.canvas)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusMd)
-                            .stroke(Theme.hairline, lineWidth: 1)
-                    )
-            )
+            .modernCard(cornerRadius: Theme.radiusMd)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("dashboardCategory_\(category.rawValue)")

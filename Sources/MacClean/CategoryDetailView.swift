@@ -113,7 +113,7 @@ struct CategoryDetailView: View {
 
             footer
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
         .sheet(isPresented: $showCleanSheet) {
             // 过滤激活且有隐藏已选时，确认弹窗显示全量口径并附提示（二轮 #4）
             let filtering = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -138,18 +138,19 @@ struct CategoryDetailView: View {
         HStack(spacing: Theme.spaceMd) {
             Image(systemName: category.icon)
                 .font(.system(size: 20, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundColor(Theme.actionBlue)
                 .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.actionBlue.opacity(0.1)))
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.actionBlue.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(category.title)
-                    .font(Theme.displayFont(28, weight: .semibold))
+                    .font(Theme.displayFont(26, weight: .semibold))
                     .tracking(-0.3)
-                    .foregroundColor(Theme.ink)
+                    .foregroundColor(Theme.labelPrimary)
                 Text("\(category.subtitle) · 规则 \(category.ruleRef)")
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelSecondary)
             }
             Spacer()
 
@@ -170,7 +171,7 @@ struct CategoryDetailView: View {
                     Text(filteredItems.allSatisfy(\.isSelected) ? "取消全选" : "全选")
                 }
                 .buttonStyle(.borderless)
-                .font(Theme.bodyFont(15, weight: .medium))
+                .font(Theme.bodyFont(14, weight: .medium))
                 .foregroundColor(Theme.actionBlue)
             }
 
@@ -215,17 +216,17 @@ struct CategoryDetailView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                         .font(.system(size: 13))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelSecondary)
                     TextField("过滤", text: $filterQuery)
                         .textFieldStyle(.plain)
-                        .font(Theme.bodyFont(14))
+                        .font(Theme.bodyFont(13))
                         .frame(width: 130)
                         .accessibilityIdentifier("filterField")
                     if !filterQuery.isEmpty {
                         Button { filterQuery = "" } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.system(size: 13))
-                                .foregroundColor(Theme.inkMuted48)
+                                .foregroundColor(Theme.labelTertiary)
                         }
                         .buttonStyle(.plain)
                     }
@@ -233,18 +234,18 @@ struct CategoryDetailView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(
-                    RoundedRectangle(cornerRadius: Theme.radiusSm)
-                        .fill(Theme.pearl)
+                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
                         .overlay(
-                            RoundedRectangle(cornerRadius: Theme.radiusSm)
-                                .stroke(Theme.hairline, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                                .stroke(Theme.separator, lineWidth: 0.5)
                         )
                 )
             }
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceMd)
-        .background(Theme.canvas)
+        .frostedBar()
     }
 
     // MARK: - 状态视图
@@ -336,10 +337,11 @@ struct CategoryDetailView: View {
                                 Text(group.title.uppercased())
                                     .font(Theme.bodyFont(12, weight: .semibold))
                                     .tracking(1.2)
-                                    .foregroundColor(Theme.inkMuted80)
+                                    .foregroundColor(Theme.labelSecondary)
                                 Text("\(groupItems.count) 项 · \(groupItems.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
                                     .font(Theme.monoFont(12))
-                                    .foregroundColor(Theme.inkMuted48)
+                                    .foregroundColor(Theme.labelTertiary)
+                                    .monospacedDigit()
                                 Spacer()
                                 // 组级快捷勾选（仍走 G2 确认弹窗，只是快捷方式）
                                 Button(groupItems.allSatisfy(\.isSelected) ? "取消本组" : "勾选本组") {
@@ -350,7 +352,7 @@ struct CategoryDetailView: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .font(Theme.bodyFont(12, weight: .medium))
-                                .foregroundColor(group == .danger ? Theme.inkMuted48 : Theme.actionBlue)
+                                .foregroundColor(group == .danger ? Theme.labelTertiary : Theme.actionBlue)
                                 .disabled(group == .danger)   // 危险组不支持一键勾选（安全护栏）
                             }
                             .padding(.horizontal, 2)
@@ -371,7 +373,7 @@ struct CategoryDetailView: View {
             }
             .padding(Theme.spaceLg)
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
     }
 
     /// 风险分组（G4 三档）
@@ -420,17 +422,19 @@ struct CategoryDetailView: View {
                         .foregroundColor(Theme.actionBlue)
                     Text(summary)
                         .font(Theme.bodyFont(14, weight: .medium))
-                        .foregroundColor(Theme.inkMuted80)
+                        .foregroundColor(Theme.labelPrimary)
                 }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 0) {
                 Text("已选 \(shownCount) 项" + (filtering && hiddenSelectedCount > 0 ? "（另有 \(hiddenSelectedCount) 项隐藏已选）" : ""))
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelTertiary)
+                    .monospacedDigit()
                 Text(shownSize.byteStringCN)
                     .font(Theme.displayFont(20, weight: .semibold))
-                    .foregroundColor(Theme.ink)
+                    .foregroundColor(Theme.labelPrimary)
+                    .monospacedDigit()
             }
 
             // 清理（原生 macOS 主按钮）
@@ -448,9 +452,10 @@ struct CategoryDetailView: View {
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceSm)
-        .background(Theme.canvas.overlay(alignment: .top) {
-            Divider().overlay(Theme.hairline)
-        })
+        .frostedBar()
+        .overlay(alignment: .top) {
+            Divider().overlay(Theme.separator)
+        }
     }
 }
 
@@ -473,7 +478,7 @@ struct ItemRowView: View {
                 Button(action: { onToggle(!isSelected) }) {
                     Image(systemName: isSelected ? "checkmark.square.fill" : "square")
                         .font(.system(size: 18))
-                        .foregroundColor(isSelected ? Theme.actionBlue : Theme.hairline)
+                        .foregroundColor(isSelected ? Theme.actionBlue : Theme.labelTertiary.opacity(0.6))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("itemToggle")
@@ -482,7 +487,7 @@ struct ItemRowView: View {
                     HStack(spacing: 6) {
                         Text(item.name)
                             .font(Theme.bodyFont(15, weight: .semibold))
-                            .foregroundColor(Theme.ink)
+                            .foregroundColor(Theme.labelPrimary)
                             .lineLimit(1)
                         RiskBadge(risk: item.risk)
                         // 使用频率徽标（用户诉求：最近是否在用/是否频繁，判断值不值得删）
@@ -496,14 +501,14 @@ struct ItemRowView: View {
                     if isExpanded {
                         Text(item.path)
                             .font(Theme.bodyFont(12))
-                            .foregroundColor(Theme.inkMuted48)
+                            .foregroundColor(Theme.labelTertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
                         if let lastUsed = item.lastUsed {
                             Text("最近使用：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
                                 .font(Theme.bodyFont(12, weight: .medium))
-                                .foregroundColor(item.usage.isRecentlyUsed ? Theme.textWarning : Theme.inkMuted48)
+                                .foregroundColor(item.usage.isRecentlyUsed ? Theme.textWarning : Theme.labelTertiary)
                         }
                         if let aiReview, !aiReview.reason.isEmpty {
                             Text("AI 建议：\(aiReview.reason)")
@@ -516,15 +521,15 @@ struct ItemRowView: View {
                         if !item.note.isEmpty {
                             Text(item.note)
                                 .font(Theme.bodyFont(12))
-                                .foregroundColor(Theme.inkMuted48.opacity(0.8))
+                                .foregroundColor(Theme.labelTertiary.opacity(0.8))
                                 .lineLimit(2)
                         }
                     }
                 }
                 Spacer()
                 Text(item.size.byteStringCN)
-                    .font(Theme.bodyFont(15, weight: .semibold))
-                    .foregroundColor(Theme.ink)
+                    .font(Theme.monoFont(14, weight: .semibold))
+                    .foregroundColor(Theme.labelPrimary)
                     .monospacedDigit()
 
                 // 展开/收起路径备注
@@ -533,9 +538,9 @@ struct ItemRowView: View {
                 } label: {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
                         .frame(width: 22, height: 22)
-                        .background(Circle().fill(Theme.parchment))
+                        .background(Circle().fill(Color.primary.opacity(0.05)))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("itemExpandButton")
@@ -562,13 +567,10 @@ struct ItemRowView: View {
             .padding(.horizontal, Theme.spaceMd)
             .padding(.vertical, Theme.spaceSm)
         }
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd)
-                .fill(Theme.canvas)
-                
-        )
+        .modernCard(cornerRadius: Theme.radiusMd)
     }
 }
+
 
 /// 风险徽标（G4）
 struct RiskBadge: View {

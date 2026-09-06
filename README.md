@@ -7,7 +7,7 @@
 > 把"让 AI 清理 Mac"的规则**固化成本地原生 App**：一键扫描、手动勾选、安全清理。
 >
 > **个人使用项目**：为本机定制，按需维护，欢迎参考与 fork。
-> UI 风格参照 OpenViking 上的 Apple 原生设计稿（`awesome-design-md/apple/DESIGN.md`）。
+> UI 风格遵循现代通透 macOS 原生设计规范，融合 UltraThinMaterial 毛玻璃材质、动态渐变与全套自适应浅色/深色主题。
 
 ## 功能
 
@@ -19,7 +19,7 @@
 - **安全优先**：扫描只读 → 手动勾选 → 二次确认 → 默认移入废纸篓（可恢复）
 - **风险分级**：安全（可重建）/ 谨慎（需人眼确认）/ 危险（不可恢复）
 - **误删防护**：硬排除白名单（Mail/Keychains/Accounts/Messages/.ssh 等）、跳过运行中应用、bundle-id 前缀与中英文别名识别已安装 App
-- **Apple 原生 UI**：SF Pro 字体、Action Blue #0066cc 单一强调色、parchment 米白画布、pill 胶囊按钮、18px 卡片圆角、零阴影零渐变
+- **现代通透原生 UI**：SF Pro 字体、UltraThinMaterial 悬浮毛玻璃、系统自适应浅色/深色主题、1px 微高光边框、平滑弹性动画、渐变磁盘圆环仪表盘与全新透光晶体高清图标
 
 功能融合来源见 [docs/FUSION-PLAN.md](docs/FUSION-PLAN.md)。
 
@@ -35,7 +35,7 @@ swift build
 # 无头扫描测试（打印本机可清理项）
 .build/debug/MacClean --scan
 
-# 打包完整 .app（自动生成图标 + ad-hoc 签名）
+# 打包完整 .app（包含透光晶体高清图标 + ad-hoc 签名）
 ./scripts/build-app.sh
 open dist/MacClean.app
 ```
@@ -71,7 +71,7 @@ open /Applications/MacClean.app
 - 视图测试在**内存中驱动**（`inspect().find(...).tap()`），不渲染窗口、不抢焦点
 - 按钮通过 `accessibilityIdentifier` 定位（label 含 Image 时文本查找不可靠）
 - 状态用 `@Binding` 注入而非 `@State`（ViewInspector 在 macOS 上不传播 `@State` 变更）
-- 覆盖：格式化、路径展开、安全护栏、勾选逻辑、Cleaner 双模式、风险徽标、弹窗默认/切换/警告、空态禁用态
+- 覆盖 **60 项自动化自检**：格式化、路径展开、安全护栏、勾选逻辑、Cleaner 双模式、风险徽标、弹窗默认/切换/警告、空态禁用态、历史记录、卸载器交互等
 
 ## 目录结构
 
@@ -79,16 +79,17 @@ open /Applications/MacClean.app
 MacClean/
 ├── docs/CLEANUP-RULES.md        # 固化规则集合（规则源头，与代码同步维护）
 ├── scripts/build-app.sh         # .app 打包脚本
-├── scripts/make-icon.swift      # 程序化生成 Apple 风格图标
+├── Resources/                   # 应用资源（透光晶体 AppIcon.icns, AppIcon.png）
+├── scripts/make-icon.swift      # 备用程序化图标生成脚本
 └── Sources/MacClean/
     ├── MacCleanApp.swift        # 入口（--selftest / --scan 无头模式）
-    ├── Selftest.swift           # ViewInspector 进程内自检（13 用例）
+    ├── Selftest.swift           # ViewInspector 进程内自检（60 项用例）
     ├── CleanPaths.swift         # 路径规则常量
     ├── Scanner.swift            # 6 类扫描引擎（只读）
     ├── Cleaner.swift            # 清理执行（废纸篓/彻底删除）
     ├── FileSystem.swift         # 目录大小/枚举/安全护栏
     ├── AppState.swift           # 全局状态
-    └── *.swift                  # Theme / Models / 视图
+    └── *.swift                  # Theme / Models / 现代通透视图组件
 ```
 
 ## 规则来源

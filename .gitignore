@@ -5,6 +5,7 @@
 # 打包产物
 dist/
 *.dmg
+*.zip
 
 # macOS
 .DS_Store

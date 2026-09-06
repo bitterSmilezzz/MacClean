@@ -16,10 +16,10 @@ struct SearchView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Divider().overlay(Theme.separator)
             content
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
         .onAppear { isFocused = true }
     }
 
@@ -29,18 +29,19 @@ struct SearchView: View {
         HStack(spacing: Theme.spaceMd) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 20, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
                 .foregroundColor(Theme.actionBlue)
                 .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.actionBlue.opacity(0.1)))
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.actionBlue.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("全局检索")
-                    .font(Theme.displayFont(28, weight: .semibold))
+                    .font(Theme.displayFont(26, weight: .semibold))
                     .tracking(-0.3)
-                    .foregroundColor(Theme.ink)
+                    .foregroundColor(Theme.labelPrimary)
                 Text("跨 \(CleanCategory.allCases.count) 个分类与清理历史 · 已扫 \(searchedCount) 个分类")
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelSecondary)
             }
             Spacer()
 
@@ -48,10 +49,10 @@ struct SearchView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelSecondary)
                 TextField("搜索文件名、路径、历史…", text: $app.searchQuery)
                     .textFieldStyle(.plain)
-                    .font(Theme.bodyFont(15))
+                    .font(Theme.bodyFont(14))
                     .focused($isFocused)
                     .accessibilityIdentifier("globalSearchField")
                 if !app.searchQuery.isEmpty {
@@ -61,7 +62,7 @@ struct SearchView: View {
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .font(.system(size: 14))
-                            .foregroundColor(Theme.inkMuted48)
+                            .foregroundColor(Theme.labelTertiary)
                     }
                     .buttonStyle(.plain)
                 }
@@ -70,17 +71,17 @@ struct SearchView: View {
             .padding(.vertical, 7)
             .frame(width: 320)
             .background(
-                RoundedRectangle(cornerRadius: Theme.radiusMd)
-                    .fill(Theme.pearl)
+                RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusMd)
-                            .stroke(isFocused ? Theme.actionBlue.opacity(0.6) : Theme.hairline, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
+                            .stroke(isFocused ? Theme.actionBlue.opacity(0.6) : Theme.separator, lineWidth: 1)
                     )
             )
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceMd)
-        .background(Theme.canvas)
+        .frostedBar()
     }
 
     // MARK: - 内容
@@ -168,15 +169,16 @@ struct SearchResultRow: View {
                 // 类型图标
                 Image(systemName: iconName)
                     .font(.system(size: 13, weight: .medium))
+                    .symbolRenderingMode(.hierarchical)
                     .foregroundColor(Theme.actionBlue)
-                    .frame(width: 26, height: 26)
-                    .background(Circle().fill(Theme.actionBlue.opacity(0.1)))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(result.name)
                             .font(Theme.bodyFont(15, weight: .semibold))
-                            .foregroundColor(Theme.ink)
+                            .foregroundColor(Theme.labelPrimary)
                             .lineLimit(1)
                         if let risk = result.risk {
                             RiskBadge(risk: risk)
@@ -184,15 +186,15 @@ struct SearchResultRow: View {
                         if case .item(let cat) = result.kind {
                             Text(cat.title)
                                 .font(Theme.bodyFont(11, weight: .medium))
-                                .foregroundColor(Theme.inkMuted48)
+                                .foregroundColor(Theme.labelTertiary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
-                                .background(Capsule().fill(Theme.parchment))
+                                .background(Capsule().fill(Color.primary.opacity(0.04)))
                         }
                     }
                     Text(result.subtitle)
                         .font(Theme.monoFont(11))
-                        .foregroundColor(Theme.inkMuted48)
+                        .foregroundColor(Theme.labelTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -200,16 +202,14 @@ struct SearchResultRow: View {
                 if result.size > 0 {
                     Text(result.size.byteStringCN)
                         .font(Theme.monoFont(13, weight: .semibold))
-                        .foregroundColor(Theme.ink)
+                        .foregroundColor(Theme.labelPrimary)
+                        .monospacedDigit()
                 }
             }
             .padding(.horizontal, Theme.spaceMd)
             .padding(.vertical, Theme.spaceXs)
             .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radiusMd)
-                    .fill(Theme.pearl)
-            )
+            .modernCard(cornerRadius: Theme.radiusMd)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("searchResultRow")
