@@ -627,11 +627,11 @@ enum Selftest {
             try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(atPath: home) }
             let zshrc = home + "/.zshrc"
-            try "export OPENAI_KEY=sk-abcdef1234567890\n".write(toFile: zshrc, atomically: true, encoding: .utf8)
+            try "export OPENAI_KEY=sk-REPLACE_ME_1234567890abcdef\n".write(toFile: zshrc, atomically: true, encoding: .utf8)
             let item = RiskScanner.checkEnvSecrets(home: home)
             guard let item, item.severity == .high else { return false }
             // 检测详情不得包含明文密钥本身（安全边界）
-            return !item.detail.contains("sk-abcdef1234567890")
+            return !item.detail.contains("sk-REPLACE_ME_1234567890abcdef")
         }
         check("风险检查：敏感命名文件暴露") {
             let home = "/private/tmp/macclean-risk-\(UUID().uuidString)"
