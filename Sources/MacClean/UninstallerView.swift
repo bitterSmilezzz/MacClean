@@ -255,8 +255,13 @@ struct UninstallerView: View {
             .padding(.vertical, Theme.spaceXs)
 
             ScrollView {
-                LazyVStack(spacing: Theme.spaceSm) {
-                    ForEach(Array(uninstaller.related.enumerated()), id: \.element.id) { _, file in
+                VStack(spacing: 0) {
+                    ForEach(Array(uninstaller.related.enumerated()), id: \.element.id) { index, file in
+                        if index > 0 {
+                            Divider()
+                                .overlay(Theme.separator.opacity(0.35))
+                                .padding(.leading, 38)
+                        }
                         RelatedFileRow(file: file)
                             .contentShape(Rectangle())
                             .onTapGesture { uninstaller.toggle(file.id, !file.isSelected) }
@@ -265,6 +270,7 @@ struct UninstallerView: View {
                             .accessibilityLabel("\(file.name)，\(file.size.byteStringCN)")
                     }
                 }
+                .macCard(cornerRadius: Theme.radiusMd)
                 .padding(.horizontal, Theme.spaceMd)
                 .padding(.bottom, Theme.spaceMd)
             }
@@ -327,25 +333,30 @@ struct UninstallerView: View {
     }
 }
 
-/// App 行
+/// App 行（展示真实应用图标 + 右键访达定位）
 struct AppRow: View {
     let app: InstalledApp
     let isSelected: Bool
 
+    private var appIcon: NSImage {
+        NSWorkspace.shared.icon(forFile: app.path)
+    }
+
     var body: some View {
-        HStack(spacing: Theme.spaceSm) {
-            Image(systemName: "app.fill")
-                .font(.system(size: 14))
-                .foregroundColor(isSelected ? Theme.actionBlue : Theme.labelSecondary)
+        HStack(spacing: 10) {
+            Image(nsImage: appIcon)
+                .resizable()
+                .interpolation(.high)
                 .frame(width: 26, height: 26)
-                .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(isSelected ? Theme.actionBlue.opacity(0.14) : Color.primary.opacity(0.04)))
+                .cornerRadius(5)
+
             VStack(alignment: .leading, spacing: 1) {
                 Text(app.name)
-                    .font(Theme.bodyFont(14, weight: isSelected ? .semibold : .medium))
+                    .font(Theme.bodyFont(13, weight: isSelected ? .semibold : .medium))
                     .foregroundColor(isSelected ? Theme.actionBlue : Theme.labelPrimary)
                     .lineLimit(1)
                 Text(app.size.byteStringCN)
-                    .font(Theme.bodyFont(10))
+                    .font(Theme.monoFont(10))
                     .foregroundColor(Theme.labelTertiary)
                     .monospacedDigit()
             }
@@ -354,16 +365,31 @@ struct AppRow: View {
                 Circle().fill(Theme.warningOrange).frame(width: 6, height: 6)
             }
         }
-        .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, Theme.spaceXs)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(isSelected ? Theme.actionBlue.opacity(0.1) : Color.clear)
+            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                .fill(isSelected ? Theme.actionBlue.opacity(0.12) : Color.clear)
         )
+        .contextMenu {
+            Button {
+                let url = URL(fileURLWithPath: app.path)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
+                Label("在访达中显示", systemImage: "folder")
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(app.path, forType: .string)
+            } label: {
+                Label("拷贝路径", systemImage: "doc.on.doc")
+            }
+        }
     }
 }
 
-/// 关联文件行
+/// 关联文件行（支持右键访达定位与拷贝路径）
 struct RelatedFileRow: View {
     @EnvironmentObject private var app: AppState
     let file: RelatedFile
@@ -371,11 +397,11 @@ struct RelatedFileRow: View {
     private var uninstaller: UninstallerState { app.uninstaller }
 
     var body: some View {
-        HStack(spacing: Theme.spaceSm) {
+        HStack(spacing: 10) {
             Button(action: { uninstaller.toggle(file.id, !file.isSelected) }) {
                 Image(systemName: file.isSelected ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 18))
-                    .foregroundColor(file.isSelected ? Theme.actionBlue : Theme.labelTertiary.opacity(0.6))
+                    .font(.system(size: 15))
+                    .foregroundColor(file.isSelected ? Theme.actionBlue : Theme.labelTertiary)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("relatedFileToggle")
@@ -383,25 +409,28 @@ struct RelatedFileRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(file.name)
-                        .font(Theme.bodyFont(14, weight: .semibold))
+                        .font(Theme.bodyFont(13, weight: .medium))
                         .foregroundColor(Theme.labelPrimary)
                         .lineLimit(1)
                     Text(file.kind)
-                        .font(Theme.bodyFont(11, weight: .medium))
+                        .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelTertiary)
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.primary.opacity(0.05)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Color.primary.opacity(0.04))
+                        )
                 }
                 Text(file.path)
-                    .font(Theme.bodyFont(10))
+                    .font(Theme.monoFont(10))
                     .foregroundColor(Theme.labelTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer()
             Text(file.size.byteStringCN)
-                .font(Theme.monoFont(13, weight: .semibold))
+                .font(Theme.monoFont(12, weight: .medium))
                 .foregroundColor(Theme.labelPrimary)
                 .monospacedDigit()
 
@@ -410,19 +439,45 @@ struct RelatedFileRow: View {
                 app.ai.askAbout(file: file)
             } label: {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Theme.actionBlue)
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(Theme.actionBlue.opacity(app.ai.isLoading ? 0.05 : 0.12)))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Theme.actionBlue.opacity(app.ai.isLoading ? 0.04 : 0.1))
+                    )
             }
             .buttonStyle(.plain)
             .disabled(app.ai.isLoading)
             .accessibilityIdentifier("askAIFileButton")
             .help(app.ai.isLoading ? "AI 回复中，请稍候" : "问 AI：这个残留是什么？能删吗？")
         }
-        .padding(.horizontal, Theme.spaceMd)
-        .padding(.vertical, Theme.spaceXs)
-        .modernCard(cornerRadius: Theme.radiusMd)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .macRowHover(cornerRadius: 0)
+        .contextMenu {
+            Button {
+                let url = URL(fileURLWithPath: file.path)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
+                Label("在访达中显示", systemImage: "folder")
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(file.path, forType: .string)
+            } label: {
+                Label("拷贝路径", systemImage: "doc.on.doc")
+            }
+
+            Divider()
+
+            Button {
+                uninstaller.toggle(file.id, !file.isSelected)
+            } label: {
+                Label(file.isSelected ? "取消选择" : "勾选删除", systemImage: file.isSelected ? "xmark.circle" : "checkmark.circle")
+            }
+        }
     }
 }
 

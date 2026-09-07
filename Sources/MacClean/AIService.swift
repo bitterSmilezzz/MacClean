@@ -12,16 +12,22 @@ struct AIConfig: Codable, Equatable {
     static let defaultsKey = "aiConfig"
 
     static func load() -> AIConfig {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
-              let cfg = try? JSONDecoder().decode(AIConfig.self, from: data) else {
-            return AIConfig()
+        if let data = UserDefaults.standard.data(forKey: defaultsKey),
+           let cfg = try? JSONDecoder().decode(AIConfig.self, from: data) {
+            return cfg
         }
-        return cfg
+        if let appDefaults = UserDefaults(suiteName: "com.macclean.app"),
+           let data = appDefaults.data(forKey: defaultsKey),
+           let cfg = try? JSONDecoder().decode(AIConfig.self, from: data) {
+            return cfg
+        }
+        return AIConfig()
     }
 
     func save() {
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: AIConfig.defaultsKey)
+            UserDefaults(suiteName: "com.macclean.app")?.set(data, forKey: AIConfig.defaultsKey)
         }
     }
 
@@ -246,6 +252,18 @@ enum AIService {
         }
     }
 
+    /// 统一构建 AI 请求（自动补全会话与认证头）
+    private static func makeRequest(url: URL, apiKey: String, timeout: TimeInterval) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // opencode.ai 等网关要求必需会话头；标准 OpenAI/DeepSeek 兼容忽略
+        request.setValue("macclean-session-\(UUID().uuidString.lowercased())", forHTTPHeaderField: "x-opencode-session")
+        return request
+    }
+
     /// 发送对话，返回助手回复
     static func send(messages: [ChatMessage], context: AskContext?) async throws -> String {
         // MED#7：自检模式禁用真实网络（状态机仍走通，请求被短路）
@@ -261,11 +279,7 @@ enum AIService {
             throw AIError.network("无效的 baseURL")
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 45
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        var request = makeRequest(url: url, apiKey: apiKey, timeout: 45)
 
         var systemPrompt = Self.systemPrompt
         if let context {
@@ -317,7 +331,9 @@ enum AIService {
     """
 
     /// 执行 AI 再筛查：返回逐项结论（按名称匹配回 item）
-    static func review(items: [CleanItem], progress: @escaping (String) -> Void) async throws -> [ItemReview] {
+    static func review(items: [CleanItem],
+                       onBatchDone: (([ItemReview]) -> Void)? = nil,
+                       progress: @escaping (String) -> Void) async throws -> [ItemReview] {
         if networkDisabled {
             throw AIError.network("自检模式：网络请求已禁用")
         }
@@ -330,10 +346,11 @@ enum AIService {
             throw AIError.network("无效的 baseURL")
         }
 
-        // 分批：每批最多 60 项，避免超长请求
-        let batchSize = 60
+        // 分批：每批 20 项，兼顾模型思考延迟与批次吞吐
+        let batchSize = 20
         var allReviews: [ItemReview] = []
         var batchIndex = 0
+        let totalBatches = max(1, Int(ceil(Double(items.count) / Double(batchSize))))
         while batchIndex < items.count {
             let batch = Array(items[batchIndex..<min(batchIndex + batchSize, items.count)])
             let table = batch.enumerated().map { i, item in
@@ -342,11 +359,7 @@ enum AIService {
             }.joined(separator: "\n")
             let userContent = "表格：\n\(table)"
 
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.timeoutInterval = 90
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            var request = makeRequest(url: url, apiKey: apiKey, timeout: 90)
             let body: [String: Any] = [
                 "model": config.model,
                 "messages": [
@@ -358,7 +371,8 @@ enum AIService {
             ]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-            progress("AI 筛查中（第 \(batchIndex / batchSize + 1) 批 / \(Int(ceil(Double(items.count) / Double(batchSize)))) 批）…")
+            let currentBatchNum = batchIndex / batchSize + 1
+            progress("AI 筛查中（第 \(currentBatchNum) 批 / \(totalBatches) 批）…")
             let (data, response) = try await withTimeout(90) {
                 try await Self.session.data(for: request)
             }
@@ -377,6 +391,7 @@ enum AIService {
             // 解析模型输出 → 本批结论
             let batchReviews = parseReviewOutput(content, items: batch)
             allReviews.append(contentsOf: batchReviews)
+            onBatchDone?(batchReviews)
             batchIndex += batchSize
         }
         return allReviews
@@ -443,15 +458,11 @@ enum AIService {
                 .flatMap({ URL(string: $0.appendingPathComponent("/chat/completions").absoluteString) }) else {
             throw AIError.network("无效的 baseURL")
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 30
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        var request = makeRequest(url: url, apiKey: apiKey, timeout: 30)
         let body: [String: Any] = [
             "model": model,
             "messages": [["role": "user", "content": "回复 OK 两个字母即可"]],
-            "max_tokens": 10,
+            "max_tokens": 300,
             "stream": false,
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

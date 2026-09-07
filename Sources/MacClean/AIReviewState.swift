@@ -88,7 +88,20 @@ final class AIReviewState: ObservableObject {
         task?.cancel()
         task = Task {
             do {
-                let results = try await AIService.review(items: items) { [weak self] msg in
+                let results = try await AIService.review(items: items, onBatchDone: { [weak self] batchReviews in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        var merged = self.reviews
+                        for r in batchReviews where r.verdict.isDecided {
+                            merged[r.itemID] = r
+                        }
+                        self.reviews = merged
+                        self.reviewedItemIDs.formUnion(batchReviews.map(\.itemID))
+                        self.completedCount += batchReviews.count
+                        let decided = batchReviews.filter { $0.verdict.isDecided }.count
+                        self.appendLog("✨ 本批完成：\(decided)/\(batchReviews.count) 项已标注结论")
+                    }
+                }) { [weak self] msg in
                     Task { @MainActor in
                         self?.progressText = msg
                         if msg.hasPrefix("AI 筛查中（第") {

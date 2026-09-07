@@ -335,13 +335,13 @@ struct MessageBubble: View {
                     Group {
                         if message.role == .user {
                             RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                                .fill(Theme.accentGradient)
+                                .fill(Theme.actionBlue)
                         } else {
                             RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
                                 .fill(Color(nsColor: .controlBackgroundColor))
                                 .overlay(
                                     RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                                        .stroke(Theme.separator, lineWidth: 0.5)
+                                        .stroke(Theme.separator.opacity(0.5), lineWidth: 0.8)
                                 )
                         }
                     }

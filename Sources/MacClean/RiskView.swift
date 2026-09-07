@@ -162,30 +162,38 @@ struct RiskView: View {
                 ForEach([RiskSeverity.high, .medium, .low], id: \.self) { severity in
                     let group = app.riskItems.filter { $0.severity == severity }
                     if !group.isEmpty {
-                        VStack(alignment: .leading, spacing: Theme.spaceSm) {
-                            // 分组标题（eyebrow 模式）
+                        VStack(alignment: .leading, spacing: 6) {
+                            // 分组标题
                             HStack(spacing: 8) {
                                 Circle()
                                     .fill(severityColor(severity))
-                                    .frame(width: 8, height: 8)
+                                    .frame(width: 7, height: 7)
                                 Text("\(severity.label)（\(group.count) 项）")
                                     .font(Theme.bodyFont(12, weight: .semibold))
-                                    .tracking(1.2)
-                                    .foregroundColor(Theme.inkMuted80)
+                                    .foregroundColor(Theme.labelSecondary)
                                 Spacer()
                             }
-                            .padding(.horizontal, 2)
+                            .padding(.horizontal, 4)
 
-                            ForEach(group) { item in
-                                RiskRow(item: item)
+                            // 原生分组卡片容器
+                            VStack(spacing: 0) {
+                                ForEach(Array(group.enumerated()), id: \.element.id) { index, item in
+                                    if index > 0 {
+                                        Divider()
+                                            .overlay(Theme.separator.opacity(0.35))
+                                            .padding(.leading, 38)
+                                    }
+                                    RiskRow(item: item)
+                                }
                             }
+                            .macCard(cornerRadius: Theme.radiusMd)
                         }
                     }
                 }
             }
-            .padding(Theme.spaceLg)
+            .padding(Theme.spaceMd)
         }
-        .background(Theme.parchment)
+        .background(Theme.windowBackground)
     }
 
     private func severityColor(_ severity: RiskSeverity) -> Color {
@@ -207,7 +215,7 @@ struct RiskRow: View {
         switch item.severity {
         case .high: return Theme.textDanger
         case .medium: return Theme.textWarning
-        case .low: return Theme.inkMuted48
+        case .low: return Theme.labelSecondary
         }
     }
 
@@ -215,38 +223,44 @@ struct RiskRow: View {
         switch item.severity {
         case .high: return Theme.dangerRed
         case .medium: return Theme.warningOrange
-        case .low: return Theme.hairline
+        case .low: return Color.primary.opacity(0.06)
         }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: Theme.spaceSm) {
+            HStack(spacing: 10) {
                 Image(systemName: iconName)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(color)
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(bg.opacity(0.12)))
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .fill(bg.opacity(0.12))
+                    )
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(item.title)
-                            .font(Theme.bodyFont(15, weight: .semibold))
+                            .font(Theme.bodyFont(13, weight: .medium))
                             .foregroundColor(Theme.labelPrimary)
                             .lineLimit(1)
                         Text(item.severity.label)
-                            .font(Theme.bodyFont(11, weight: .semibold))
+                            .font(Theme.bodyFont(11, weight: .medium))
                             .foregroundColor(color)
                             .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(bg.opacity(0.12)))
+                            .padding(.vertical, 1)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(bg.opacity(0.12))
+                            )
                     }
                     Text(item.category.label)
                         .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelTertiary)
                     if isExpanded {
                         Text(item.detail)
-                            .font(Theme.bodyFont(13))
+                            .font(Theme.bodyFont(12))
                             .foregroundColor(Theme.labelSecondary)
                             .padding(.top, 4)
                             .textSelection(.enabled)
@@ -256,10 +270,10 @@ struct RiskRow: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(Theme.textWarning)
                             Text(item.suggestion)
-                                .font(Theme.bodyFont(13, weight: .medium))
+                                .font(Theme.bodyFont(12, weight: .medium))
                                 .foregroundColor(Theme.labelSecondary)
                         }
-                        .padding(.top, 6)
+                        .padding(.top, 4)
                         if let path = item.path {
                             Text(path)
                                 .font(Theme.monoFont(11))
@@ -267,7 +281,7 @@ struct RiskRow: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
-                                .padding(.top, 4)
+                                .padding(.top, 2)
                         }
                     }
                 }
@@ -277,18 +291,18 @@ struct RiskRow: View {
                     withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
                 } label: {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(Theme.labelTertiary)
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.primary.opacity(0.05)))
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(isExpanded ? "收起详情" : "查看详情与建议")
             }
-            .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, Theme.spaceSm)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+            .macRowHover(cornerRadius: 0)
         }
-        .modernCard(cornerRadius: Theme.radiusMd)
     }
 
     private var iconName: String {

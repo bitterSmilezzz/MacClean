@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - Apple Design Tokens (from awesome-design-md/apple/DESIGN.md)
+// MARK: - Apple Design Tokens & macOS HIG System Tokens
 
 extension Color {
     init(hex: UInt32, alpha: Double = 1.0) {
@@ -13,185 +13,229 @@ extension Color {
 }
 
 enum Theme {
-    // Brand & Accent
-    static let actionBlue = Color(hex: 0x0066cc)          // primary — 唯一交互色
-    static let focusBlue = Color(hex: 0x0071e3)           // focus ring
-    static let skyLinkBlue = Color(hex: 0x2997ff)         // dark surface 上的链接蓝
+    // Brand & Accent (Apple HIG 原生标准强调色)
+    static let actionBlue = Color(hex: 0x0071e3)          // macOS 系统级交互蓝
+    static let focusBlue = Color(hex: 0x0071e3)           // 聚焦框色
+    static let skyLinkBlue = Color(hex: 0x2997ff)         // 链接蓝
 
     // Surfaces
-    static let canvas = Color(hex: 0xffffff)
-    static let parchment = Color(hex: 0xf5f5f7)           // 标志性 Apple 米白
-    static let pearl = Color(hex: 0xfafafc)
-    static let tile1 = Color(hex: 0x272729)
-    static let tile2 = Color(hex: 0x2a2a2c)
-    static let tile3 = Color(hex: 0x252527)
+    static let canvas = Color(nsColor: .windowBackgroundColor)
+    static let parchment = Color(nsColor: .windowBackgroundColor)
+    static let pearl = Color(nsColor: .controlBackgroundColor)
     static let pureBlack = Color(hex: 0x000000)
 
-    // Text
-    static let ink = Color(hex: 0x1d1d1f)
-    static let bodyMuted = Color(hex: 0xcccccc)
-    static let inkMuted80 = Color(hex: 0x333333)
-    // M7（WCAG AA）：#7a7a7a 白底仅 4.3:1 → 加深至 #6f6f6f（≈4.6:1）
-    static let inkMuted48 = Color(hex: 0x6f6f6f)
+    // Text & Labels (原生语义支持浅/深色自适应)
+    static let ink = Color(nsColor: .labelColor)
+    static let bodyMuted = Color(nsColor: .secondaryLabelColor)
+    static let inkMuted80 = Color(nsColor: .labelColor).opacity(0.8)
+    static let inkMuted48 = Color(nsColor: .secondaryLabelColor)
 
-    // Hairlines
-    static let dividerSoft = Color(hex: 0xf0f0f0)
-    static let hairline = Color(hex: 0xe0e0e0)
+    // Hairlines & Separators
+    static let dividerSoft = Color(nsColor: .separatorColor).opacity(0.4)
+    static let hairline = Color(nsColor: .separatorColor)
 
-    // Risk accents (system red/orange for danger semantics)
-    static let dangerRed = Color(hex: 0xff3b30)
-    static let warningOrange = Color(hex: 0xff9500)
-    // M7：风险色用于文字时用深色变体（#ff3b30 白底 3.5:1 / #ff9500 2.2:1 均不达标）
-    static let textDanger = Color(hex: 0xd70015)      // ≈5.9:1
-    static let textWarning = Color(hex: 0xb25000)     // ≈4.6:1
+    // Risk accents (macOS HIG 系统级语义色)
+    static let dangerRed = Color(nsColor: .systemRed)
+    static let warningOrange = Color(nsColor: .systemOrange)
+    static let textDanger = Color(nsColor: .systemRed)
+    static let textWarning = Color(nsColor: .systemOrange)
+    static let successGreen = Color(nsColor: .systemGreen)
 
-    // Typography helpers
+    // Typography helpers (严格对齐 Apple SF Pro 原生规范)
     static func displayFont(_ size: CGFloat, weight: Font.Weight = .semibold) -> Font {
         .system(size: size, weight: weight, design: .default)
     }
     static func bodyFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .default)
     }
-    // Vercel 借鉴：路径/数字/标签用 monospace，开发者工具质感
     static func monoFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         .system(size: size, weight: weight, design: .monospaced)
     }
 
-    // Radii
-    static let radiusSm: CGFloat = 8
-    static let radiusMd: CGFloat = 12
-    static let radiusLg: CGFloat = 18
+    // Radii (macOS 原生克制圆角：采用标准 6/10/12px)
+    static let radiusSm: CGFloat = 6
+    static let radiusMd: CGFloat = 10
+    static let radiusLg: CGFloat = 12
     static let radiusPill: CGFloat = 9999
 
-    // Spacing（2026-09-04 精修：放大一档，缓解全局密度过高）
-    static let spaceXs: CGFloat = 12
-    static let spaceSm: CGFloat = 16
-    static let spaceMd: CGFloat = 20
-    static let spaceLg: CGFloat = 28
-    static let spaceXl: CGFloat = 36
+    // Spacing (macOS 桌面级紧凑间距)
+    static let spaceXs: CGFloat = 8
+    static let spaceSm: CGFloat = 12
+    static let spaceMd: CGFloat = 16
+    static let spaceLg: CGFloat = 20
+    static let spaceXl: CGFloat = 28
 
-    // HIG 标准内容边距（macOS 原生窗口内容距边缘）
-    static let contentPadding: CGFloat = 24
+    // HIG 标准内容边距
+    static let contentPadding: CGFloat = 20
 
     // MARK: - Adaptive Semantic Colors (macOS 13+)
     static let windowBackground = Color(nsColor: .windowBackgroundColor)
     static let controlBackground = Color(nsColor: .controlBackgroundColor)
+    static let secondaryControlBackground = Color(nsColor: .controlColor)
     static let labelPrimary = Color(nsColor: .labelColor)
     static let labelSecondary = Color(nsColor: .secondaryLabelColor)
     static let labelTertiary = Color(nsColor: .tertiaryLabelColor)
     static let separator = Color(nsColor: .separatorColor)
-
-    // Gradients
-    static let accentGradient = LinearGradient(
-        colors: [Color(hex: 0x0071e3), Color(hex: 0x005bb5)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
-    static let diskUsedGradient = LinearGradient(
-        colors: [Color(hex: 0x2997ff), Color(hex: 0x0071e3)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
-    static let diskWarningGradient = LinearGradient(
-        colors: [Color(hex: 0xff9f0a), Color(hex: 0xff375f)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
 }
 
-// MARK: - Modern Card & Material Modifiers
+// MARK: - macOS HIG 原生容器与修饰符（取代 AI 塑料感 ModernCard）
 
-struct ModernCardModifier: ViewModifier {
+/// macOS 原生分组容器（对齐系统设置、Xcode 分组框质感：纯净底色 + 极细单像素边框 + 极其克制的 1px 微阴影）
+struct MacCardModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-    var cornerRadius: CGFloat = Theme.radiusLg
+    var cornerRadius: CGFloat = Theme.radiusMd
     var isHovered: Bool = false
 
     func body(content: Content) -> some View {
         content
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(colorScheme == .dark
-                          ? Color(nsColor: .controlBackgroundColor).opacity(0.55)
-                          : Color.white.opacity(0.82))
-            )
-            .background(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
+                    .fill(
+                        colorScheme == .dark
+                            ? Color(nsColor: .controlBackgroundColor).opacity(0.65)
+                            : Color(nsColor: .controlBackgroundColor)
+                    )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
-                        LinearGradient(
-                            colors: colorScheme == .dark
-                                ? [Color.white.opacity(0.18), Color.white.opacity(0.04)]
-                                : [Color.white.opacity(0.9), Color.black.opacity(0.06)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 1
+                        Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.45 : 0.65),
+                        lineWidth: 0.8
                     )
             )
             .shadow(
-                color: colorScheme == .dark
-                    ? Color.black.opacity(isHovered ? 0.4 : 0.2)
-                    : Color.black.opacity(isHovered ? 0.08 : 0.035),
-                radius: isHovered ? 12 : 6,
+                color: Color.black.opacity(colorScheme == .dark ? 0.18 : (isHovered ? 0.05 : 0.02)),
+                radius: isHovered ? 2 : 1,
                 x: 0,
-                y: isHovered ? 4 : 2
+                y: 1
             )
     }
 }
 
-struct FrostedBarModifier: ViewModifier {
+/// macOS 标准工具栏/底栏背景（摒弃浮夸的 Web 弥散模糊，回归 macOS 原生半透平整质感）
+struct MacBarModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         content
             .background(
                 Rectangle()
-                    .fill(colorScheme == .dark
-                          ? Color(nsColor: .windowBackgroundColor).opacity(0.75)
-                          : Color.white.opacity(0.85))
-            )
-            .background(
-                Rectangle()
-                    .fill(.regularMaterial)
+                    .fill(
+                        colorScheme == .dark
+                            ? Color(nsColor: .windowBackgroundColor).opacity(0.92)
+                            : Color(nsColor: .windowBackgroundColor).opacity(0.96)
+                    )
             )
     }
 }
 
-struct SoftTagModifier: ViewModifier {
-    var bg: Color
-    var fg: Color
-    var radius: CGFloat = Theme.radiusPill
+/// macOS 原生行悬停交互
+struct MacRowHoverModifier: ViewModifier {
+    @State private var isHovered = false
+    var cornerRadius: CGFloat = Theme.radiusSm
 
     func body(content: Content) -> some View {
         content
-            .font(Theme.monoFont(11, weight: .semibold))
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(0.045) : Color.clear)
+            )
+            .onHover { hovering in
+                isHovered = hovering
+            }
+    }
+}
+
+/// 保持 API 兼容的软标签修饰符
+struct SoftTagModifier: ViewModifier {
+    var bg: Color
+    var fg: Color
+    var radius: CGFloat = Theme.radiusSm
+
+    func body(content: Content) -> some View {
+        content
+            .font(Theme.monoFont(11, weight: .medium))
             .foregroundColor(fg)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
             .background(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(bg)
+                    .fill(bg.opacity(0.12))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(fg.opacity(0.18), lineWidth: 0.5)
+                    .strokeBorder(fg.opacity(0.2), lineWidth: 0.5)
             )
     }
 }
 
 extension View {
-    func modernCard(cornerRadius: CGFloat = Theme.radiusLg, isHovered: Bool = false) -> some View {
-        modifier(ModernCardModifier(cornerRadius: cornerRadius, isHovered: isHovered))
+    /// 原生 macOS 卡片容器（纯正系统控件底色 + 1px 细微边框）
+    func macCard(cornerRadius: CGFloat = Theme.radiusMd, isHovered: Bool = false) -> some View {
+        modifier(MacCardModifier(cornerRadius: cornerRadius, isHovered: isHovered))
     }
 
+    /// 兼容已有 modernCard 调用的桥接方法，内部全面重构为原生 MacCard
+    func modernCard(cornerRadius: CGFloat = Theme.radiusMd, isHovered: Bool = false) -> some View {
+        modifier(MacCardModifier(cornerRadius: cornerRadius, isHovered: isHovered))
+    }
+
+    /// 原生 macOS 栏修饰符
     func frostedBar() -> some View {
-        modifier(FrostedBarModifier())
+        modifier(MacBarModifier())
     }
 
-    func softTag(bg: Color, fg: Color, radius: CGFloat = Theme.radiusPill) -> some View {
+    /// 行悬停微光效果
+    func macRowHover(cornerRadius: CGFloat = Theme.radiusSm) -> some View {
+        modifier(MacRowHoverModifier(cornerRadius: cornerRadius))
+    }
+
+    /// 原生标签徽章
+    func softTag(bg: Color, fg: Color, radius: CGFloat = Theme.radiusSm) -> some View {
         modifier(SoftTagModifier(bg: bg, fg: fg, radius: radius))
+    }
+
+    /// 原生系统 Toast HUD 浮层提示
+    func hudToast(isPresented: Binding<Bool>, text: String, icon: String = "checkmark.circle.fill", color: Color = Theme.actionBlue) -> some View {
+        modifier(HudToastModifier(isPresented: isPresented, text: text, icon: icon, color: color))
+    }
+}
+
+/// 原生 Toast HUD 浮层
+struct HudToastModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    let text: String
+    var icon: String = "checkmark.circle.fill"
+    var color: Color = Theme.actionBlue
+
+    func body(content: Content) -> some View {
+        ZStack(alignment: .bottom) {
+            content
+
+            if isPresented {
+                HStack(spacing: 8) {
+                    Image(systemName: icon)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(color)
+                    Text(text)
+                        .font(Theme.bodyFont(13, weight: .medium))
+                        .foregroundColor(Theme.labelPrimary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                        .overlay(
+                            Capsule()
+                                .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.8)
+                        )
+                        .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 3)
+                )
+                .padding(.bottom, 20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(99)
+            }
+        }
     }
 }

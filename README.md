@@ -7,19 +7,28 @@
 > 把"让 AI 清理 Mac"的规则**固化成本地原生 App**：一键扫描、手动勾选、安全清理。
 >
 > **个人使用项目**：为本机定制，按需维护，欢迎参考与 fork。
-> UI 风格遵循现代通透 macOS 原生设计规范，融合 UltraThinMaterial 毛玻璃材质、动态渐变与全套自适应浅色/深色主题。
+> UI 风格遵循纯正 **macOS HIG 原生桌面设计规范**：系统级分组数据容器、侧栏磨砂透光（Window Vibrancy）、真实应用图标提取、桌面级右键菜单、系统设置同款 Squircle 彩色底板体系与原生 Toast HUD 胶囊动效。
 
 ## 功能
 
-- **侧边 AI 助手**：针对任意清理项点 ✨ 提问——AI 判断用途、是否适合删除、当前是否被使用（本地 lsof 占用检测 + 上下文分析），可追问（OpenAI 兼容接口，Key 存钥匙串）
+- **AI 再筛查与侧边问答**：
+  - **逐项 AI 筛查**：扫描后一键启动 AI 二次审核，流式批量分析可清理性（可删/谨慎/不建议删）并给出明确理由；
+  - **单项 ✨ 深度问答**：针对任一清理项提问——AI 判断用途、分析是否可删、检测当前占用进程（`lsof`），支持连续追问（OpenAI 兼容接口，配置本地安全存储）。
 - **6 大清理分类**（对应 [CLEANUP-RULES.md](docs/CLEANUP-RULES.md) 的 23 条固化规则）：
   用户缓存 · 日志与临时文件 · 开发残留 · App 残留 · 大文件与垃圾箱 · 浏览器与系统数据
-- **App 卸载器**（融合 Pearcleaner/PureMac）：选 App → 扫描全部关联文件（Preferences/Caches/Containers/Application Support/Logs/LaunchAgents）→ 移废纸篓
-- **清理历史**（融合 Mole `mo history`）：记录每次清理的时间/分类/大小/模式，可追溯
-- **安全优先**：扫描只读 → 手动勾选 → 二次确认 → 默认移入废纸篓（可恢复）
-- **风险分级**：安全（可重建）/ 谨慎（需人眼确认）/ 危险（不可恢复）
-- **误删防护**：硬排除白名单（Mail/Keychains/Accounts/Messages/.ssh 等）、跳过运行中应用、bundle-id 前缀与中英文别名识别已安装 App
-- **现代通透原生 UI**：SF Pro 字体、UltraThinMaterial 悬浮毛玻璃、系统自适应浅色/深色主题、1px 微高光边框、平滑弹性动画、渐变磁盘圆环仪表盘与全新透光晶体高清图标
+- **电脑风险提醒**：独立于文件清理的敏感数据检查模块（SSH 私钥/目录权限过宽检测、明文密钥环境变量暴露排查、敏感命名文件扫描）。
+- **App 卸载器**（融合 Pearcleaner/PureMac）：
+  - 提取本机已安装应用的**真实高清官方图标**；
+  - 智能扫描全部关联残留（Preferences/Caches/Containers/Application Support/Logs/LaunchAgents）→ 安全移入废纸篓。
+- **桌面级原生交互体验**：
+  - **右键快捷菜单**：清理项与 App 残留均支持右键「在访达中高亮显示」、「拷贝绝对路径」与「切换勾选」；
+  - **macOS HIG 原生列表**：采用系统级 Grouped List 分组容器与单像素分割线，支持鼠标行悬停高亮（`macRowHover`），彻底告别卡片套卡片（Card-in-Card）；
+  - **系统级 Squircle 标识**：为 6 大清理分类配备 macOS 系统设置同款平滑圆角彩色底板；
+  - **清理完成 Toast HUD**：系统级操作反馈胶囊，动态提示释放容量。
+- **清理历史**（融合 Mole `mo history`）：记录每次清理的时间/分类/大小/模式，清晰可追溯。
+- **安全优先**：扫描只读 → 手动勾选 → 二次确认 → 默认移入废纸篓（可恢复）。
+- **风险分级**：安全（可重建）/ 谨慎（需人眼确认）/ 危险（不可恢复）。
+- **误删防护**：硬排除白名单（Mail/Keychains/Accounts/Messages/.ssh 等）、跳过运行中应用、bundle-id 前缀与中英文别名识别已安装 App。
 
 功能融合来源见 [docs/FUSION-PLAN.md](docs/FUSION-PLAN.md)。
 

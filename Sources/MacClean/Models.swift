@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 // MARK: - 风险级别（对应 CLEANUP-RULES.md G4）
 
@@ -69,6 +70,17 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
         case .appResidue: return "A1–A4"
         case .largeFiles: return "T1–T5"
         case .browserAndSystem: return "B1–B4"
+        }
+    }
+
+    var accentColor: Color {
+        switch self {
+        case .userCaches: return Color(nsColor: .systemBlue)
+        case .logsAndTemp: return Color(nsColor: .systemOrange)
+        case .devResidue: return Color(nsColor: .systemIndigo)
+        case .appResidue: return Color(nsColor: .systemPurple)
+        case .largeFiles: return Color(nsColor: .systemTeal)
+        case .browserAndSystem: return Color(nsColor: .systemGreen)
         }
     }
 }

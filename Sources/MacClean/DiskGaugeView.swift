@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 磁盘用量仪表（现代通透 macOS 风格，支持双模式自适应）
+/// 磁盘用量仪表（macOS HIG 纯正原生风格：克制利落的系统监控仪表）
 struct DiskGaugeView: View {
     @EnvironmentObject private var app: AppState
 
@@ -8,11 +8,15 @@ struct DiskGaugeView: View {
         app.usedRatio > 0.88
     }
 
+    private var gaugeColor: Color {
+        isHighUsage ? Theme.warningOrange : Theme.actionBlue
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceSm) {
             HStack {
                 Label("磁盘空间", systemImage: "internaldrive")
-                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.labelPrimary)
                 Spacer()
                 Text("Macintosh HD")
@@ -23,57 +27,56 @@ struct DiskGaugeView: View {
             ZStack {
                 // 背景刻度环
                 Circle()
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 10)
+                    .stroke(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 7)
 
-                // 用量进度弧线（带渐变与圆角端点）
+                // 用量进度弧线（纯正原生系统强调色，平滑利落）
                 Circle()
                     .trim(from: 0, to: max(0.02, app.usedRatio))
                     .stroke(
-                        isHighUsage ? Theme.diskWarningGradient : Theme.diskUsedGradient,
-                        style: StrokeStyle(lineWidth: 10, lineCap: .round)
+                        gaugeColor,
+                        style: StrokeStyle(lineWidth: 7, lineCap: .round)
                     )
                     .rotationEffect(.degrees(-90))
-                    .animation(.spring(response: 0.6, dampingFraction: 0.8), value: app.usedRatio)
+                    .animation(.easeOut(duration: 0.5), value: app.usedRatio)
 
-                VStack(spacing: 3) {
+                VStack(spacing: 2) {
                     Text(app.diskUsed.byteStringCN)
-                        .font(Theme.displayFont(22, weight: .bold))
+                        .font(Theme.displayFont(20, weight: .semibold))
                         .foregroundColor(Theme.labelPrimary)
                         .monospacedDigit()
-                        .tracking(-0.4)
                     Text("已用 · 共 \(app.diskTotal.byteStringCN)")
                         .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelSecondary)
                         .monospacedDigit()
                 }
             }
-            .frame(width: 154, height: 154)
+            .frame(width: 140, height: 140)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
+            .padding(.vertical, 4)
 
             HStack {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Circle()
-                        .fill(isHighUsage ? Theme.warningOrange : Theme.actionBlue)
-                        .frame(width: 7, height: 7)
+                        .fill(gaugeColor)
+                        .frame(width: 6, height: 6)
                     Text("可用 \(app.diskAvailable.byteStringCN)")
-                        .font(Theme.bodyFont(11, weight: .medium))
+                        .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelSecondary)
                         .monospacedDigit()
                 }
                 Spacer()
                 Text("\(Int(app.usedRatio * 100))%")
-                    .font(Theme.monoFont(11, weight: .semibold))
-                    .foregroundColor(isHighUsage ? Theme.textWarning : Theme.actionBlue)
+                    .font(Theme.monoFont(11, weight: .medium))
+                    .foregroundColor(isHighUsage ? Theme.textWarning : Theme.labelSecondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(
-                        Capsule()
-                            .fill((isHighUsage ? Theme.warningOrange : Theme.actionBlue).opacity(0.12))
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .fill(Color.primary.opacity(0.04))
                     )
             }
         }
-        .padding(Theme.spaceMd)
-        .modernCard(cornerRadius: Theme.radiusLg)
+        .padding(Theme.spaceSm)
+        .macCard(cornerRadius: Theme.radiusMd)
     }
 }

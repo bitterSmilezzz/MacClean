@@ -181,7 +181,6 @@ struct ContentView: View {
             .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
             .animation(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
         }
-        .background(Theme.parchment)
         .onAppear { app.refreshDisk() }
     }
 

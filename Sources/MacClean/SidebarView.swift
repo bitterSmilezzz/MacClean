@@ -108,14 +108,13 @@ struct SidebarView: View {
             .padding(.top, Theme.spaceSm)
             .padding(.bottom, Theme.contentPadding)
         }
-        .background(Theme.windowBackground)
     }
 
     /// 概览统计（Dashboard / 侧栏底部统计条共用）
     var statsLine: some View {
         HStack(spacing: 0) {
             Text("\(app.scannedCount)/\(CleanCategory.allCases.count)")
-                .font(Theme.monoFont(12, weight: .semibold))
+                .font(Theme.monoFont(11, weight: .medium))
                 .foregroundColor(Theme.labelSecondary)
                 .monospacedDigit()
             Text(" 已扫描")
@@ -123,7 +122,7 @@ struct SidebarView: View {
                 .foregroundColor(Theme.labelTertiary)
             Spacer()
             Text(app.totalCleanable.byteStringCN)
-                .font(Theme.monoFont(12, weight: .semibold))
+                .font(Theme.monoFont(11, weight: .semibold))
                 .foregroundColor(Theme.actionBlue)
                 .monospacedDigit()
             Text(" 可清理")
@@ -131,10 +130,14 @@ struct SidebarView: View {
                 .foregroundColor(Theme.labelTertiary)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .background(
-            Capsule()
-                .fill(Color.primary.opacity(0.04))
+            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                .fill(Color.primary.opacity(0.035))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                        .stroke(Theme.separator.opacity(0.4), lineWidth: 0.5)
+                )
         )
     }
 }
@@ -149,38 +152,32 @@ struct ToolRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: Theme.spaceSm) {
+            HStack(spacing: 10) {
                 Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isActive ? Theme.actionBlue : Theme.labelSecondary)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
                     .background(
-                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.primary.opacity(0.04))
                     )
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
-                        .font(Theme.bodyFont(14, weight: isActive ? .semibold : .medium))
+                        .font(Theme.bodyFont(13, weight: isActive ? .semibold : .regular))
                         .foregroundColor(isActive ? Theme.actionBlue : Theme.labelPrimary)
                     Text(subtitle)
                         .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelTertiary)
                 }
                 Spacer()
-                if isActive {
-                    Capsule()
-                        .fill(Theme.actionBlue)
-                        .frame(width: 4, height: 16)
-                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
             .background(
-                RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                    .fill(isActive ? Theme.actionBlue.opacity(0.1) : Color.clear)
+                RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                    .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -194,20 +191,19 @@ struct CategoryRow: View {
     var isActive: Bool = false
 
     var body: some View {
-        HStack(spacing: Theme.spaceSm) {
+        HStack(spacing: 10) {
             Image(systemName: category.icon)
-                .font(.system(size: 14, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundColor(isActive ? Theme.actionBlue : Theme.labelSecondary)
-                .frame(width: 28, height: 28)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(category.accentColor)
+                .frame(width: 24, height: 24)
                 .background(
-                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                        .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.primary.opacity(0.04))
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(category.accentColor.opacity(0.14))
                 )
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(category.title)
-                    .font(Theme.bodyFont(14, weight: isActive ? .semibold : .medium))
+                    .font(Theme.bodyFont(13, weight: isActive ? .semibold : .regular))
                     .foregroundColor(isActive ? Theme.actionBlue : Theme.labelPrimary)
                 Text(state.isScanned ? "已扫描 · \(state.items.count) 项" : "未扫描")
                     .font(Theme.bodyFont(11))
@@ -221,22 +217,17 @@ struct CategoryRow: View {
             }
             if state.isScanned && state.totalSize > 0 && !state.isScanning {
                 Text(state.totalSize.byteStringCN)
-                    .font(Theme.monoFont(12, weight: .semibold))
+                    .font(Theme.monoFont(11, weight: .medium))
                     .foregroundColor(Theme.labelSecondary)
                     .monospacedDigit()
-            }
-            if isActive {
-                Capsule()
-                    .fill(Theme.actionBlue)
-                    .frame(width: 4, height: 16)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .background(
-            RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous)
-                .fill(isActive ? Theme.actionBlue.opacity(0.1) : Color.clear)
+            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.clear)
         )
     }
 }

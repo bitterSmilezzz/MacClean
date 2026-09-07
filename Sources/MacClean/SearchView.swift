@@ -141,8 +141,13 @@ struct SearchView: View {
 
     private var resultList: some View {
         ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(results) { result in
+            VStack(spacing: 0) {
+                ForEach(Array(results.enumerated()), id: \.element.id) { index, result in
+                    if index > 0 {
+                        Divider()
+                            .overlay(Theme.separator.opacity(0.35))
+                            .padding(.leading, 38)
+                    }
                     SearchResultRow(result: result) {
                         switch result.kind {
                         case .item(let cat):
@@ -153,7 +158,8 @@ struct SearchView: View {
                     }
                 }
             }
-            .padding(Theme.spaceLg)
+            .macCard(cornerRadius: Theme.radiusMd)
+            .padding(Theme.spaceMd)
         }
     }
 }
@@ -165,19 +171,21 @@ struct SearchResultRow: View {
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(spacing: Theme.spaceSm) {
+            HStack(spacing: 10) {
                 // 类型图标
                 Image(systemName: iconName)
                     .font(.system(size: 13, weight: .medium))
-                    .symbolRenderingMode(.hierarchical)
                     .foregroundColor(Theme.actionBlue)
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(Theme.actionBlue.opacity(0.12)))
+                    .frame(width: 24, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .fill(Theme.actionBlue.opacity(0.12))
+                    )
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(result.name)
-                            .font(Theme.bodyFont(15, weight: .semibold))
+                            .font(Theme.bodyFont(13, weight: .medium))
                             .foregroundColor(Theme.labelPrimary)
                             .lineLimit(1)
                         if let risk = result.risk {
@@ -189,7 +197,10 @@ struct SearchResultRow: View {
                                 .foregroundColor(Theme.labelTertiary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
-                                .background(Capsule().fill(Color.primary.opacity(0.04)))
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .fill(Color.primary.opacity(0.04))
+                                )
                         }
                     }
                     Text(result.subtitle)
@@ -201,15 +212,15 @@ struct SearchResultRow: View {
                 Spacer()
                 if result.size > 0 {
                     Text(result.size.byteStringCN)
-                        .font(Theme.monoFont(13, weight: .semibold))
+                        .font(Theme.monoFont(12, weight: .semibold))
                         .foregroundColor(Theme.labelPrimary)
                         .monospacedDigit()
                 }
             }
-            .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, Theme.spaceXs)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
             .contentShape(Rectangle())
-            .modernCard(cornerRadius: Theme.radiusMd)
+            .macRowHover(cornerRadius: 0)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("searchResultRow")

@@ -8,6 +8,8 @@ struct CategoryDetailView: View {
     @State private var showCleanSheet = false
     @State private var permanentMode = false
     @State private var filterQuery = ""
+    @State private var showHud = false
+    @State private var hudMessage = ""
 
     private var st: CategoryState { app.state(for: category) }
 
@@ -114,6 +116,13 @@ struct CategoryDetailView: View {
             footer
         }
         .background(Theme.windowBackground)
+        .onChange(of: app.lastCleanSummary) { summary in
+            if let summary, !summary.isEmpty {
+                hudMessage = summary
+                showHud = true
+            }
+        }
+        .hudToast(isPresented: $showHud, text: hudMessage)
         .sheet(isPresented: $showCleanSheet) {
             // 过滤激活且有隐藏已选时，确认弹窗显示全量口径并附提示（二轮 #4）
             let filtering = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -139,9 +148,9 @@ struct CategoryDetailView: View {
             Image(systemName: category.icon)
                 .font(.system(size: 20, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundColor(Theme.actionBlue)
+                .foregroundColor(category.accentColor)
                 .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.actionBlue.opacity(0.12)))
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(category.accentColor.opacity(0.14)))
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(category.title)
@@ -321,7 +330,7 @@ struct CategoryDetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - 结果列表（按风险分组，降低密度）
+    // MARK: - 结果列表（按风险分组，macOS 原生 Grouped List 规范）
 
     private var itemList: some View {
         ScrollView {
@@ -330,20 +339,19 @@ struct CategoryDetailView: View {
                 ForEach(RiskGroup.allCases, id: \.self) { group in
                     let groupItems = filteredItems.filter { $0.risk == group.risk }
                     if !groupItems.isEmpty {
-                        VStack(alignment: .leading, spacing: Theme.spaceSm) {
-                            // 分组标题（eyebrow 模式：大写小字 + 宽字距 + mono 计数）
+                        VStack(alignment: .leading, spacing: 6) {
+                            // 分组标题
                             HStack(spacing: 8) {
-                                Circle().fill(group.color).frame(width: 8, height: 8)
-                                Text(group.title.uppercased())
+                                Circle().fill(group.color).frame(width: 7, height: 7)
+                                Text(group.title)
                                     .font(Theme.bodyFont(12, weight: .semibold))
-                                    .tracking(1.2)
                                     .foregroundColor(Theme.labelSecondary)
                                 Text("\(groupItems.count) 项 · \(groupItems.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
-                                    .font(Theme.monoFont(12))
+                                    .font(Theme.monoFont(11))
                                     .foregroundColor(Theme.labelTertiary)
                                     .monospacedDigit()
                                 Spacer()
-                                // 组级快捷勾选（仍走 G2 确认弹窗，只是快捷方式）
+                                // 组级快捷勾选
                                 Button(groupItems.allSatisfy(\.isSelected) ? "取消本组" : "勾选本组") {
                                     let target = !groupItems.allSatisfy(\.isSelected)
                                     for item in groupItems {
@@ -351,27 +359,36 @@ struct CategoryDetailView: View {
                                     }
                                 }
                                 .buttonStyle(.borderless)
-                                .font(Theme.bodyFont(12, weight: .medium))
+                                .font(Theme.bodyFont(11, weight: .medium))
                                 .foregroundColor(group == .danger ? Theme.labelTertiary : Theme.actionBlue)
                                 .disabled(group == .danger)   // 危险组不支持一键勾选（安全护栏）
                             }
-                            .padding(.horizontal, 2)
+                            .padding(.horizontal, 4)
 
-                            ForEach(Array(groupItems.enumerated()), id: \.element.id) { _, item in
-                                ItemRowView(
-                                    item: item,
-                                    isSelected: item.isSelected,
-                                    onToggle: { selected in st.setSelected(item.id, selected) },
-                                    onAskAI: { app.ai.askAbout(item: item) },
-                                    isDisabled: app.ai.isLoading,
-                                    aiReview: app.aiReview.review(for: item)
-                                )
+                            // 原生分组容器（组内各行由精细分割线隔开）
+                            VStack(spacing: 0) {
+                                ForEach(Array(groupItems.enumerated()), id: \.element.id) { index, item in
+                                    if index > 0 {
+                                        Divider()
+                                            .overlay(Theme.separator.opacity(0.35))
+                                            .padding(.leading, 38)
+                                    }
+                                    ItemRowView(
+                                        item: item,
+                                        isSelected: item.isSelected,
+                                        onToggle: { selected in st.setSelected(item.id, selected) },
+                                        onAskAI: { app.ai.askAbout(item: item) },
+                                        isDisabled: app.ai.isLoading,
+                                        aiReview: app.aiReview.review(for: item)
+                                    )
+                                }
                             }
+                            .macCard(cornerRadius: Theme.radiusMd)
                         }
                     }
                 }
             }
-            .padding(Theme.spaceLg)
+            .padding(Theme.spaceMd)
         }
         .background(Theme.windowBackground)
     }
@@ -421,24 +438,23 @@ struct CategoryDetailView: View {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(Theme.actionBlue)
                     Text(summary)
-                        .font(Theme.bodyFont(14, weight: .medium))
+                        .font(Theme.bodyFont(13, weight: .medium))
                         .foregroundColor(Theme.labelPrimary)
                 }
             }
             Spacer()
-            VStack(alignment: .trailing, spacing: 0) {
+            VStack(alignment: .trailing, spacing: 1) {
                 Text("已选 \(shownCount) 项" + (filtering && hiddenSelectedCount > 0 ? "（另有 \(hiddenSelectedCount) 项隐藏已选）" : ""))
-                    .font(Theme.bodyFont(12))
+                    .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.labelTertiary)
                     .monospacedDigit()
                 Text(shownSize.byteStringCN)
-                    .font(Theme.displayFont(20, weight: .semibold))
+                    .font(Theme.displayFont(18, weight: .semibold))
                     .foregroundColor(Theme.labelPrimary)
                     .monospacedDigit()
             }
 
             // 清理（原生 macOS 主按钮）
-            // 门槛用全量已选：过滤激活时隐藏已选也参与清理（三巡：可见=0 但隐藏>0 时按钮可点）
             Button {
                 showCleanSheet = true
             } label: {
@@ -451,7 +467,7 @@ struct CategoryDetailView: View {
             .disabled(st.selectedCount == 0 || app.isCleaning)
         }
         .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceSm)
+        .padding(.vertical, 10)
         .frostedBar()
         .overlay(alignment: .top) {
             Divider().overlay(Theme.separator)
@@ -459,7 +475,7 @@ struct CategoryDetailView: View {
     }
 }
 
-/// 单个清理项行（默认紧凑：名称+大小+风险+使用频率+AI 结论；点击展开路径/备注）
+/// 单个清理项行（macOS 原生数据行：整洁、紧凑、支持行悬停）
 struct ItemRowView: View {
     let item: CleanItem
     let isSelected: Bool
@@ -473,46 +489,47 @@ struct ItemRowView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: Theme.spaceSm) {
+            HStack(spacing: 10) {
                 // 勾选框
                 Button(action: { onToggle(!isSelected) }) {
                     Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                        .font(.system(size: 18))
-                        .foregroundColor(isSelected ? Theme.actionBlue : Theme.labelTertiary.opacity(0.6))
+                        .font(.system(size: 15))
+                        .foregroundColor(isSelected ? Theme.actionBlue : Theme.labelTertiary)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("itemToggle")
+                .accessibilityLabel(isSelected ? "已勾选" : "未勾选")
 
-                VStack(alignment: .leading, spacing: 2) {
+                // 名称 + 风险/使用/AI 标签
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(item.name)
-                            .font(Theme.bodyFont(15, weight: .semibold))
+                            .font(Theme.bodyFont(13, weight: .medium))
                             .foregroundColor(Theme.labelPrimary)
                             .lineLimit(1)
                         RiskBadge(risk: item.risk)
-                        // 使用频率徽标（用户诉求：最近是否在用/是否频繁，判断值不值得删）
                         UsageBadge(usage: item.usage)
-                        // AI 再筛查结论徽标（AI 扫描：可删/谨慎/不建议删）
-                        if let aiReview, aiReview.verdict.isDecided {
+                        if let aiReview {
                             ReviewBadge(verdict: aiReview.verdict)
                         }
                     }
-                    // 展开后显示路径、使用情况、AI 理由与备注（密度优化：默认隐藏）
+
+                    // 展开后显示路径、使用情况、AI 理由与备注
                     if isExpanded {
                         Text(item.path)
-                            .font(Theme.bodyFont(12))
+                            .font(Theme.monoFont(11))
                             .foregroundColor(Theme.labelTertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .textSelection(.enabled)
                         if let lastUsed = item.lastUsed {
                             Text("最近使用：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
-                                .font(Theme.bodyFont(12, weight: .medium))
+                                .font(Theme.bodyFont(11))
                                 .foregroundColor(item.usage.isRecentlyUsed ? Theme.textWarning : Theme.labelTertiary)
                         }
                         if let aiReview, !aiReview.reason.isEmpty {
                             Text("AI 建议：\(aiReview.reason)")
-                                .font(Theme.bodyFont(12, weight: .medium))
+                                .font(Theme.bodyFont(11, weight: .medium))
                                 .foregroundColor(aiReview.verdict == .keep ? Theme.textDanger
                                                 : aiReview.verdict == .caution ? Theme.textWarning
                                                 : Theme.actionBlue)
@@ -520,7 +537,7 @@ struct ItemRowView: View {
                         }
                         if !item.note.isEmpty {
                             Text(item.note)
-                                .font(Theme.bodyFont(12))
+                                .font(Theme.bodyFont(11))
                                 .foregroundColor(Theme.labelTertiary.opacity(0.8))
                                 .lineLimit(2)
                         }
@@ -528,7 +545,7 @@ struct ItemRowView: View {
                 }
                 Spacer()
                 Text(item.size.byteStringCN)
-                    .font(Theme.monoFont(14, weight: .semibold))
+                    .font(Theme.monoFont(12, weight: .medium))
                     .foregroundColor(Theme.labelPrimary)
                     .monospacedDigit()
 
@@ -537,25 +554,26 @@ struct ItemRowView: View {
                     withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
                 } label: {
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(Theme.labelTertiary)
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.primary.opacity(0.05)))
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("itemExpandButton")
                 .accessibilityLabel(isExpanded ? "收起路径" : "显示路径")
                 .help(isExpanded ? "收起路径" : "显示路径")
 
-                // 问 AI：针对该项提问（用途/能否删/是否在用）
-                // LOW-2（终检）：请求在途时禁用，避免静默无效
+                // 问 AI：针对该项提问
                 if let onAskAI {
                     Button(action: onAskAI) {
                         Image(systemName: "sparkles")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(Theme.actionBlue)
-                            .frame(width: 26, height: 26)
-                            .background(Circle().fill(Theme.actionBlue.opacity(isDisabled ? 0.05 : 0.12)))
+                            .frame(width: 22, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Theme.actionBlue.opacity(isDisabled ? 0.04 : 0.1))
+                            )
                     }
                     .buttonStyle(.plain)
                     .disabled(isDisabled)
@@ -564,10 +582,33 @@ struct ItemRowView: View {
                     .help(isDisabled ? "AI 回复中，请稍候" : "问 AI：这个是什么？能删吗？")
                 }
             }
-            .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, Theme.spaceSm)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .macRowHover(cornerRadius: 0)
+            .contextMenu {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+                } label: {
+                    Label("在访达中显示", systemImage: "folder")
+                }
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(item.path, forType: .string)
+                } label: {
+                    Label("拷贝路径", systemImage: "doc.on.doc")
+                }
+
+                Divider()
+
+                Button {
+                    onToggle(!isSelected)
+                } label: {
+                    Label(isSelected ? "取消勾选" : "勾选", systemImage: isSelected ? "square" : "checkmark.square")
+                }
+            }
         }
-        .modernCard(cornerRadius: Theme.radiusMd)
     }
 }
 
