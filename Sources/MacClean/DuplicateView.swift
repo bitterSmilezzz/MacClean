@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 
 /// 重复文件查找与去重视图（macOS HIG 原生设计）
 struct DuplicateView: View {
@@ -6,6 +7,7 @@ struct DuplicateView: View {
     @State private var showConfirmSheet = false
     @State private var permanentMode = false
     @State private var showSettingsPopover = false
+    @State private var quickLookURL: URL?
 
     private var dup: DuplicateState { app.duplicateState }
 
@@ -37,6 +39,7 @@ struct DuplicateView: View {
             }
         }
         .background(Theme.canvas)
+        .quickLookPreview($quickLookURL)
         .sheet(isPresented: $showConfirmSheet) {
             confirmCleanSheet
         }
@@ -180,7 +183,9 @@ struct DuplicateView: View {
         ScrollView {
             LazyVStack(spacing: Theme.spaceSm) {
                 ForEach(dup.filteredGroups) { group in
-                    DuplicateGroupCard(group: group)
+                    DuplicateGroupCard(group: group) { url in
+                        quickLookURL = url
+                    }
                 }
             }
             .padding(Theme.spaceMd)
@@ -246,6 +251,7 @@ struct DuplicateView: View {
 struct DuplicateGroupCard: View {
     @EnvironmentObject private var app: AppState
     let group: DuplicateGroup
+    var onPreview: ((URL) -> Void)? = nil
     private var dup: DuplicateState { app.duplicateState }
 
     var body: some View {
@@ -315,7 +321,7 @@ struct DuplicateGroupCard: View {
             // 副本文件行
             VStack(spacing: 0) {
                 ForEach(group.items) { item in
-                    DuplicateFileRow(group: group, item: item)
+                    DuplicateFileRow(group: group, item: item, onPreview: onPreview)
                 }
             }
         }
@@ -328,6 +334,7 @@ struct DuplicateFileRow: View {
     @EnvironmentObject private var app: AppState
     let group: DuplicateGroup
     let item: DuplicateFileItem
+    var onPreview: ((URL) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -389,11 +396,35 @@ struct DuplicateFileRow: View {
             }
 
             Spacer()
+
+            // 原生 QuickLook 快速预览图标按钮
+            Button {
+                let url = URL(fileURLWithPath: item.path)
+                onPreview?(url)
+            } label: {
+                Image(systemName: "eye")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.labelTertiary)
+                    .frame(width: 24, height: 24)
+                    .background(Color.primary.opacity(0.04))
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .help("按快速查看 (Quick Look) 预览文件内容")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .macRowHover(cornerRadius: 0)
         .contextMenu {
+            Button {
+                let url = URL(fileURLWithPath: item.path)
+                onPreview?(url)
+            } label: {
+                Label("快速查看 (Quick Look)", systemImage: "eye")
+            }
+
+            Divider()
+
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
             } label: {
