@@ -660,6 +660,30 @@ enum Selftest {
             _ = try row.inspect().find(text: "高风险")
             return true
         }
+        check("历史导出器：CSV 导出（含 BOM 与列头）") {
+            let records = [
+                CleanRecord(date: Date(), categoryName: "系统日志", itemCount: 5, bytes: 1_000_000, mode: "移入废纸篓", failures: 0),
+                CleanRecord(date: Date(), categoryName: "用户缓存", itemCount: 10, bytes: 2_000_000, mode: "彻底删除", failures: 1)
+            ]
+            let csv = HistoryExporter.generateCSV(records: records)
+            guard csv.hasPrefix("\u{FEFF}") else { return false }
+            guard csv.contains("记录ID,清理时间,分类,清理模式,清理项数,失败项数,释放字节数,释放大小") else { return false }
+            guard csv.contains("系统日志") && csv.contains("用户缓存") && csv.contains("1 MB") && csv.contains("2 MB") else { return false }
+            return true
+        }
+        check("历史导出器：Markdown 报告生成统计分析") {
+            let records = [
+                CleanRecord(date: Date(), categoryName: "系统日志", itemCount: 5, bytes: 1_000_000, mode: "移入废纸篓", failures: 0),
+                CleanRecord(date: Date(), categoryName: "用户缓存", itemCount: 10, bytes: 2_000_000, mode: "彻底删除", failures: 1)
+            ]
+            let report = HistoryExporter.generateReport(records: records)
+            guard report.contains("# MacClean 清理历史归档报告") else { return false }
+            guard report.contains("清理执行次数：2 次") else { return false }
+            guard report.contains("3 MB") else { return false }
+            guard report.contains("各分类释放分布统计") else { return false }
+            guard report.contains("详细清理流水记录") else { return false }
+            return true
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")

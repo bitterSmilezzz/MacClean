@@ -3,13 +3,31 @@ import Foundation
 // MARK: - 清理历史记录（借鉴 Mole `mo history`）
 
 struct CleanRecord: Codable, Identifiable, Equatable {
-    var id = UUID()
-    var date = Date()
+    var id: UUID
+    var date: Date
     var categoryName: String
     var itemCount: Int
     var bytes: Int64
     var mode: String        // 废纸篓 / 彻底删除
     var failures: Int
+
+    init(
+        id: UUID = UUID(),
+        date: Date = Date(),
+        categoryName: String,
+        itemCount: Int,
+        bytes: Int64,
+        mode: String,
+        failures: Int = 0
+    ) {
+        self.id = id
+        self.date = date
+        self.categoryName = categoryName
+        self.itemCount = itemCount
+        self.bytes = bytes
+        self.mode = mode
+        self.failures = failures
+    }
 }
 
 enum HistoryStore {
