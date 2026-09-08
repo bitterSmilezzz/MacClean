@@ -725,6 +725,49 @@ enum Selftest {
             guard LargeFileTypeFilter.other.matches(item: unknown) && !LargeFileTypeFilter.other.matches(item: dmg) else { return false }
             return true
         }
+        check("磁盘监控：DiskMonitorConfig 配置加载与保存") {
+            var cfg = DiskMonitorConfig()
+            cfg.autoScanEnabled = true
+            cfg.scanIntervalHours = 6
+            cfg.lowSpaceAlertEnabled = true
+            cfg.lowSpaceThresholdGB = 20
+            cfg.save()
+
+            let loaded = DiskMonitorConfig.load()
+            guard loaded.autoScanEnabled == true && loaded.scanIntervalHours == 6 else { return false }
+            guard loaded.lowSpaceAlertEnabled == true && loaded.lowSpaceThresholdGB == 20 else { return false }
+            return true
+        }
+        check("磁盘监控：空间充足时不触发预警弹窗与通知") {
+            let monitor = DiskMonitor.shared
+            monitor.config.lowSpaceAlertEnabled = true
+            monitor.config.lowSpaceThresholdGB = 15
+            monitor.showLowSpaceAlert = false
+
+            // 可用 50 GB (> 15 GB)
+            monitor.checkDiskSpaceAlert(availableBytes: 50_000_000_000)
+            guard monitor.showLowSpaceAlert == false else { return false }
+            return true
+        }
+        check("磁盘监控：空间不足触发警戒弹窗与系统预警通知") {
+            let monitor = DiskMonitor.shared
+            monitor.config.lowSpaceAlertEnabled = true
+            monitor.config.lowSpaceThresholdGB = 15
+            monitor.showLowSpaceAlert = false
+
+            // 可用 5 GB (< 15 GB)
+            monitor.checkDiskSpaceAlert(availableBytes: 5_000_000_000)
+            guard monitor.showLowSpaceAlert == true else { return false }
+
+            // 检查系统通知是否派发
+            guard let notif = NotificationManager.shared.lastNotification else { return false }
+            guard notif.title == "⚠️ Mac 磁盘空间不足警戒" else { return false }
+            guard notif.body.contains("5 GB") && notif.body.contains("15 GB") else { return false }
+
+            // 复位测试状态
+            monitor.showLowSpaceAlert = false
+            return true
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")

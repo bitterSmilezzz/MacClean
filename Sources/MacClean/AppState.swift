@@ -24,6 +24,8 @@ final class AppState: ObservableObject {
     var ai = AIState()   // 需为 var：Binding（$app.ai.xxx）不能穿过 let 属性
     /// AI 再筛查状态（AI 扫描）：脚本扫描之外的 AI 二次判断
     let aiReview = AIReviewState()
+    /// 磁盘低空间与定时巡检监控器
+    var diskMonitor = DiskMonitor.shared
 
     // MARK: - 风险检查（电脑风险提醒）
     @Published var riskItems: [RiskItem] = []
@@ -53,8 +55,13 @@ final class AppState: ObservableObject {
         aiReview.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        // 磁盘巡检监控器同样转发
+        diskMonitor.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
         ai.app = self   // 弱引用：列表级提问需访问当前分类状态
         aiReview.app = self
+        diskMonitor.app = self
 
         // 监听分类可清理项目总数变化，异步更新 Dock 徽标
         objectWillChange
@@ -76,6 +83,7 @@ final class AppState: ObservableObject {
         if let v = DiskInfo.volumes() {
             diskTotal = v.total
             diskAvailable = v.available
+            diskMonitor.checkDiskSpaceAlert(availableBytes: v.available)
         }
     }
 

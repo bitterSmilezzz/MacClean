@@ -298,6 +298,17 @@ struct ContentView: View {
             app.refreshDisk()
             NotificationManager.shared.requestAuthorization()
         }
+        .alert("⚠️ Mac 磁盘空间不足警戒", isPresented: $app.diskMonitor.showLowSpaceAlert) {
+            Button("立即扫描全部分类", role: .none) {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    app.destination = .dashboard
+                }
+                app.scanAll()
+            }
+            Button("稍后提醒", role: .cancel) {}
+        } message: {
+            Text("当前可用空间仅剩 \(app.diskAvailable.byteStringCN)，已低于预设的警戒阈值 \(app.diskMonitor.config.lowSpaceThresholdGB) GB。建议立即执行系统深度清理释放空间！")
+        }
     }
 
     private var mainContent: some View {

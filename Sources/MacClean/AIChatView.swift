@@ -438,6 +438,56 @@ struct AISettingsView: View {
                     .fill((result.ok ? Theme.actionBlue : Theme.dangerRed).opacity(0.08)))
             }
 
+            Divider().overlay(Theme.hairline)
+
+            // 定时自动巡检与磁盘低空间警戒
+            VStack(alignment: .leading, spacing: 10) {
+                Text("定时巡检与磁盘预警")
+                    .font(Theme.displayFont(15, weight: .semibold))
+                    .foregroundColor(Theme.ink)
+
+                Toggle("开启后台定时自动巡检扫描", isOn: $app.diskMonitor.config.autoScanEnabled)
+                    .font(Theme.bodyFont(13))
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+
+                if app.diskMonitor.config.autoScanEnabled {
+                    HStack {
+                        Text("巡检时间间隔")
+                            .font(Theme.bodyFont(13))
+                            .foregroundColor(Theme.inkMuted80)
+                        Spacer()
+                        Stepper(value: $app.diskMonitor.config.scanIntervalHours, in: 1...24) {
+                            Text("每 \(app.diskMonitor.config.scanIntervalHours) 小时")
+                                .font(Theme.monoFont(13))
+                                .foregroundColor(Theme.actionBlue)
+                        }
+                    }
+                    .padding(.leading, 12)
+                }
+
+                Toggle("开启磁盘空间不足警戒弹窗", isOn: $app.diskMonitor.config.lowSpaceAlertEnabled)
+                    .font(Theme.bodyFont(13))
+                    .toggleStyle(.switch)
+                    .tint(Theme.actionBlue)
+
+                if app.diskMonitor.config.lowSpaceAlertEnabled {
+                    HStack {
+                        Text("空间警戒阈值 (GB)")
+                            .font(Theme.bodyFont(13))
+                            .foregroundColor(Theme.inkMuted80)
+                        Spacer()
+                        Stepper(value: $app.diskMonitor.config.lowSpaceThresholdGB, in: 5...100, step: 5) {
+                            Text("低于 \(app.diskMonitor.config.lowSpaceThresholdGB) GB")
+                                .font(Theme.monoFont(13))
+                                .foregroundColor(Theme.dangerRed)
+                        }
+                    }
+                    .padding(.leading, 12)
+                }
+            }
+            .padding(.top, 4)
+
             HStack {
                 if isTesting {
                     ProgressView().controlSize(.small).tint(Theme.actionBlue)

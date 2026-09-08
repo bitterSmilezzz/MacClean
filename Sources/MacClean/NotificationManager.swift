@@ -126,6 +126,33 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    /// 发送磁盘低空间警戒系统通知
+    func notifyLowDiskSpace(availableBytes: Int64, thresholdGB: Int) {
+        let title = "⚠️ Mac 磁盘空间不足警戒"
+        let body = "当前可用空间仅剩 \(availableBytes.byteStringCN)，已低于预警阈值 \(thresholdGB) GB。建议立即启动系统清理！"
+
+        lastNotification = SentNotification(title: title, body: body)
+
+        guard let center else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "com.macclean.disk.lowspace.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+
+        center.add(request) { error in
+            if let error {
+                print("[NotificationManager] 发送低空间警告失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
     // MARK: - UNUserNotificationCenterDelegate
     // 应用在前台时同样显示通知横幅
     func userNotificationCenter(
