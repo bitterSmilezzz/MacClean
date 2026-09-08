@@ -371,6 +371,7 @@ struct AISettingsView: View {
     // 白名单添加临时输入
     @State private var manualWhitelistPath = ""
     @State private var manualWhitelistComment = ""
+    @State private var manualWhitelistExt = ""
 
     enum SettingsTab: String, CaseIterable, Identifiable {
         case ai = "AI 接口"
@@ -675,16 +676,26 @@ struct AISettingsView: View {
                     VStack(spacing: 6) {
                         ForEach(app.whitelist.rules) { rule in
                             HStack(spacing: 8) {
-                                Image(systemName: rule.type == .appName ? "app.badge" : "folder.badge.shield.half.filled")
+                                Image(systemName: rule.type == .appName ? "app.badge"
+                                      : rule.type == .extension ? "doc.badge.gearshape"
+                                      : "folder.badge.shield.half.filled")
                                     .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(Theme.actionBlue)
+                                    .foregroundColor(rule.type == .extension ? Theme.warningOrange : Theme.actionBlue)
 
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(rule.pattern)
-                                        .font(Theme.monoFont(12, weight: .medium))
-                                        .foregroundColor(Theme.labelPrimary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                                    HStack(spacing: 4) {
+                                        if rule.type == .extension {
+                                            Text("扩展名: .\(rule.pattern)")
+                                                .font(Theme.monoFont(12, weight: .semibold))
+                                                .foregroundColor(Theme.labelPrimary)
+                                        } else {
+                                            Text(rule.pattern)
+                                                .font(Theme.monoFont(12, weight: .medium))
+                                                .foregroundColor(Theme.labelPrimary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                        }
+                                    }
                                     if !rule.comment.isEmpty {
                                         Text(rule.comment)
                                             .font(Theme.bodyFont(10))
@@ -715,18 +726,34 @@ struct AISettingsView: View {
 
             // 手动输入路径
             HStack(spacing: 6) {
-                TextField("手动输入路径 (例如 ~/my-data)", text: $manualWhitelistPath)
+                TextField("输入保护路径 (例如 ~/my-data)", text: $manualWhitelistPath)
                     .textFieldStyle(.roundedBorder)
                     .font(Theme.bodyFont(12))
-                Button("添加") {
+                Button("添加路径") {
                     let path = manualWhitelistPath.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !path.isEmpty else { return }
-                    app.addPathToWhitelist(path, comment: "手动添加")
+                    app.addPathToWhitelist(path, comment: "手动添加路径")
                     manualWhitelistPath = ""
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(manualWhitelistPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            // 手动输入排除扩展名
+            HStack(spacing: 6) {
+                TextField("输入排除扩展名 (例如 dmg, iso, psd, raw)", text: $manualWhitelistExt)
+                    .textFieldStyle(.roundedBorder)
+                    .font(Theme.bodyFont(12))
+                Button("排除扩展名") {
+                    let ext = manualWhitelistExt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !ext.isEmpty else { return }
+                    app.addExtensionToWhitelist(ext, comment: "自定义排除扩展名")
+                    manualWhitelistExt = ""
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(manualWhitelistExt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
     }

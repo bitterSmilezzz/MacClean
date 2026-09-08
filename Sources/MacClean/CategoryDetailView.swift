@@ -451,6 +451,7 @@ struct CategoryDetailView: View {
                                         isDisabled: app.ai.isLoading,
                                         aiReview: app.aiReview.review(for: item),
                                         onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) },
+                                        onAddExtensionToWhitelist: { ext in app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件") },
                                         onPreview: { url in quickLookURL = url }
                                     )
                                 }
@@ -561,6 +562,7 @@ struct ItemRowView: View {
     /// AI 再筛查结论（无则 nil）
     var aiReview: ItemReview? = nil
     var onAddToWhitelist: (() -> Void)? = nil
+    var onAddExtensionToWhitelist: ((String) -> Void)? = nil
     var onPreview: ((URL) -> Void)? = nil
 
     @State private var isExpanded = false
@@ -729,6 +731,19 @@ struct ItemRowView: View {
                     }
                 } label: {
                     Label("加入白名单排除（不再扫描）", systemImage: "shield.slash")
+                }
+
+                let ext = (item.path as NSString).pathExtension.lowercased()
+                if !ext.isEmpty {
+                    Button {
+                        if let onAddExtensionToWhitelist {
+                            onAddExtensionToWhitelist(ext)
+                        } else {
+                            WhitelistManager.shared.addExtensionRule(ext, comment: "排除 .\(ext) 文件")
+                        }
+                    } label: {
+                        Label("排除所有 .\(ext) 格式（不再扫描）", systemImage: "doc.badge.gearshape")
+                    }
                 }
             }
         }

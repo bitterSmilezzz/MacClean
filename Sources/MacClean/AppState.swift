@@ -173,6 +173,26 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 将指定文件扩展名加入排除白名单并立刻从当前已扫描项目中移除
+    func addExtensionToWhitelist(_ ext: String, comment: String = "") {
+        whitelist.addExtensionRule(ext, comment: comment)
+        for cat in categories {
+            cat.items.removeAll { item in
+                whitelist.isExtensionWhitelisted(path: item.path) || item.paths.contains(where: { whitelist.isExtensionWhitelisted(path: $0) })
+            }
+        }
+        uninstaller.related.removeAll { f in
+            whitelist.isExtensionWhitelisted(path: f.path)
+        }
+        duplicateState.groups = duplicateState.groups.compactMap { group in
+            let filtered = group.items.filter { !whitelist.isExtensionWhitelisted(path: $0.path) }
+            guard filtered.count >= 2 else { return nil }
+            var updated = group
+            updated.items = filtered
+            return updated
+        }
+    }
+
     // MARK: - 键盘快捷键响应操作
 
     /// ⌘R 智能刷新当前上下文（按当前页面自适应）

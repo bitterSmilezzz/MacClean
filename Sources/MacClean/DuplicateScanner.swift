@@ -242,8 +242,8 @@ enum DuplicateScanner {
 
             for case let fileURL as URL in enumerator {
                 let path = fileURL.path
-                // 白名单过滤
-                if whitelist.isWhitelisted(path: path) { continue }
+                // 白名单过滤（路径与文件扩展名排除）
+                if whitelist.isWhitelisted(path: path) || whitelist.isExtensionWhitelisted(path: path) { continue }
 
                 guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
                       values.isRegularFile == true,

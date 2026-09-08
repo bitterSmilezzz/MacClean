@@ -5,13 +5,14 @@ import Combine
 enum WhitelistType: String, Codable {
     case path        // 指定路径或文件夹前缀
     case appName     // 指定 App 名称
+    case `extension` // 指定排除文件扩展名（如 iso, dmg, raw 等）
 }
 
 /// 单条白名单规则
 struct WhitelistRule: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
-    var pattern: String             // 路径（支持 ~）或 App 名称
-    var comment: String             // 备注说明（如“开发项目源码”、“公司内网证书”等）
+    var pattern: String             // 路径（支持 ~）、App 名称或文件扩展名
+    var comment: String             // 备注说明（如“系统安装包镜像”、“专业工程原稿”等）
     var type: WhitelistType = .path
     var createdAt: Date = Date()
 
@@ -19,6 +20,14 @@ struct WhitelistRule: Identifiable, Codable, Equatable {
     var standardPath: String {
         guard type == .path else { return pattern }
         return (CleanPaths.expand(pattern) as NSString).standardizingPath
+    }
+
+    /// 标准化扩展名（统一去点、小写）
+    var normalizedExtension: String {
+        guard type == .extension else { return pattern }
+        var p = pattern.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if p.hasPrefix(".") { p.removeFirst() }
+        return p
     }
 }
 
@@ -76,6 +85,19 @@ final class WhitelistManager: ObservableObject {
         return rule
     }
 
+    /// 添加一条文件扩展名排除白名单（如 iso, dmg, raw 等，自动去前缀点）
+    @discardableResult
+    func addExtensionRule(_ ext: String, comment: String = "") -> WhitelistRule {
+        var trimmed = ext.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.hasPrefix(".") { trimmed.removeFirst() }
+        if let existing = rules.first(where: { $0.type == .extension && $0.normalizedExtension == trimmed }) {
+            return existing
+        }
+        let rule = WhitelistRule(pattern: trimmed, comment: comment, type: .extension)
+        rules.append(rule)
+        return rule
+    }
+
     /// 移除白名单规则
     func removeRule(id: UUID) {
         rules.removeAll { $0.id == id }
@@ -106,6 +128,19 @@ final class WhitelistManager: ObservableObject {
         let norm = appName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         for rule in rules where rule.type == .appName {
             if norm == rule.pattern.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// 检查指定文件路径的扩展名是否被排除白名单命中
+    func isExtensionWhitelisted(path: String) -> Bool {
+        guard !rules.isEmpty else { return false }
+        let ext = (path as NSString).pathExtension.lowercased()
+        guard !ext.isEmpty else { return false }
+        for rule in rules where rule.type == .extension {
+            if rule.normalizedExtension == ext {
                 return true
             }
         }

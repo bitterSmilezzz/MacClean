@@ -176,8 +176,8 @@ enum FileSystem {
             let exPath = CleanPaths.expand(ex)
             if expanded == exPath || expanded.hasPrefix(exPath + "/") { return false }
         }
-        // 用户自定义白名单（防误删底层护栏）
-        if WhitelistManager.shared.isWhitelisted(path: expanded) {
+        // 用户自定义白名单（路径与扩展名防误删底层护栏）
+        if WhitelistManager.shared.isWhitelisted(path: expanded) || WhitelistManager.shared.isExtensionWhitelisted(path: expanded) {
             return false
         }
         // 禁止删除关键系统位置

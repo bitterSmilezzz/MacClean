@@ -490,6 +490,15 @@ struct DuplicateFileRow: View {
             } label: {
                 Label("加入白名单排除", systemImage: "shield.slash")
             }
+
+            let ext = (item.path as NSString).pathExtension.lowercased()
+            if !ext.isEmpty {
+                Button {
+                    app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件")
+                } label: {
+                    Label("排除所有 .\(ext) 格式（不再扫描）", systemImage: "doc.badge.gearshape")
+                }
+            }
         }
     }
 }

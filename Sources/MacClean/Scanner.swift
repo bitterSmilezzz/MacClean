@@ -90,12 +90,14 @@ final class Scanner {
         case .largeFiles: items = scanLargeFiles()
         case .browserAndSystem: items = scanBrowserAndSystem()
         }
-        // 白名单过滤：用户显式排除的路径或 App 不在待清理列表中展示
+        // 白名单过滤：用户显式排除的路径、App 或文件扩展名不在待清理列表中展示
         let whitelist = WhitelistManager.shared
         let filtered = items.filter { item in
             if whitelist.isWhitelisted(path: item.path) { return false }
             if item.paths.contains(where: { whitelist.isWhitelisted(path: $0) }) { return false }
             if whitelist.isAppWhitelisted(appName: item.name) { return false }
+            if whitelist.isExtensionWhitelisted(path: item.path) { return false }
+            if item.paths.contains(where: { whitelist.isExtensionWhitelisted(path: $0) }) { return false }
             return true
         }
         // 使用频率标注（用户诉求）：逐项检测"最近使用时间 + 使用频率"，供 UI 判断值不值得删

@@ -914,6 +914,51 @@ enum Selftest {
             app.whitelist.removeAllRules()
             return true
         }
+        check("白名单：自定义文件扩展名排除规则与底层阻断") {
+            let wm = WhitelistManager.shared
+            wm.removeAllRules()
+            let r = wm.addExtensionRule(".iso", comment: "镜像文件保护")
+            _ = wm.addExtensionRule("dmg", comment: "安装包保护")
+
+            guard wm.rules.count == 2 else { return false }
+            guard r.normalizedExtension == "iso" else { return false }
+
+            // 扩展名匹配
+            guard wm.isExtensionWhitelisted(path: "/Users/test/Downloads/ubuntu.iso") else { return false }
+            guard wm.isExtensionWhitelisted(path: "/Users/test/Downloads/UBUNTU.ISO") else { return false }
+            guard wm.isExtensionWhitelisted(path: "/Users/test/Downloads/app.dmg") else { return false }
+            guard !wm.isExtensionWhitelisted(path: "/Users/test/Downloads/app.pkg") else { return false }
+
+            // 底层安全检查阻断
+            guard !FileSystem.isSafeToClean("/private/tmp/installer.dmg") else { return false }
+
+            wm.removeAllRules()
+            return true
+        }
+        check("白名单：AppState.addExtensionToWhitelist 联动移除扫描与重复项") {
+            let app = AppState()
+            let st = app.state(for: .largeFiles)
+            st.isScanned = true
+            let keepItem = CleanItem(name: "archive.zip", path: "/tmp/archive.zip", size: 100, risk: .safe, category: .largeFiles)
+            let isoItem = CleanItem(name: "fedora.iso", path: "/tmp/fedora.iso", size: 200, risk: .safe, category: .largeFiles)
+            st.items = [keepItem, isoItem]
+
+            app.duplicateState.groups = [
+                DuplicateGroup(hash: "h1", fileSize: 200, items: [
+                    DuplicateFileItem(path: "/tmp/a.iso", name: "a.iso", size: 200, modificationDate: Date()),
+                    DuplicateFileItem(path: "/tmp/b.iso", name: "b.iso", size: 200, modificationDate: Date())
+                ])
+            ]
+
+            guard st.items.count == 2 && app.duplicateState.groups.count == 1 else { return false }
+            app.addExtensionToWhitelist("iso", comment: "测试扩展名排除")
+
+            guard st.items.count == 1 && st.items.first?.path == keepItem.path else { return false }
+            guard app.duplicateState.groups.isEmpty else { return false }
+
+            app.whitelist.removeAllRules()
+            return true
+        }
 
         // MARK: - 重复文件查找与去重
 
