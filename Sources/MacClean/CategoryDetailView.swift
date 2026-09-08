@@ -688,6 +688,19 @@ struct ItemRowView: View {
             .padding(.vertical, 7)
             .contentShape(Rectangle())
             .macRowHover(cornerRadius: 0)
+            .overlay(
+                // 空格键快速预览快捷键（当悬停或交互该行时）
+                Button("") {
+                    if let onPreview {
+                        let url = URL(fileURLWithPath: item.path)
+                        onPreview(url)
+                    }
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                .opacity(0)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+            )
             .contextMenu {
                 if let onPreview {
                     Button {

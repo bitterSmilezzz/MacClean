@@ -442,7 +442,6 @@ struct DuplicateFileRow: View {
 
             Spacer()
 
-            // 原生 QuickLook 快速预览图标按钮
             Button {
                 let url = URL(fileURLWithPath: item.path)
                 onPreview?(url)
@@ -460,6 +459,17 @@ struct DuplicateFileRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .macRowHover(cornerRadius: 0)
+        .overlay(
+            // 空格键快速预览快捷键
+            Button("") {
+                let url = URL(fileURLWithPath: item.path)
+                onPreview?(url)
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+        )
         .contextMenu {
             Button {
                 let url = URL(fileURLWithPath: item.path)
