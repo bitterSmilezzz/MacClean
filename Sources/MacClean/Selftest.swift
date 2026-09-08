@@ -692,6 +692,38 @@ enum Selftest {
             guard report.contains("详细清理流水记录") else { return false }
             return true
         }
+        check("清单导出器：大文件与清理项 CSV / Markdown 报告生成") {
+            let items = [
+                CleanItem(name: "Xcode_16.dmg", path: "/Users/test/Downloads/Xcode_16.dmg", size: 10_000_000_000, risk: .review, category: .largeFiles, note: "安装包"),
+                CleanItem(name: "old_dataset.zip", path: "/Users/test/Downloads/old_dataset.zip", size: 2_000_000_000, risk: .safe, category: .largeFiles, note: "数据包")
+            ]
+            let csv = HistoryExporter.generateItemsCSV(items: items, categoryTitle: "大文件与垃圾箱")
+            guard csv.hasPrefix("\u{FEFF}") else { return false }
+            guard csv.contains("分类,名称,大小,字节数,风险等级,使用情况,主路径,备注") else { return false }
+            guard csv.contains("Xcode_16.dmg") && csv.contains("10 GB") && csv.contains("谨慎") else { return false }
+
+            let report = HistoryExporter.generateItemsReport(items: items, categoryTitle: "大文件与垃圾箱")
+            guard report.contains("# MacClean 大文件与垃圾箱清单报告") else { return false }
+            guard report.contains("总计项目：2 项") && report.contains("12 GB") else { return false }
+            guard report.contains("Xcode_16.dmg") && report.contains("old_dataset.zip") else { return false }
+            return true
+        }
+        check("清单导出器：重复/相似大文件 CSV / Markdown 报告生成") {
+            let item1 = DuplicateFileItem(path: "/a/video.mp4", name: "video.mp4", size: 100_000_000, modificationDate: Date(), isSelected: false, isOriginal: true, recommendationReason: "保留最早修改")
+            let item2 = DuplicateFileItem(path: "/b/video copy.mp4", name: "video copy.mp4", size: 100_000_000, modificationDate: Date(), isSelected: true, isOriginal: false, recommendationReason: "重复副本")
+            let group = DuplicateGroup(hash: "sha256_mock_hash", fileSize: 100_000_000, items: [item1, item2], matchKind: .exact, suggestionNote: "哈希完全一致")
+
+            let csv = HistoryExporter.generateDuplicatesCSV(groups: [group])
+            guard csv.hasPrefix("\u{FEFF}") else { return false }
+            guard csv.contains("分组类型,哈希/特征,推荐操作,文件名,大小,字节数,修改时间,推荐说明,路径") else { return false }
+            guard csv.contains("完全一致") && csv.contains("推荐保留") && csv.contains("已勾选清理") else { return false }
+
+            let report = HistoryExporter.generateDuplicatesReport(groups: [group])
+            guard report.contains("# MacClean 重复与相似大文件排查报告") else { return false }
+            guard report.contains("总分组数：1 组（共 2 个文件）") else { return false }
+            guard report.contains("100 MB") && report.contains("video.mp4") else { return false }
+            return true
+        }
         check("系统通知：扫描完成通知组装与派发") {
             let mgr = NotificationManager.shared
             mgr.notifyScanCompleted(categoryName: "开发残留", itemCount: 42, totalBytes: 52_428_800)

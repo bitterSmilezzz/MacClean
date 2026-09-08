@@ -245,6 +245,29 @@ struct CategoryDetailView: View {
                 .help("用 AI 对已扫描结果逐项二次判断：可删 / 谨慎 / 不建议删")
             }
 
+            // 导出清单（支持大文件与各分类结果导出为 CSV 或 Markdown）
+            if st.isScanned && !st.items.isEmpty {
+                Menu {
+                    Button {
+                        exportItemsCSV()
+                    } label: {
+                        Label("导出为 CSV 表格…", systemImage: "tablecells")
+                    }
+                    Button {
+                        exportItemsReport()
+                    } label: {
+                        Label("导出为文本报告…", systemImage: "doc.text")
+                    }
+                } label: {
+                    Label("导出清单", systemImage: "square.and.arrow.up")
+                }
+                .menuStyle(.borderedButton)
+                .controlSize(.large)
+                .tint(Theme.actionBlue)
+                .accessibilityIdentifier("exportItemsButton")
+                .help("导出当前分类扫描清单为 CSV 或 Markdown 文本报告")
+            }
+
             // 列表内联过滤（仅过滤已扫描结果，不重新扫描）
             if st.isScanned && !st.items.isEmpty {
                 HStack(spacing: 6) {
@@ -280,6 +303,28 @@ struct CategoryDetailView: View {
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceMd)
         .frostedBar()
+    }
+
+    private func exportItemsCSV() {
+        let content = HistoryExporter.generateItemsCSV(items: filteredItems, categoryTitle: category.title)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_\(category.id)", ext: "csv")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "csv") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
+    }
+
+    private func exportItemsReport() {
+        let content = HistoryExporter.generateItemsReport(items: filteredItems, categoryTitle: category.title)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_\(category.id)_Report", ext: "md")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "md") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
     }
 
     // MARK: - 状态视图

@@ -8,6 +8,8 @@ struct DuplicateView: View {
     @State private var permanentMode = false
     @State private var showSettingsPopover = false
     @State private var quickLookURL: URL?
+    @State private var showHud = false
+    @State private var hudMessage = ""
 
     private var dup: DuplicateState { app.duplicateState }
 
@@ -40,6 +42,7 @@ struct DuplicateView: View {
         }
         .background(Theme.canvas)
         .quickLookPreview($quickLookURL)
+        .hudToast(isPresented: $showHud, text: hudMessage)
         .sheet(isPresented: $showConfirmSheet) {
             confirmCleanSheet
         }
@@ -65,6 +68,26 @@ struct DuplicateView: View {
             Spacer()
 
             if !dup.groups.isEmpty && !dup.isScanning {
+                Menu {
+                    Button {
+                        exportDuplicatesCSV()
+                    } label: {
+                        Label("导出为 CSV 表格…", systemImage: "tablecells")
+                    }
+                    Button {
+                        exportDuplicatesReport()
+                    } label: {
+                        Label("导出为文本报告…", systemImage: "doc.text")
+                    }
+                } label: {
+                    Label("导出清单", systemImage: "square.and.arrow.up")
+                }
+                .menuStyle(.borderedButton)
+                .controlSize(.regular)
+                .tint(Theme.actionBlue)
+                .accessibilityIdentifier("exportDuplicatesButton")
+                .help("导出重复/相似大文件排查清单为 CSV 或 Markdown 格式")
+
                 Button("智能勾选副本") {
                     dup.autoSelectDuplicates()
                 }
@@ -93,6 +116,28 @@ struct DuplicateView: View {
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceSm)
         .background(Theme.parchment)
+    }
+
+    private func exportDuplicatesCSV() {
+        let content = HistoryExporter.generateDuplicatesCSV(groups: dup.filteredGroups)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_Duplicates", ext: "csv")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "csv") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
+    }
+
+    private func exportDuplicatesReport() {
+        let content = HistoryExporter.generateDuplicatesReport(groups: dup.filteredGroups)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_Duplicates_Report", ext: "md")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "md") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
     }
 
     // MARK: - 分类过滤栏

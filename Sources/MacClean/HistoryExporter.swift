@@ -115,6 +115,97 @@ enum HistoryExporter {
         return "\(prefix)_\(dateStr).\(ext)"
     }
 
+    // MARK: - 清理项目与大文件清单导出
+    /// 生成清理项清单 CSV（支持大文件、缓存、日志等各分类）
+    static func generateItemsCSV(items: [CleanItem], categoryTitle: String) -> String {
+        var csv = "\u{FEFF}" // UTF-8 BOM
+        csv += "分类,名称,大小,字节数,风险等级,使用情况,主路径,备注\n"
+        for item in items {
+            let cat = escapeCSV(categoryTitle)
+            let name = escapeCSV(item.name)
+            let sizeStr = escapeCSV(item.size.byteStringCN)
+            let risk = escapeCSV(item.risk.label)
+            let usage = escapeCSV(item.usage.label)
+            let path = escapeCSV(item.path)
+            let note = escapeCSV(item.note)
+            csv += "\(cat),\(name),\(sizeStr),\(item.size),\(risk),\(usage),\(path),\(note)\n"
+        }
+        return csv
+    }
+
+    /// 生成清理项清单纯文本报告 (Markdown)
+    static func generateItemsReport(items: [CleanItem], categoryTitle: String) -> String {
+        let nowStr = dateFormatter.string(from: Date())
+        let totalBytes = items.reduce(Int64(0)) { $0 + $1.size }
+        var report = """
+        # MacClean \(categoryTitle)清单报告
+        导出时间：\(nowStr)
+        总计项目：\(items.count) 项
+        总计占用：\(totalBytes.byteStringCN) (\(totalBytes) 字节)
+
+        | 名称 | 大小 | 风险 | 使用频率 | 路径 |
+        | :--- | :--- | :--- | :--- | :--- |
+
+        """
+        for item in items {
+            let name = item.name.replacingOccurrences(of: "|", with: "\\|")
+            let path = item.path.replacingOccurrences(of: "|", with: "\\|")
+            report += "| \(name) | \(item.size.byteStringCN) | \(item.risk.label) | \(item.usage.label) | `\(path)` |\n"
+        }
+        return report
+    }
+
+    // MARK: - 重复与相似文件清单导出
+    /// 生成重复文件清单 CSV
+    static func generateDuplicatesCSV(groups: [DuplicateGroup]) -> String {
+        var csv = "\u{FEFF}" // UTF-8 BOM
+        csv += "分组类型,哈希/特征,推荐操作,文件名,大小,字节数,修改时间,推荐说明,路径\n"
+        for g in groups {
+            let kind = escapeCSV(g.matchKind.rawValue)
+            let hash = escapeCSV(g.hash)
+            for item in g.items {
+                let role = item.isOriginal ? "推荐保留" : (item.isSelected ? "已勾选清理" : "副本/衍生")
+                let name = escapeCSV(item.name)
+                let sizeStr = escapeCSV(item.size.byteStringCN)
+                let mtimeStr = item.modificationDate.map { dateFormatter.string(from: $0) } ?? ""
+                let reason = escapeCSV(item.recommendationReason ?? "")
+                let path = escapeCSV(item.path)
+                csv += "\(kind),\(hash),\(role),\(name),\(sizeStr),\(item.size),\(mtimeStr),\(reason),\(path)\n"
+            }
+        }
+        return csv
+    }
+
+    /// 生成重复文件纯文本报告 (Markdown)
+    static func generateDuplicatesReport(groups: [DuplicateGroup]) -> String {
+        let nowStr = dateFormatter.string(from: Date())
+        let totalWasted = groups.reduce(Int64(0)) { $0 + $1.wastedBytes }
+        let totalFiles = groups.reduce(0) { $0 + $1.items.count }
+        var report = """
+        # MacClean 重复与相似大文件排查报告
+        导出时间：\(nowStr)
+        总分组数：\(groups.count) 组（共 \(totalFiles) 个文件）
+        可释放空间：\(totalWasted.byteStringCN) (\(totalWasted) 字节)
+
+        """
+        for (idx, g) in groups.enumerated() {
+            report += "\n### 第 \(idx + 1) 组：\(g.matchKind.rawValue) · 浪费 \(g.wastedBytes.byteStringCN)\n"
+            if !g.suggestionNote.isEmpty {
+                report += "> 💡 \(g.suggestionNote)\n\n"
+            }
+            report += "| 角色 | 文件名 | 大小 | 修改时间 | 路径 |\n"
+            report += "| :--- | :--- | :--- | :--- | :--- |\n"
+            for item in g.items {
+                let role = item.isOriginal ? "⭐️ **推荐保留**" : "🗑️ 建议清理"
+                let name = item.name.replacingOccurrences(of: "|", with: "\\|")
+                let mtimeStr = item.modificationDate.map { Date.usageFormatter.string(from: $0) } ?? "-"
+                let path = item.path.replacingOccurrences(of: "|", with: "\\|")
+                report += "| \(role) | \(name) | \(item.size.byteStringCN) | \(mtimeStr) | `\(path)` |\n"
+            }
+        }
+        return report
+    }
+
     private static func escapeCSV(_ str: String) -> String {
         if str.contains(",") || str.contains("\"") || str.contains("\n") {
             let escaped = str.replacingOccurrences(of: "\"", with: "\"\"")
