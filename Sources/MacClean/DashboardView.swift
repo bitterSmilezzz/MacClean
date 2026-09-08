@@ -134,6 +134,7 @@ struct DashboardView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(Theme.actionBlue)
+            .keyboardShortcut(.delete, modifiers: .command)
             .disabled(app.totalSelectedCount == 0 || app.isCleaning)
             .accessibilityIdentifier("dashboardCleanButton")
         }

@@ -201,6 +201,7 @@ struct CategoryDetailView: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
             .tint(Theme.actionBlue)
+            .keyboardShortcut("r", modifiers: .command)
             .accessibilityIdentifier("scanButton")
             .disabled(st.isScanning)
 
@@ -473,6 +474,7 @@ struct CategoryDetailView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .tint(Theme.actionBlue)
+            .keyboardShortcut(.delete, modifiers: .command)
             .accessibilityIdentifier("cleanButton")
             .disabled(st.selectedCount == 0 || app.isCleaning)
         }

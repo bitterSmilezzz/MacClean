@@ -126,6 +126,27 @@ final class AppState: ObservableObject {
         for cat in CleanCategory.allCases { scan(cat) }
     }
 
+    // MARK: - 键盘快捷键响应操作
+
+    /// ⌘R 智能刷新当前上下文（按当前页面自适应）
+    func refreshCurrentContext() {
+        switch destination {
+        case .dashboard, .history, .search:
+            scanAll()
+        case .category(let cat):
+            scan(cat)
+        case .uninstaller:
+            uninstaller.loadApps()
+        case .riskCheck:
+            scanRisks()
+        }
+    }
+
+    /// ⌘K 聚焦快速检索
+    func focusSearch() {
+        destination = .search
+    }
+
     // MARK: - 风险检查（电脑风险提醒）
 
     /// 执行电脑风险检查（只读，不删除任何文件）

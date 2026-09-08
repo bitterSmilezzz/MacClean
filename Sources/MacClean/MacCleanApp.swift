@@ -140,6 +140,84 @@ struct MacCleanApp: App {
         .defaultSize(width: 1200, height: 760)
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
+        .commands {
+            CommandMenu("操作") {
+                Button("刷新与扫描") {
+                    app.refreshCurrentContext()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+
+                Button("快速检索…") {
+                    app.focusSearch()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+
+                Divider()
+
+                Button(app.ai.isDrawerOpen ? "收起 AI 助手" : "展开 AI 助手") {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        app.ai.isDrawerOpen.toggle()
+                    }
+                }
+                .keyboardShortcut("i", modifiers: .command)
+            }
+
+            CommandMenu("导航") {
+                Button("概览") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .dashboard }
+                }
+                .keyboardShortcut("1", modifiers: .command)
+
+                Button("用户缓存") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.userCaches) }
+                }
+                .keyboardShortcut("2", modifiers: .command)
+
+                Button("日志与临时文件") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.logsAndTemp) }
+                }
+                .keyboardShortcut("3", modifiers: .command)
+
+                Button("开发残留") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.devResidue) }
+                }
+                .keyboardShortcut("4", modifiers: .command)
+
+                Button("App 残留") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.appResidue) }
+                }
+                .keyboardShortcut("5", modifiers: .command)
+
+                Button("大文件与垃圾箱") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.largeFiles) }
+                }
+                .keyboardShortcut("6", modifiers: .command)
+
+                Button("浏览器与系统数据") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.browserAndSystem) }
+                }
+                .keyboardShortcut("7", modifiers: .command)
+
+                Divider()
+
+                Button("App 卸载器") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .uninstaller }
+                }
+                .keyboardShortcut("u", modifiers: .command)
+
+                Button("电脑风险提醒") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .riskCheck }
+                }
+                .keyboardShortcut("0", modifiers: .command)
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("偏好设置…") {
+                    app.ai.showSettings = true
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
     }
 }
 
@@ -188,6 +266,29 @@ struct ContentView: View {
                             .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
                     }
                     .zIndex(11)
+                }
+
+                // 抽屉展开时，⌘W 与 Esc 优先收起抽屉
+                if app.ai.isDrawerOpen || app.aiReview.isDrawerOpen {
+                    Button("") {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            app.ai.isDrawerOpen = false
+                            app.aiReview.isDrawerOpen = false
+                        }
+                    }
+                    .keyboardShortcut("w", modifiers: .command)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+
+                    Button("") {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            app.ai.isDrawerOpen = false
+                            app.aiReview.isDrawerOpen = false
+                        }
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
                 }
             }
             .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)

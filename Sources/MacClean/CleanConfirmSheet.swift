@@ -127,6 +127,7 @@ struct CleanConfirmSheet: View {
                 Button("取消") { dismiss() }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
+                    .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("cancelButton")
 
                 Button {
@@ -139,6 +140,7 @@ struct CleanConfirmSheet: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .tint(permanent ? Theme.textDanger : Theme.actionBlue)
+                .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("confirmButton")
             }
         }
