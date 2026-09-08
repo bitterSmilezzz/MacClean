@@ -1,4 +1,5 @@
 import SwiftUI
+import QuickLook
 
 /// 分类详情页：扫描结果列表 + 勾选 + 清理
 struct CategoryDetailView: View {
@@ -11,6 +12,7 @@ struct CategoryDetailView: View {
     @State private var selectedTypeFilter: LargeFileTypeFilter = .all
     @State private var showHud = false
     @State private var hudMessage = ""
+    @State private var quickLookURL: URL?
 
     private var st: CategoryState { app.state(for: category) }
 
@@ -134,6 +136,7 @@ struct CategoryDetailView: View {
             footer
         }
         .background(Theme.windowBackground)
+        .quickLookPreview($quickLookURL)
         .onChange(of: app.lastCleanSummary) { summary in
             if let summary, !summary.isEmpty {
                 hudMessage = summary
@@ -402,7 +405,8 @@ struct CategoryDetailView: View {
                                         onAskAI: { app.ai.askAbout(item: item) },
                                         isDisabled: app.ai.isLoading,
                                         aiReview: app.aiReview.review(for: item),
-                                        onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) }
+                                        onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) },
+                                        onPreview: { url in quickLookURL = url }
                                     )
                                 }
                             }
@@ -512,6 +516,7 @@ struct ItemRowView: View {
     /// AI 再筛查结论（无则 nil）
     var aiReview: ItemReview? = nil
     var onAddToWhitelist: (() -> Void)? = nil
+    var onPreview: ((URL) -> Void)? = nil
 
     @State private var isExpanded = false
 
@@ -577,6 +582,27 @@ struct ItemRowView: View {
                     .foregroundColor(Theme.labelPrimary)
                     .monospacedDigit()
 
+                // 原生 Quick Look 快速预览
+                if let onPreview {
+                    Button {
+                        let url = URL(fileURLWithPath: item.path)
+                        onPreview(url)
+                    } label: {
+                        Image(systemName: "eye")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Theme.labelTertiary)
+                            .frame(width: 22, height: 22)
+                            .background(
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color.primary.opacity(0.04))
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("itemQuickLookButton")
+                    .accessibilityLabel("快速查看 (Quick Look)")
+                    .help("原生 Quick Look 快速预览文件")
+                }
+
                 // 展开/收起路径备注（平滑旋转动效）
                 Button {
                     withAnimation(Theme.fastTransition) { isExpanded.toggle() }
@@ -616,6 +642,17 @@ struct ItemRowView: View {
             .contentShape(Rectangle())
             .macRowHover(cornerRadius: 0)
             .contextMenu {
+                if let onPreview {
+                    Button {
+                        let url = URL(fileURLWithPath: item.path)
+                        onPreview(url)
+                    } label: {
+                        Label("快速查看 (Quick Look)", systemImage: "eye")
+                    }
+
+                    Divider()
+                }
+
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
                 } label: {

@@ -192,6 +192,14 @@ enum Selftest {
             return try !button("askAIButton", in: enabled).isDisabled()
                 && button("askAIButton", in: disabled).isDisabled()
         }
+        check("ItemRow Quick Look 预览唤起") {
+            let item = CleanItem(name: "LargeArchive.zip", path: "/tmp/archive.zip", size: 1048576,
+                                 risk: .safe, category: .largeFiles)
+            var previewedURL: URL?
+            let view = ItemRowView(item: item, isSelected: false, onToggle: { _ in }, onPreview: { previewedURL = $0 })
+            try button("itemQuickLookButton", in: view).tap()
+            return previewedURL?.path == "/tmp/archive.zip"
+        }
         check("确认弹窗默认废纸篓") {
             var confirmValue: Bool?
             var permanent = false
