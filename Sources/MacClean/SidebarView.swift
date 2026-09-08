@@ -81,6 +81,14 @@ struct SidebarView: View {
                             app.destination = .uninstaller
                         }
                     }
+                    // 重复文件查找（SHA-256 去重）
+                    ToolRow(icon: "doc.on.doc", title: "重复文件",
+                            subtitle: app.duplicateState.groups.isEmpty ? "查找多余副本" : "\(app.duplicateState.groups.count) 组重复",
+                            isActive: app.destination == .duplicates) {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            app.destination = .duplicates
+                        }
+                    }
                     // 清理历史（融合 Mole history）
                     ToolRow(icon: "clock.arrow.circlepath", title: "清理历史",
                             subtitle: "\(app.history.count) 条记录",

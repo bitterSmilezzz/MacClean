@@ -62,6 +62,7 @@ enum Destination: Hashable, Identifiable {
     case history
     case search
     case riskCheck
+    case duplicates
 
     var id: String {
         switch self {
@@ -71,6 +72,7 @@ enum Destination: Hashable, Identifiable {
         case .history: return "history"
         case .search: return "search"
         case .riskCheck: return "riskCheck"
+        case .duplicates: return "duplicates"
         }
     }
 }

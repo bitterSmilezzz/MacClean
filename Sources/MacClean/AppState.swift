@@ -28,6 +28,8 @@ final class AppState: ObservableObject {
     var diskMonitor = DiskMonitor.shared
     /// 用户自定义白名单管理中心
     var whitelist = WhitelistManager.shared
+    /// 重复文件扫描与清理状态
+    var duplicateState = DuplicateState()
 
     // MARK: - 风险检查（电脑风险提醒）
     @Published var riskItems: [RiskItem] = []
@@ -63,6 +65,10 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
         // 白名单管理器同样转发
         whitelist.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // 重复文件管理器同样转发
+        duplicateState.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         ai.app = self   // 弱引用：列表级提问需访问当前分类状态
@@ -180,6 +186,8 @@ final class AppState: ObservableObject {
             uninstaller.loadApps()
         case .riskCheck:
             scanRisks()
+        case .duplicates:
+            duplicateState.startScan()
         }
     }
 

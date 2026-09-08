@@ -200,6 +200,11 @@ struct MacCleanApp: App {
 
                 Divider()
 
+                Button("重复文件查找") {
+                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .duplicates }
+                }
+                .keyboardShortcut("8", modifiers: .command)
+
                 Button("App 卸载器") {
                     withAnimation(.easeOut(duration: 0.15)) { app.destination = .uninstaller }
                 }
@@ -321,6 +326,8 @@ struct ContentView: View {
                 CategoryDetailView(category: cat).id(cat)
             case .uninstaller:
                 UninstallerView()
+            case .duplicates:
+                DuplicateView()
             case .history:
                 HistoryView()
             case .search:
