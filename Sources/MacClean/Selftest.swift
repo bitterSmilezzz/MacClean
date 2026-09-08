@@ -715,12 +715,18 @@ enum Selftest {
             let dmg = CleanItem(name: "Xcode_16.dmg", path: "/Downloads/Xcode_16.dmg", size: 10_000_000_000, risk: .review, category: .largeFiles)
             let zip = CleanItem(name: "dataset.zip", path: "/Downloads/dataset.zip", size: 2_000_000_000, risk: .review, category: .largeFiles)
             let mov = CleanItem(name: "demo.mov", path: "/Downloads/demo.mov", size: 1_500_000_000, risk: .review, category: .largeFiles)
+            let raw = CleanItem(name: "Landscape_001.ARW", path: "/Pictures/Landscape_001.ARW", size: 85_000_000, risk: .review, category: .largeFiles)
+            let vdi = CleanItem(name: "Ubuntu22.vdi", path: "/VirtualBox/Ubuntu22.vdi", size: 40_000_000_000, risk: .review, category: .largeFiles)
+            let archive = CleanItem(name: "MacClean.xcarchive", path: "/Library/Developer/Xcode/Archives/MacClean.xcarchive", size: 120_000_000, risk: .review, category: .largeFiles)
             let sim = CleanItem(name: "iPhone 15 Pro", path: "/Library/Developer/CoreSimulator/Devices/UUID", size: 5_000_000_000, risk: .danger, category: .largeFiles, note: "模拟器缓存")
             let unknown = CleanItem(name: "raw_data.bin", path: "/Downloads/raw_data.bin", size: 1_000_000_000, risk: .review, category: .largeFiles)
 
             guard LargeFileTypeFilter.installer.matches(item: dmg) && !LargeFileTypeFilter.installer.matches(item: zip) else { return false }
             guard LargeFileTypeFilter.archive.matches(item: zip) && !LargeFileTypeFilter.archive.matches(item: mov) else { return false }
             guard LargeFileTypeFilter.media.matches(item: mov) && !LargeFileTypeFilter.media.matches(item: dmg) else { return false }
+            guard LargeFileTypeFilter.rawMedia.matches(item: raw) && !LargeFileTypeFilter.rawMedia.matches(item: zip) else { return false }
+            guard LargeFileTypeFilter.diskImage.matches(item: vdi) && !LargeFileTypeFilter.diskImage.matches(item: mov) else { return false }
+            guard LargeFileTypeFilter.codeArchive.matches(item: archive) && !LargeFileTypeFilter.codeArchive.matches(item: dmg) else { return false }
             guard LargeFileTypeFilter.simulator.matches(item: sim) && !LargeFileTypeFilter.simulator.matches(item: dmg) else { return false }
             guard LargeFileTypeFilter.other.matches(item: unknown) && !LargeFileTypeFilter.other.matches(item: dmg) else { return false }
             return true

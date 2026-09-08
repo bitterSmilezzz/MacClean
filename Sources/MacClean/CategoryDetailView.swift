@@ -758,7 +758,9 @@ enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
     case installer = "安装包"
     case archive = "压缩包"
     case media = "音视频"
-    case diskImage = "磁盘镜像"
+    case rawMedia = "RAW相机与设计原稿"
+    case diskImage = "虚拟机与镜像"
+    case codeArchive = "项目归档与开发包"
     case simulator = "模拟器与备份"
     case other = "其他"
 
@@ -770,7 +772,9 @@ enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
         case .installer: return "shippingbox"
         case .archive: return "doc.zipper"
         case .media: return "play.rectangle"
+        case .rawMedia: return "camera.macro"
         case .diskImage: return "opticaldisc"
+        case .codeArchive: return "chevron.left.forwardslash.chevron.right"
         case .simulator: return "iphone"
         case .other: return "doc"
         }
@@ -785,7 +789,7 @@ enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
         case .all:
             return true
         case .installer:
-            let installerExts = ["dmg", "pkg", "iso", "app", "ipa"]
+            let installerExts = ["pkg", "dmg", "app"]
             return installerExts.contains(ext) || name.contains("installer") || item.note.contains("安装")
         case .archive:
             let archiveExts = ["zip", "tar", "gz", "tgz", "bz2", "7z", "rar", "xz"]
@@ -793,16 +797,27 @@ enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
         case .media:
             let mediaExts = ["mp4", "mov", "mkv", "avi", "wmv", "mp3", "flac", "wav", "aac", "m4a", "webm"]
             return mediaExts.contains(ext)
+        case .rawMedia:
+            // 相机专业 RAW 与大型设计原稿
+            let rawExts = ["cr2", "cr3", "nef", "arw", "dng", "rw2", "orf", "raw", "psd", "psb", "ai", "sketch", "blend", "c4d", "prproj"]
+            return rawExts.contains(ext)
         case .diskImage:
-            let imageExts = ["dmg", "iso", "img", "vdi", "vmdk", "qcow2"]
-            return imageExts.contains(ext)
+            // 虚拟机磁盘与系统镜像文件（排除常见仅用于安装 macOS App 的 dmg）
+            let imageExts = ["iso", "img", "vdi", "vmdk", "qcow2", "hdd", "parallels", "vmwarevm"]
+            return imageExts.contains(ext) || path.contains("parallels") || path.contains("vmware") || path.contains("virtualbox")
+        case .codeArchive:
+            // 开发者归档、工程打包与编译输出（排除单一独立客户端安装包）
+            let codeExts = ["xcarchive", "apk", "aab", "whl", "gem", "bundle"]
+            return codeExts.contains(ext) || name.contains("node_modules") || name.contains("deriveddata") || path.contains("xcode/archives")
         case .simulator:
             return path.contains("devices") || path.contains("mobilesync") || item.note.contains("模拟器") || item.note.contains("备份")
         case .other:
             return !LargeFileTypeFilter.installer.matches(item: item)
                 && !LargeFileTypeFilter.archive.matches(item: item)
                 && !LargeFileTypeFilter.media.matches(item: item)
+                && !LargeFileTypeFilter.rawMedia.matches(item: item)
                 && !LargeFileTypeFilter.diskImage.matches(item: item)
+                && !LargeFileTypeFilter.codeArchive.matches(item: item)
                 && !LargeFileTypeFilter.simulator.matches(item: item)
         }
     }
