@@ -493,6 +493,14 @@ struct RelatedFileRow: View {
             } label: {
                 Label(file.isSelected ? "取消选择" : "勾选删除", systemImage: file.isSelected ? "xmark.circle" : "checkmark.circle")
             }
+
+            Divider()
+
+            Button {
+                app.addPathToWhitelist(file.path, comment: file.name)
+            } label: {
+                Label("加入白名单排除（不再关联）", systemImage: "shield.slash")
+            }
         }
     }
 }

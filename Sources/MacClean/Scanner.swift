@@ -90,8 +90,16 @@ final class Scanner {
         case .largeFiles: items = scanLargeFiles()
         case .browserAndSystem: items = scanBrowserAndSystem()
         }
+        // 白名单过滤：用户显式排除的路径或 App 不在待清理列表中展示
+        let whitelist = WhitelistManager.shared
+        let filtered = items.filter { item in
+            if whitelist.isWhitelisted(path: item.path) { return false }
+            if item.paths.contains(where: { whitelist.isWhitelisted(path: $0) }) { return false }
+            if whitelist.isAppWhitelisted(appName: item.name) { return false }
+            return true
+        }
         // 使用频率标注（用户诉求）：逐项检测"最近使用时间 + 使用频率"，供 UI 判断值不值得删
-        return items.map { annotateUsage($0) }
+        return filtered.map { annotateUsage($0) }
     }
 
     /// 标注最近使用时间与使用频率（对主路径检测；聚合项主路径为父目录，抽样反映整体活跃度）

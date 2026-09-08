@@ -26,6 +26,8 @@ final class AppState: ObservableObject {
     let aiReview = AIReviewState()
     /// 磁盘低空间与定时巡检监控器
     var diskMonitor = DiskMonitor.shared
+    /// 用户自定义白名单管理中心
+    var whitelist = WhitelistManager.shared
 
     // MARK: - 风险检查（电脑风险提醒）
     @Published var riskItems: [RiskItem] = []
@@ -57,6 +59,10 @@ final class AppState: ObservableObject {
             .store(in: &cancellables)
         // 磁盘巡检监控器同样转发
         diskMonitor.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        // 白名单管理器同样转发
+        whitelist.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         ai.app = self   // 弱引用：列表级提问需访问当前分类状态
@@ -146,6 +152,19 @@ final class AppState: ObservableObject {
     /// 扫描全部分类（侧边栏「全部扫描」）
     func scanAll() {
         for cat in CleanCategory.allCases { scan(cat) }
+    }
+
+    /// 将指定路径加入白名单并立刻从当前已扫描项目中移除
+    func addPathToWhitelist(_ path: String, comment: String = "") {
+        whitelist.addPathRule(path, comment: comment)
+        for cat in categories {
+            cat.items.removeAll { item in
+                whitelist.isWhitelisted(path: item.path) || item.paths.contains(where: { whitelist.isWhitelisted(path: $0) })
+            }
+        }
+        uninstaller.related.removeAll { f in
+            whitelist.isWhitelisted(path: f.path)
+        }
     }
 
     // MARK: - 键盘快捷键响应操作

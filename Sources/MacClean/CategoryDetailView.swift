@@ -401,7 +401,8 @@ struct CategoryDetailView: View {
                                         onToggle: { selected in st.setSelected(item.id, selected) },
                                         onAskAI: { app.ai.askAbout(item: item) },
                                         isDisabled: app.ai.isLoading,
-                                        aiReview: app.aiReview.review(for: item)
+                                        aiReview: app.aiReview.review(for: item),
+                                        onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) }
                                     )
                                 }
                             }
@@ -510,6 +511,7 @@ struct ItemRowView: View {
     var isDisabled: Bool = false   // LOW-2：AI 请求在途时禁用行内 ✨
     /// AI 再筛查结论（无则 nil）
     var aiReview: ItemReview? = nil
+    var onAddToWhitelist: (() -> Void)? = nil
 
     @State private var isExpanded = false
 
@@ -633,6 +635,18 @@ struct ItemRowView: View {
                     onToggle(!isSelected)
                 } label: {
                     Label(isSelected ? "取消勾选" : "勾选", systemImage: isSelected ? "square" : "checkmark.square")
+                }
+
+                Divider()
+
+                Button {
+                    if let onAddToWhitelist {
+                        onAddToWhitelist()
+                    } else {
+                        WhitelistManager.shared.addPathRule(item.path, comment: item.name)
+                    }
+                } label: {
+                    Label("加入白名单排除（不再扫描）", systemImage: "shield.slash")
                 }
             }
         }

@@ -768,6 +768,79 @@ enum Selftest {
             monitor.showLowSpaceAlert = false
             return true
         }
+        check("白名单：WhitelistManager 添加与持久化存储") {
+            let wm = WhitelistManager.shared
+            wm.removeAllRules()
+            let r1 = wm.addPathRule("~/workspace/secret-project", comment: "私人项目")
+            let r2 = wm.addAppRule("MyCustomApp", comment: "自定义受保护应用")
+
+            guard wm.rules.count == 2 else { return false }
+            guard wm.rules.contains(where: { $0.id == r1.id && $0.type == .path }) else { return false }
+            guard wm.rules.contains(where: { $0.id == r2.id && $0.type == .appName }) else { return false }
+
+            let loaded = WhitelistManager.load()
+            guard loaded.count == 2 else { return false }
+            return true
+        }
+        check("白名单：路径精准匹配与子目录通配匹配") {
+            let wm = WhitelistManager.shared
+            wm.removeAllRules()
+            wm.addPathRule("/private/tmp/protected-suite", comment: "测试保护目录")
+
+            // 1. 命中自身
+            guard wm.isWhitelisted(path: "/private/tmp/protected-suite") else { return false }
+            // 2. 命中子路径
+            guard wm.isWhitelisted(path: "/private/tmp/protected-suite/build/output.log") else { return false }
+            // 3. 不命中相似前缀但不是子目录的路径
+            guard !wm.isWhitelisted(path: "/private/tmp/protected-suite-other") else { return false }
+            // 4. 不命中其他无关路径
+            guard !wm.isWhitelisted(path: "/private/tmp/random-file.txt") else { return false }
+            return true
+        }
+        check("白名单：App 名称不区分大小写与空白匹配") {
+            let wm = WhitelistManager.shared
+            wm.removeAllRules()
+            wm.addAppRule("WeChat", comment: "微信")
+
+            guard wm.isAppWhitelisted(appName: "WeChat") else { return false }
+            guard wm.isAppWhitelisted(appName: "wechat") else { return false }
+            guard wm.isAppWhitelisted(appName: " WECHAT ") else { return false }
+            guard !wm.isAppWhitelisted(appName: "QQ") else { return false }
+            return true
+        }
+        check("白名单：底层 FileSystem.isSafeToClean 防御阻断") {
+            let wm = WhitelistManager.shared
+            wm.removeAllRules()
+            let protectedDir = "/private/tmp/macclean-safe-test-\(UUID().uuidString)"
+            wm.addPathRule(protectedDir, comment: "底层阻断测试")
+
+            // 未加入白名单时普通 tmp 目录安全检查返回 true，加入后必须返回 false
+            guard !FileSystem.isSafeToClean(protectedDir) else { return false }
+            guard !FileSystem.isSafeToClean(protectedDir + "/child.txt") else { return false }
+
+            // 清理规则
+            wm.removeAllRules()
+            return true
+        }
+        check("白名单：AppState.addPathToWhitelist 联动移除已扫描项") {
+            let app = AppState()
+            let st = app.state(for: .userCaches)
+            st.isScanned = true
+            let keepItem = CleanItem(name: "KeepCache", path: "/private/tmp/keep-cache", size: 100, risk: .safe, category: .userCaches)
+            let removePath = "/private/tmp/whitelist-target-cache"
+            let removeItem = CleanItem(name: "RemoveCache", path: removePath, size: 200, risk: .safe, category: .userCaches)
+            st.items = [keepItem, removeItem]
+
+            guard st.items.count == 2 else { return false }
+            app.addPathToWhitelist(removePath, comment: "测试移除")
+
+            guard st.items.count == 1 && st.items.first?.path == keepItem.path else { return false }
+            guard app.whitelist.isWhitelisted(path: removePath) else { return false }
+
+            // 清理测试白名单
+            app.whitelist.removeAllRules()
+            return true
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")

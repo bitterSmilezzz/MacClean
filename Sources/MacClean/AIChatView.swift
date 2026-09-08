@@ -360,6 +360,7 @@ struct AISettingsView: View {
     @EnvironmentObject private var app: AppState
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedTab: SettingsTab = .ai
     @State private var baseURL = ""
     @State private var apiKey = ""
     @State private var model = ""
@@ -367,29 +368,90 @@ struct AISettingsView: View {
     @State private var isTesting = false
     @State private var testResult: (ok: Bool, message: String)?
 
+    // 白名单添加临时输入
+    @State private var manualWhitelistPath = ""
+    @State private var manualWhitelistComment = ""
+
+    enum SettingsTab: String, CaseIterable, Identifiable {
+        case ai = "AI 接口"
+        case monitor = "定时巡检与预警"
+        case whitelist = "白名单保护"
+
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .ai: return "sparkles"
+            case .monitor: return "timer"
+            case .whitelist: return "shield.checkered"
+            }
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceMd) {
-            Text("AI 接口设置")
-                .font(Theme.displayFont(20, weight: .semibold))
-                .tracking(-0.3)
-                .foregroundColor(Theme.ink)
+            // 顶部分段选择器
+            Picker("", selection: $selectedTab) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Label(tab.rawValue, systemImage: tab.icon).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
 
-            Text("OpenAI 兼容接口。API Key 存入系统钥匙串，不写入代码、日志或任何文件。")
-                .font(Theme.bodyFont(13))
+            Divider().overlay(Theme.hairline)
+
+            switch selectedTab {
+            case .ai:
+                aiSettingsSection
+            case .monitor:
+                monitorSettingsSection
+            case .whitelist:
+                whitelistSettingsSection
+            }
+
+            Spacer(minLength: 0)
+
+            Divider().overlay(Theme.hairline)
+
+            HStack {
+                Spacer()
+                Button("完成") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(Theme.actionBlue)
+            }
+        }
+        .padding(Theme.spaceXl)
+        .frame(width: 520, height: 500)
+        .onAppear {
+            let cfg = AIConfig.load()
+            baseURL = cfg.baseURL
+            model = cfg.model
+            DispatchQueue.global(qos: .userInitiated).async {
+                let key = AIConfig.loadAPIKey() ?? ""
+                DispatchQueue.main.async { apiKey = key }
+            }
+        }
+    }
+
+    // MARK: - AI 接口设置
+    private var aiSettingsSection: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceSm) {
+            Text("OpenAI 兼容接口。API Key 存入系统钥匙串，不写入代码或任何日志。")
+                .font(Theme.bodyFont(12))
                 .foregroundColor(Theme.inkMuted48)
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Base URL")
-                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.inkMuted80)
                 TextField("https://api.deepseek.com", text: $baseURL)
                     .textFieldStyle(.roundedBorder)
                     .font(Theme.bodyFont(13))
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("API Key")
-                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.inkMuted80)
                 HStack {
                     Group {
@@ -412,87 +474,36 @@ struct AISettingsView: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("模型")
-                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .font(Theme.bodyFont(12, weight: .semibold))
                     .foregroundColor(Theme.inkMuted80)
                 TextField("deepseek-chat", text: $model)
                     .textFieldStyle(.roundedBorder)
                     .font(Theme.bodyFont(13))
             }
 
-            // 连通性测试
             if let result = testResult {
                 HStack(spacing: 6) {
                     Image(systemName: result.ok ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundColor(result.ok ? Theme.actionBlue : Theme.dangerRed)
                     Text(result.message)
-                        .font(Theme.bodyFont(13))
+                        .font(Theme.bodyFont(12))
                         .foregroundColor(result.ok ? Theme.inkMuted80 : Theme.textDanger)
                         .lineLimit(2)
                 }
                 .padding(.horizontal, Theme.spaceSm)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: Theme.radiusMd)
                     .fill((result.ok ? Theme.actionBlue : Theme.dangerRed).opacity(0.08)))
             }
 
-            Divider().overlay(Theme.hairline)
-
-            // 定时自动巡检与磁盘低空间警戒
-            VStack(alignment: .leading, spacing: 10) {
-                Text("定时巡检与磁盘预警")
-                    .font(Theme.displayFont(15, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-
-                Toggle("开启后台定时自动巡检扫描", isOn: $app.diskMonitor.config.autoScanEnabled)
-                    .font(Theme.bodyFont(13))
-                    .toggleStyle(.switch)
-                    .tint(Theme.actionBlue)
-
-                if app.diskMonitor.config.autoScanEnabled {
-                    HStack {
-                        Text("巡检时间间隔")
-                            .font(Theme.bodyFont(13))
-                            .foregroundColor(Theme.inkMuted80)
-                        Spacer()
-                        Stepper(value: $app.diskMonitor.config.scanIntervalHours, in: 1...24) {
-                            Text("每 \(app.diskMonitor.config.scanIntervalHours) 小时")
-                                .font(Theme.monoFont(13))
-                                .foregroundColor(Theme.actionBlue)
-                        }
-                    }
-                    .padding(.leading, 12)
-                }
-
-                Toggle("开启磁盘空间不足警戒弹窗", isOn: $app.diskMonitor.config.lowSpaceAlertEnabled)
-                    .font(Theme.bodyFont(13))
-                    .toggleStyle(.switch)
-                    .tint(Theme.actionBlue)
-
-                if app.diskMonitor.config.lowSpaceAlertEnabled {
-                    HStack {
-                        Text("空间警戒阈值 (GB)")
-                            .font(Theme.bodyFont(13))
-                            .foregroundColor(Theme.inkMuted80)
-                        Spacer()
-                        Stepper(value: $app.diskMonitor.config.lowSpaceThresholdGB, in: 5...100, step: 5) {
-                            Text("低于 \(app.diskMonitor.config.lowSpaceThresholdGB) GB")
-                                .font(Theme.monoFont(13))
-                                .foregroundColor(Theme.dangerRed)
-                        }
-                    }
-                    .padding(.leading, 12)
-                }
-            }
-            .padding(.top, 4)
-
             HStack {
                 if isTesting {
                     ProgressView().controlSize(.small).tint(Theme.actionBlue)
                     Text("测试中…")
-                        .font(Theme.bodyFont(13))
+                        .font(Theme.bodyFont(12))
                         .foregroundColor(Theme.inkMuted48)
                 }
                 Spacer()
@@ -500,41 +511,206 @@ struct AISettingsView: View {
                     testConnection()
                 }
                 .buttonStyle(.bordered)
-                .controlSize(.large)
                 .disabled(isTesting || baseURL.trimmingCharacters(in: .whitespaces).isEmpty
                           || apiKey.trimmingCharacters(in: .whitespaces).isEmpty
                           || model.trimmingCharacters(in: .whitespaces).isEmpty)
-                Button("取消") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                Button("保存") {
+
+                Button("保存 AI 配置") {
                     var cfg = AIConfig.load()
                     cfg.baseURL = baseURL.trimmingCharacters(in: .whitespaces)
                     cfg.model = model.trimmingCharacters(in: .whitespaces)
                     cfg.enabled = true
                     cfg.save()
                     AIConfig.saveAPIKey(apiKey.trimmingCharacters(in: .whitespaces))
-                    dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .tint(Theme.actionBlue)
                 .disabled(baseURL.trimmingCharacters(in: .whitespaces).isEmpty
                           || apiKey.trimmingCharacters(in: .whitespaces).isEmpty
                           || model.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(Theme.spaceXl)
-        .frame(width: 440)
-        .onAppear {
-            let cfg = AIConfig.load()
-            baseURL = cfg.baseURL
-            model = cfg.model
-            // MED#5：钥匙串迁移路径可能阻塞 3s——后台读取后回主线程填充
-            DispatchQueue.global(qos: .userInitiated).async {
-                let key = AIConfig.loadAPIKey() ?? ""
-                DispatchQueue.main.async { apiKey = key }
+    }
+
+    // MARK: - 定时巡检与低空间警戒
+    private var monitorSettingsSection: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceMd) {
+            Text("自动化磁盘健康检查：在后台定时发起无感巡检，并在磁盘空间紧张时预警。")
+                .font(Theme.bodyFont(12))
+                .foregroundColor(Theme.inkMuted48)
+
+            Toggle("开启后台定时自动巡检扫描", isOn: $app.diskMonitor.config.autoScanEnabled)
+                .font(Theme.bodyFont(13))
+                .toggleStyle(.switch)
+                .tint(Theme.actionBlue)
+
+            if app.diskMonitor.config.autoScanEnabled {
+                HStack {
+                    Text("巡检时间间隔")
+                        .font(Theme.bodyFont(13))
+                        .foregroundColor(Theme.inkMuted80)
+                    Spacer()
+                    Stepper(value: $app.diskMonitor.config.scanIntervalHours, in: 1...24) {
+                        Text("每 \(app.diskMonitor.config.scanIntervalHours) 小时")
+                            .font(Theme.monoFont(13))
+                            .foregroundColor(Theme.actionBlue)
+                    }
+                }
+                .padding(.leading, 12)
             }
+
+            Toggle("开启磁盘空间不足警戒弹窗", isOn: $app.diskMonitor.config.lowSpaceAlertEnabled)
+                .font(Theme.bodyFont(13))
+                .toggleStyle(.switch)
+                .tint(Theme.actionBlue)
+
+            if app.diskMonitor.config.lowSpaceAlertEnabled {
+                HStack {
+                    Text("空间警戒阈值 (GB)")
+                        .font(Theme.bodyFont(13))
+                        .foregroundColor(Theme.inkMuted80)
+                    Spacer()
+                    Stepper(value: $app.diskMonitor.config.lowSpaceThresholdGB, in: 5...100, step: 5) {
+                        Text("低于 \(app.diskMonitor.config.lowSpaceThresholdGB) GB")
+                            .font(Theme.monoFont(13))
+                            .foregroundColor(Theme.dangerRed)
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
+    }
+
+    // MARK: - 白名单保护设置
+    private var whitelistSettingsSection: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceSm) {
+            Text("添加到白名单的文件、文件夹或 App 将被绝对排除，不会被扫描或清理。")
+                .font(Theme.bodyFont(12))
+                .foregroundColor(Theme.inkMuted48)
+
+            // 操作按钮栏：选择文件夹 / 手动添加
+            HStack(spacing: 8) {
+                Button {
+                    chooseFolderForWhitelist()
+                } label: {
+                    Label("选择文件夹…", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button {
+                    chooseFileForWhitelist()
+                } label: {
+                    Label("选择文件…", systemImage: "doc.badge.plus")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Spacer()
+
+                if !app.whitelist.rules.isEmpty {
+                    Text("共 \(app.whitelist.rules.count) 条保护规则")
+                        .font(Theme.monoFont(11))
+                        .foregroundColor(Theme.labelTertiary)
+                }
+            }
+
+            // 规则列表
+            if app.whitelist.rules.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "shield.slash")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundColor(Theme.labelTertiary.opacity(0.6))
+                    Text("暂无自定义白名单")
+                        .font(Theme.bodyFont(13))
+                        .foregroundColor(Theme.labelSecondary)
+                    Text("可通过上方按钮添加，或在清理项上右键选择「加入白名单」")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.labelTertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 20)
+                .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Color.primary.opacity(0.02)))
+            } else {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(app.whitelist.rules) { rule in
+                            HStack(spacing: 8) {
+                                Image(systemName: rule.type == .appName ? "app.badge" : "folder.badge.shield.half.filled")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(Theme.actionBlue)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(rule.pattern)
+                                        .font(Theme.monoFont(12, weight: .medium))
+                                        .foregroundColor(Theme.labelPrimary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if !rule.comment.isEmpty {
+                                        Text(rule.comment)
+                                            .font(Theme.bodyFont(10))
+                                            .foregroundColor(Theme.labelTertiary)
+                                    }
+                                }
+                                Spacer()
+                                Button {
+                                    app.whitelist.removeRule(id: rule.id)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(Theme.labelTertiary.opacity(0.8))
+                                }
+                                .buttonStyle(.plain)
+                                .help("移除白名单")
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: Theme.radiusSm)
+                                .fill(Color.primary.opacity(0.035)))
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 180)
+            }
+
+            // 手动输入路径
+            HStack(spacing: 6) {
+                TextField("手动输入路径 (例如 ~/my-data)", text: $manualWhitelistPath)
+                    .textFieldStyle(.roundedBorder)
+                    .font(Theme.bodyFont(12))
+                Button("添加") {
+                    let path = manualWhitelistPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !path.isEmpty else { return }
+                    app.addPathToWhitelist(path, comment: "手动添加")
+                    manualWhitelistPath = ""
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(manualWhitelistPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    private func chooseFolderForWhitelist() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择保护文件夹"
+        if panel.runModal() == .OK, let url = panel.url {
+            app.addPathToWhitelist(url.path, comment: url.lastPathComponent)
+        }
+    }
+
+    private func chooseFileForWhitelist() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "选择保护文件"
+        if panel.runModal() == .OK, let url = panel.url {
+            app.addPathToWhitelist(url.path, comment: url.lastPathComponent)
         }
     }
 
@@ -550,8 +726,6 @@ struct AISettingsView: View {
                 await MainActor.run {
                     testResult = (true, "连接成功，模型回复：\(reply.prefix(30))")
                     isTesting = false
-                    // 关键修复：测试成功即把配置写入 UserDefaults + key 文件，并置 enabled=true。
-                    // 否则用户测试成功但问答仍报「尚未配置」（问答读的是 AIConfig.load() 而非表单值）
                     var cfg = AIConfig.load()
                     cfg.baseURL = url
                     cfg.model = mdl
@@ -568,3 +742,4 @@ struct AISettingsView: View {
         }
     }
 }
+
