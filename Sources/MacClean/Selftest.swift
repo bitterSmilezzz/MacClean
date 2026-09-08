@@ -931,13 +931,61 @@ enum Selftest {
             guard unselected.first?.isOriginal == true else { return false }
 
             // 清理勾选项（permanently: true 在 tmp 目录快速删除）
-            state.cleanSelected(permanently: true)
+            _ = state.cleanSelected(permanently: true)
 
             // 清理后原文件应依然存在，副本已被删除，且分组被清空
             let originalExists = FileManager.default.fileExists(atPath: f1)
             let dupeExists = FileManager.default.fileExists(atPath: f2)
             guard originalExists && !dupeExists else { return false }
             guard state.groups.isEmpty else { return false }
+
+            return true
+        }
+
+        check("相似文件：词干提取与衍生归一化") {
+            let s1 = DuplicateScanner.normalizedStem(for: "Video_Presentation (1).mp4")
+            let s2 = DuplicateScanner.normalizedStem(for: "Video_Presentation copy.mov")
+            let s3 = DuplicateScanner.normalizedStem(for: "Video_Presentation_副本.mkv")
+            let s4 = DuplicateScanner.normalizedStem(for: "Video_Presentation-backup.mp4")
+            let s5 = DuplicateScanner.normalizedStem(for: "Video_Presentation.mp4")
+
+            guard s1 == "video_presentation" else { return false }
+            guard s2 == "video_presentation" else { return false }
+            guard s3 == "video_presentation" else { return false }
+            guard s4 == "video_presentation" else { return false }
+            guard s5 == "video_presentation" else { return false }
+
+            guard DuplicateScanner.isDerivedCopyName("MyDoc copy.pdf") else { return false }
+            guard DuplicateScanner.isDerivedCopyName("Photo (2).png") else { return false }
+            guard DuplicateScanner.isDerivedCopyName("Project_副本.zip") else { return false }
+            guard !DuplicateScanner.isDerivedCopyName("MyOriginalDocument.pdf") else { return false }
+            return true
+        }
+
+        check("相似文件：聚类与推荐保留规则") {
+            let tmpDir = "/private/tmp/macclean-sim-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            // 创建同词干、不同大小的衍生文件（如高清源视频与衍生副本/转码）
+            let dataLarge = Data(repeating: 0x41, count: 2000)
+            let dataSmall = Data(repeating: 0x42, count: 1200)
+
+            let f1 = tmpDir + "/MovieTeaser.mov"
+            let f2 = tmpDir + "/MovieTeaser (1).mp4"
+            FileManager.default.createFile(atPath: f1, contents: dataLarge)
+            FileManager.default.createFile(atPath: f2, contents: dataSmall)
+
+            let groups = DuplicateScanner.scanDuplicates(in: [tmpDir], minSize: 100) { _, _ in }
+            guard groups.count == 1 else { return false }
+            let group = groups[0]
+            guard group.matchKind == .similar else { return false }
+            guard group.items.count == 2 else { return false }
+
+            // 推荐保留应该偏向体积更大/命名纯净的 MovieTeaser.mov
+            guard let original = group.items.first(where: \.isOriginal) else { return false }
+            guard original.path == f1 else { return false }
+            guard group.wastedBytes == Int64(dataSmall.count) else { return false }
 
             return true
         }

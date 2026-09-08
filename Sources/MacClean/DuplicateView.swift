@@ -14,10 +14,17 @@ struct DuplicateView: View {
             header
             Divider().overlay(Theme.hairline)
 
+            if !dup.groups.isEmpty && !dup.isScanning {
+                filterBar
+                Divider().overlay(Theme.hairline)
+            }
+
             if dup.isScanning {
                 scanningView
             } else if dup.groups.isEmpty {
                 emptyView
+            } else if dup.filteredGroups.isEmpty {
+                emptyFilterView
             } else {
                 duplicateListView
             }
@@ -43,11 +50,11 @@ struct DuplicateView: View {
                     Image(systemName: "doc.on.doc")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(Theme.actionBlue)
-                    Text("重复文件查找")
+                    Text("重复与相似大文件")
                         .font(Theme.displayFont(16, weight: .semibold))
                         .foregroundColor(Theme.ink)
                 }
-                Text("基于 SHA-256 哈希精确比对，安全剔除多余副本，保留一份原始文件。")
+                Text("基于 SHA-256 分块哈希与智能词干识别，精确去重并排查相似衍生副本。")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.inkMuted48)
             }
@@ -83,6 +90,51 @@ struct DuplicateView: View {
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceSm)
         .background(Theme.parchment)
+    }
+
+    // MARK: - 分类过滤栏
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            Picker("查看分类", selection: Binding(
+                get: { dup.filterKind },
+                set: { dup.filterKind = $0 }
+            )) {
+                Text("全部 (\(dup.groups.count))").tag(DuplicateGroupFilter.all)
+                Text("完全一致 (\(dup.exactGroupsCount))").tag(DuplicateGroupFilter.exact)
+                Text("相似衍生 (\(dup.similarGroupsCount))").tag(DuplicateGroupFilter.similar)
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 320)
+
+            Spacer()
+
+            Text("浪费总计：\(dup.totalWastedBytes.byteStringCN)")
+                .font(Theme.bodyFont(11))
+                .foregroundColor(Theme.labelSecondary)
+        }
+        .padding(.horizontal, Theme.contentPadding)
+        .padding(.vertical, 6)
+        .background(Theme.parchment.opacity(0.6))
+    }
+
+    // MARK: - 分类过滤空态
+    private var emptyFilterView: some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 36, weight: .light))
+                .foregroundColor(Theme.labelTertiary)
+            Text("当前分类暂无文件")
+                .font(Theme.bodyFont(13, weight: .medium))
+                .foregroundColor(Theme.labelSecondary)
+            Button("查看全部") {
+                dup.filterKind = .all
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - 扫描中视图
@@ -127,7 +179,7 @@ struct DuplicateView: View {
     private var duplicateListView: some View {
         ScrollView {
             LazyVStack(spacing: Theme.spaceSm) {
-                ForEach(dup.groups) { group in
+                ForEach(dup.filteredGroups) { group in
                     DuplicateGroupCard(group: group)
                 }
             }
@@ -151,7 +203,7 @@ struct DuplicateView: View {
             Spacer()
 
             VStack(alignment: .trailing, spacing: 1) {
-                Text("已选 \(dup.selectedCount) 个重复副本（共可释放）")
+                Text("已选 \(dup.selectedCount) 个副本（共可释放）")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.labelTertiary)
                 Text(dup.selectedBytes.byteStringCN)
@@ -198,11 +250,24 @@ struct DuplicateGroupCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 组头部：文件名 / 单文件大小 / 副本数量 / 浪费大小
+            // 组头部：匹配类型徽标 / 文件名 / 副本数量 / 浪费大小
             HStack(spacing: 8) {
-                Image(systemName: "square.fill.on.square.fill")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Theme.actionBlue)
+                // 匹配模式胶囊徽标
+                if group.matchKind == .exact {
+                    Text("完全一致")
+                        .font(Theme.bodyFont(10, weight: .semibold))
+                        .foregroundColor(Theme.actionBlue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Theme.actionBlue.opacity(0.12)))
+                } else {
+                    Text("相似衍生")
+                        .font(Theme.bodyFont(10, weight: .semibold))
+                        .foregroundColor(Theme.warningOrange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Theme.warningOrange.opacity(0.12)))
+                }
 
                 Text(group.items.first?.name ?? "未知文件")
                     .font(Theme.bodyFont(13, weight: .semibold))
@@ -211,11 +276,17 @@ struct DuplicateGroupCard: View {
 
                 Spacer()
 
-                Text("每份 \(group.fileSize.byteStringCN) · 共 \(group.items.count) 份")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelSecondary)
+                if group.matchKind == .exact {
+                    Text("每份 \(group.fileSize.byteStringCN) · 共 \(group.items.count) 份")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.labelSecondary)
+                } else {
+                    Text("共 \(group.items.count) 个相似副本")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.labelSecondary)
+                }
 
-                Text("浪费 \(group.wastedBytes.byteStringCN)")
+                Text("可节省 \(group.wastedBytes.byteStringCN)")
                     .font(Theme.monoFont(11, weight: .medium))
                     .foregroundColor(Theme.dangerRed)
                     .padding(.horizontal, 6)
@@ -225,6 +296,19 @@ struct DuplicateGroupCard: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(Color.primary.opacity(0.025))
+
+            if !group.suggestionNote.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 10))
+                        .foregroundColor(Theme.labelTertiary)
+                    Text(group.suggestionNote)
+                        .font(Theme.bodyFont(10))
+                        .foregroundColor(Theme.labelTertiary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 4)
+            }
 
             Divider().overlay(Theme.separator.opacity(0.3))
 
@@ -258,26 +342,49 @@ struct DuplicateFileRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(item.path)
-                        .font(Theme.monoFont(11))
+                    Text(item.name)
+                        .font(Theme.bodyFont(12, weight: .medium))
                         .foregroundColor(Theme.labelPrimary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
 
                     if item.isOriginal {
-                        Text("推荐保留")
+                        Text(item.recommendationReason ?? "推荐保留")
                             .font(Theme.bodyFont(10, weight: .medium))
                             .foregroundColor(Theme.actionBlue)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(RoundedRectangle(cornerRadius: 3).fill(Theme.actionBlue.opacity(0.1)))
+                    } else if let reason = item.recommendationReason {
+                        Text(reason)
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.labelTertiary)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.04)))
                     }
                 }
 
-                if let mtime = item.modificationDate {
-                    Text("修改时间：\(Date.usageFormatter.string(from: mtime))")
-                        .font(Theme.bodyFont(10))
+                HStack(spacing: 8) {
+                    Text(item.path)
+                        .font(Theme.monoFont(10))
                         .foregroundColor(Theme.labelTertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Text("·")
+                        .foregroundColor(Theme.labelTertiary)
+
+                    Text(item.size.byteStringCN)
+                        .font(Theme.monoFont(10))
+                        .foregroundColor(Theme.labelSecondary)
+
+                    if let mtime = item.modificationDate {
+                        Text("·")
+                            .foregroundColor(Theme.labelTertiary)
+                        Text(Date.usageFormatter.string(from: mtime))
+                            .font(Theme.bodyFont(10))
+                            .foregroundColor(Theme.labelTertiary)
+                    }
                 }
             }
 

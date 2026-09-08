@@ -239,7 +239,6 @@ final class AppState: ObservableObject {
         // M3：快照本次清理的 item id，避免清理期间新勾选项被误移出
         let cleaningIDs = Set(items.map(\.id))
         isCleaning = true
-        let total = items.reduce(Int64(0)) { $0 + $1.size }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Cleaner.clean(items, permanently: permanently) { _ in }
             DispatchQueue.main.async {
@@ -310,7 +309,6 @@ final class AppState: ObservableObject {
             items.contains { $0.category == cat.category && cleaningIDs.contains($0.id) }
         }
         isCleaning = true
-        let total = items.reduce(Int64(0)) { $0 + $1.size }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Cleaner.clean(items, permanently: permanently) { _ in }
             DispatchQueue.main.async {

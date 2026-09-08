@@ -2,27 +2,50 @@ import Foundation
 import CryptoKit
 import Combine
 
-/// 重复文件组
+/// 匹配类型：精确重复或相似衍生
+enum DuplicateGroupMatchKind: String, Codable, CaseIterable, Equatable {
+    case exact = "完全一致"       // SHA-256 分块哈希完全一致
+    case similar = "相似衍生"     // 同名副本 (copy, (1), _副本等) 或 格式衍生
+}
+
+/// 过滤器类型
+enum DuplicateGroupFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case exact = "完全一致"
+    case similar = "相似衍生"
+
+    var id: String { rawValue }
+}
+
+/// 重复/相似文件组
 struct DuplicateGroup: Identifiable, Equatable {
     let id: UUID = UUID()
     let hash: String
     let fileSize: Int64
     var items: [DuplicateFileItem]
+    var matchKind: DuplicateGroupMatchKind = .exact
+    var suggestionNote: String = ""
 
-    /// 浪费的空间（除保留一个副本外，其余多余副本的总体积）
+    /// 浪费的空间（除保留一个推荐副本外，其余多余副本的总体积）
     var wastedBytes: Int64 {
         guard items.count > 1 else { return 0 }
-        return fileSize * Int64(items.count - 1)
+        if matchKind == .exact {
+            return fileSize * Int64(items.count - 1)
+        } else {
+            // 相似文件大小可能不一致，浪费体积为除推荐保留项之外的所有项大小之和
+            let total = items.reduce(0) { $0 + $1.size }
+            let keptSize = items.first(where: \.isOriginal)?.size ?? (items.first?.size ?? 0)
+            return max(0, total - keptSize)
+        }
     }
 
     /// 选中的待清理体积
     var selectedBytes: Int64 {
-        let count = items.filter(\.isSelected).count
-        return fileSize * Int64(count)
+        items.filter(\.isSelected).reduce(0) { $0 + $1.size }
     }
 }
 
-/// 单个重复副本条目
+/// 单个重复/相似副本条目
 struct DuplicateFileItem: Identifiable, Equatable {
     let id: UUID = UUID()
     let path: String
@@ -30,7 +53,8 @@ struct DuplicateFileItem: Identifiable, Equatable {
     let size: Int64
     let modificationDate: Date?
     var isSelected: Bool = false
-    var isOriginal: Bool = false  // 推荐保留的原始文件（如修改时间最早或路径最短者）
+    var isOriginal: Bool = false  // 推荐保留的主文件
+    var recommendationReason: String? = nil  // 推荐保留或清理的原因说明
 }
 
 /// 重复文件扫描与管理状态
@@ -50,6 +74,30 @@ final class DuplicateState: ObservableObject {
 
     /// 最小过滤文件大小（小于此大小的文件不参与比对，默认 1 MB = 1_048_576 字节）
     @Published var minSizeBytes: Int64 = 1_048_576
+
+    /// 当前视图过滤类型
+    @Published var filterKind: DuplicateGroupFilter = .all
+
+    /// 过滤后的展示分组
+    var filteredGroups: [DuplicateGroup] {
+        switch filterKind {
+        case .all:
+            return groups
+        case .exact:
+            return groups.filter { $0.matchKind == .exact }
+        case .similar:
+            return groups.filter { $0.matchKind == .similar }
+        }
+    }
+
+    /// 各类别统计
+    var exactGroupsCount: Int {
+        groups.filter { $0.matchKind == .exact }.count
+    }
+
+    var similarGroupsCount: Int {
+        groups.filter { $0.matchKind == .similar }.count
+    }
 
     /// 浪费的总体积
     var totalWastedBytes: Int64 {
@@ -175,8 +223,9 @@ enum DuplicateScanner {
         let fm = FileManager.default
         let whitelist = WhitelistManager.shared
 
-        // 第一阶段：按文件大小快速归类
+        // 第一阶段：按文件大小快速归类，同时记录所有候选大文件
         var sizeMap: [Int64: [String]] = [:]
+        var allCandidates: [(path: String, size: Int64)] = []
         var candidateFiles = 0
 
         for dir in directories {
@@ -204,26 +253,22 @@ enum DuplicateScanner {
 
                 let sz = Int64(size)
                 sizeMap[sz, default: []].append(path)
+                allCandidates.append((path: path, size: sz))
                 candidateFiles += 1
             }
         }
 
-        // 仅保留文件大小相同且个数 >= 2 的候选池
+        var resultGroups: [DuplicateGroup] = []
+        var exactMatchedPaths: Set<String> = []
+
+        // 第二阶段：精确分块哈希校验（首 8KB 预检 + 全量 SHA-256 确认）
         let potentialDuplicateSets = sizeMap.filter { $0.value.count >= 2 }
-        if potentialDuplicateSets.isEmpty {
-            progress(1.0, "未发现重复大小的文件")
-            return []
-        }
-
-        let totalSets = potentialDuplicateSets.count
+        let totalSets = max(1, potentialDuplicateSets.count)
         var processedSets = 0
-
-        // 第二阶段：分块哈希校验（首 8KB 预检 + 全量 SHA-256 确认）
-        var duplicatesByHash: [String: [DuplicateFileItem]] = [:]
 
         for (size, paths) in potentialDuplicateSets {
             processedSets += 1
-            let frac = 0.1 + (Double(processedSets) / Double(totalSets)) * 0.85
+            let frac = 0.1 + (Double(processedSets) / Double(totalSets)) * 0.5
             progress(frac, "正在比对特征 (\(processedSets)/\(totalSets))…")
 
             // 1. 头 8KB 快速比对
@@ -257,19 +302,147 @@ enum DuplicateScanner {
                     }
                     if !sortedItems.isEmpty {
                         sortedItems[0].isOriginal = true
+                        sortedItems[0].recommendationReason = "原文件（时间最早）"
+                        for idx in 1..<sortedItems.count {
+                            sortedItems[idx].recommendationReason = "重复副本"
+                        }
                     }
-                    duplicatesByHash[h] = sortedItems
+                    let group = DuplicateGroup(
+                        hash: h,
+                        fileSize: size,
+                        items: sortedItems,
+                        matchKind: .exact,
+                        suggestionNote: "SHA-256 完全一致，保留一份原文件"
+                    )
+                    resultGroups.append(group)
+                    for item in sortedItems {
+                        exactMatchedPaths.insert(item.path)
+                    }
                 }
             }
         }
 
-        // 构造最终结果组，按浪费空间从大到小排序
-        let groups = duplicatesByHash.map { (hash, items) -> DuplicateGroup in
-            let sz = items.first?.size ?? 0
-            return DuplicateGroup(hash: hash, fileSize: sz, items: items)
-        }.sorted { $0.wastedBytes > $1.wastedBytes }
+        // 第三阶段：相似衍生文件归类（排除已形成精确重复项的文件）
+        progress(0.7, "正在分析相似衍生文件…")
+        let remainingCandidates = allCandidates.filter { !exactMatchedPaths.contains($0.path) }
+        var stemMap: [String: [(path: String, size: Int64)]] = [:]
 
-        return groups
+        for cand in remainingCandidates {
+            let filename = (cand.path as NSString).lastPathComponent
+            let stem = normalizedStem(for: filename)
+            if !stem.isEmpty {
+                stemMap[stem, default: []].append(cand)
+            }
+        }
+
+        // 筛选拥有 2 个及以上相似衍生副本的词干组
+        for (stem, cands) in stemMap where cands.count >= 2 {
+            var items: [DuplicateFileItem] = []
+            for cand in cands {
+                let mtime = FileSystem.modificationDate(cand.path)
+                let name = (cand.path as NSString).lastPathComponent
+                items.append(
+                    DuplicateFileItem(
+                        path: cand.path,
+                        name: name,
+                        size: cand.size,
+                        modificationDate: mtime
+                    )
+                )
+            }
+
+            // 智能推荐保留规则：
+            // 1. 若体积差异明显（如高清视频/高分辨率图片 vs 压缩版），优先保留体积较大/高清者；
+            // 2. 若体积相近（差异 < 5%），优先保留较早修改的原始文件；
+            // 3. 规范命名优于含 copy / (1) / 副本 的名称。
+            items.sort { a, b in
+                // 首先看名字是否是纯净规范名（不含 copy/副本/(1)）
+                let aIsCopyName = isDerivedCopyName(a.name)
+                let bIsCopyName = isDerivedCopyName(b.name)
+                if aIsCopyName != bIsCopyName {
+                    return !aIsCopyName // 规范名排前
+                }
+                // 体积大者排前（可能是更高清无损版本）
+                if a.size != b.size {
+                    return a.size > b.size
+                }
+                // 修改时间较早排前
+                if let d1 = a.modificationDate, let d2 = b.modificationDate, d1 != d2 {
+                    return d1 < d2
+                }
+                return a.path.count < b.path.count
+            }
+
+            if !items.isEmpty {
+                items[0].isOriginal = true
+                let best = items[0]
+                if items.count > 1 && best.size > items[1].size {
+                    items[0].recommendationReason = "推荐保留（体积最大/可能为高清版本）"
+                } else {
+                    items[0].recommendationReason = "推荐保留（主文件）"
+                }
+
+                for idx in 1..<items.count {
+                    if isDerivedCopyName(items[idx].name) {
+                        items[idx].recommendationReason = "衍生副本命名"
+                    } else if items[idx].size < best.size {
+                        items[idx].recommendationReason = "压缩/衍生版本"
+                    } else {
+                        items[idx].recommendationReason = "相似文件"
+                    }
+                }
+            }
+
+            let avgSize = items.reduce(0) { $0 + $1.size } / Int64(items.count)
+            let group = DuplicateGroup(
+                hash: "stem:\(stem)",
+                fileSize: avgSize,
+                items: items,
+                matchKind: .similar,
+                suggestionNote: "同词干衍生副本或多格式文件"
+            )
+            resultGroups.append(group)
+        }
+
+        // 按可节省空间从大到小排序
+        resultGroups.sort { $0.wastedBytes > $1.wastedBytes }
+        progress(1.0, "扫描完成")
+        return resultGroups
+    }
+
+    /// 提取并归一化文件词干（去除操作系统副本后缀，如 ' (1)', ' copy', ' 拷贝', '_副本', '-backup' 等）
+    static func normalizedStem(for filename: String) -> String {
+        let ns = filename as NSString
+        var stem = ns.deletingPathExtension.lowercased()
+
+        // 移除常见衍生标记
+        let patterns = [
+            #"\s*[\(_（]\s*\d+\s*[\)_）]"#,         // " (1)", "（2）", "_1"
+            #"\s*[-_]backup\b"#,                    // "-backup", "_backup"
+            #"\s*[-_]bak\b"#,                       // "-bak"
+            #"\s*[-_]?copy\b"#,                     // " copy", "-copy", "copy"
+            #"\s*[-_]?拷贝\b"#,                     // " 拷贝", "_拷贝"
+            #"\s*[-_]?副本\b"#                      // "_副本", " 副本"
+        ]
+
+        for pat in patterns {
+            if let regex = try? NSRegularExpression(pattern: pat, options: [.caseInsensitive]) {
+                let range = NSRange(location: 0, length: stem.utf16.count)
+                stem = regex.stringByReplacingMatches(in: stem, options: [], range: range, withTemplate: "")
+            }
+        }
+
+        return stem.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 判断文件名是否包含典型的衍生副本标识
+    static func isDerivedCopyName(_ filename: String) -> Bool {
+        let lower = filename.lowercased()
+        let keywords = [" (1)", " (2)", " (3)", " copy", "_copy", "-copy", " 拷贝", "_拷贝", "副本", "-backup", "_bak"]
+        for kw in keywords {
+            if lower.contains(kw) { return true }
+        }
+        return false
     }
 
     /// 读取文件前 length 字节生成快速哈希
