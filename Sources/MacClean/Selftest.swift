@@ -684,6 +684,33 @@ enum Selftest {
             guard report.contains("详细清理流水记录") else { return false }
             return true
         }
+        check("系统通知：扫描完成通知组装与派发") {
+            let mgr = NotificationManager.shared
+            mgr.notifyScanCompleted(categoryName: "开发残留", itemCount: 42, totalBytes: 52_428_800)
+            guard let notif = mgr.lastNotification else { return false }
+            guard notif.title == "开发残留 扫描完成" else { return false }
+            guard notif.body.contains("42 个可清理项目") && notif.body.contains("52.4 MB") else { return false }
+            return true
+        }
+        check("系统通知：清理完成通知与状态组装") {
+            let mgr = NotificationManager.shared
+            mgr.notifyCleanCompleted(releasedBytes: 104_857_600, failureCount: 0)
+            guard let notif = mgr.lastNotification else { return false }
+            guard notif.title == "MacClean 清理完成" else { return false }
+            guard notif.body.contains("105 MB") else { return false }
+
+            mgr.notifyCleanCompleted(releasedBytes: 20_000_000, failureCount: 2)
+            guard let notif2 = mgr.lastNotification else { return false }
+            guard notif2.body.contains("2 项清理失败或跳过") && notif2.body.contains("20 MB") else { return false }
+            return true
+        }
+        check("系统通知：Dock 徽标状态同步") {
+            NotificationManager.shared.updateDockBadge(count: 88)
+            guard NSApplication.shared.dockTile.badgeLabel == "88" else { return false }
+            NotificationManager.shared.updateDockBadge(count: 0)
+            guard NSApplication.shared.dockTile.badgeLabel == nil else { return false }
+            return true
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")

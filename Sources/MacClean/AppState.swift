@@ -56,6 +56,15 @@ final class AppState: ObservableObject {
         ai.app = self   // 弱引用：列表级提问需访问当前分类状态
         aiReview.app = self
 
+        // 监听分类可清理项目总数变化，异步更新 Dock 徽标
+        objectWillChange
+            .debounce(for: .milliseconds(100), scheduler: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                NotificationManager.shared.updateDockBadge(count: self.searchableItems.count)
+            }
+            .store(in: &cancellables)
+
         history = HistoryStore.load()
         refreshDisk()
     }
@@ -111,6 +120,11 @@ final class AppState: ObservableObject {
                     st.isScanned = true
                     st.isScanning = false
                     self?.refreshDisk()
+                    NotificationManager.shared.notifyScanCompleted(
+                        categoryName: cat.title,
+                        itemCount: items.count,
+                        totalBytes: items.reduce(Int64(0)) { $0 + $1.size }
+                    )
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -233,6 +247,10 @@ final class AppState: ObservableObject {
                     parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
                 }
                 self.lastCleanSummary = parts.joined(separator: "，")
+                NotificationManager.shared.notifyCleanCompleted(
+                    releasedBytes: result.releasedBytes,
+                    failureCount: result.failures.count
+                )
             }
         }
     }
@@ -307,6 +325,10 @@ final class AppState: ObservableObject {
                     parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
                 }
                 self.lastCleanSummary = parts.joined(separator: "，")
+                NotificationManager.shared.notifyCleanCompleted(
+                    releasedBytes: result.releasedBytes,
+                    failureCount: result.failures.count
+                )
             }
         }
     }

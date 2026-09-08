@@ -294,7 +294,10 @@ struct ContentView: View {
             .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
             .animation(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
         }
-        .onAppear { app.refreshDisk() }
+        .onAppear {
+            app.refreshDisk()
+            NotificationManager.shared.requestAuthorization()
+        }
     }
 
     private var mainContent: some View {
