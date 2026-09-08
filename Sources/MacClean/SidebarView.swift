@@ -77,13 +77,17 @@ struct SidebarView: View {
                     ToolRow(icon: "app.dashed", title: "App 卸载器",
                             subtitle: "卸载 App 及其全部残留",
                             isActive: app.destination == .uninstaller) {
-                        app.destination = .uninstaller
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            app.destination = .uninstaller
+                        }
                     }
                     // 清理历史（融合 Mole history）
                     ToolRow(icon: "clock.arrow.circlepath", title: "清理历史",
                             subtitle: "\(app.history.count) 条记录",
                             isActive: app.destination == .history) {
-                        app.destination = .history
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            app.destination = .history
+                        }
                     }
                 }
                 .padding(.horizontal, Theme.spaceSm)
@@ -117,6 +121,7 @@ struct SidebarView: View {
                 .font(Theme.monoFont(11, weight: .medium))
                 .foregroundColor(Theme.labelSecondary)
                 .monospacedDigit()
+                .contentTransition(.numericText())
             Text(" 已扫描")
                 .font(Theme.bodyFont(11))
                 .foregroundColor(Theme.labelTertiary)
@@ -125,6 +130,7 @@ struct SidebarView: View {
                 .font(Theme.monoFont(11, weight: .semibold))
                 .foregroundColor(Theme.actionBlue)
                 .monospacedDigit()
+                .contentTransition(.numericText())
             Text(" 可清理")
                 .font(Theme.bodyFont(11))
                 .foregroundColor(Theme.labelTertiary)
@@ -149,6 +155,7 @@ struct ToolRow: View {
     let subtitle: String
     let isActive: Bool
     let action: () -> Void
+    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
@@ -177,8 +184,13 @@ struct ToolRow: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                    .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.clear)
+                    .fill(isActive ? Theme.actionBlue.opacity(0.14) : (isHovered ? Color.primary.opacity(0.045) : Color.clear))
             )
+            .onHover { hovering in
+                withAnimation(Theme.fastTransition) {
+                    isHovered = hovering
+                }
+            }
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("toolRow_\(title)")
@@ -189,6 +201,7 @@ struct CategoryRow: View {
     let category: CleanCategory
     @ObservedObject var state: CategoryState
     var isActive: Bool = false
+    @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -214,12 +227,15 @@ struct CategoryRow: View {
             if state.isScanning {
                 ProgressView()
                     .controlSize(.small)
+                    .transition(.opacity)
             }
             if state.isScanned && state.totalSize > 0 && !state.isScanning {
                 Text(state.totalSize.byteStringCN)
                     .font(Theme.monoFont(11, weight: .medium))
                     .foregroundColor(Theme.labelSecondary)
                     .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .transition(.opacity)
             }
         }
         .padding(.horizontal, 10)
@@ -227,8 +243,14 @@ struct CategoryRow: View {
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.clear)
+                .fill(isActive ? Theme.actionBlue.opacity(0.14) : (isHovered ? Color.primary.opacity(0.045) : Color.clear))
         )
+        .onHover { hovering in
+            withAnimation(Theme.fastTransition) {
+                isHovered = hovering
+            }
+        }
+        .animation(Theme.fastTransition, value: state.isScanning)
     }
 }
 

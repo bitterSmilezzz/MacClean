@@ -21,8 +21,10 @@
   - 提取本机已安装应用的**真实高清官方图标**；
   - 智能扫描全部关联残留（Preferences/Caches/Containers/Application Support/Logs/LaunchAgents）→ 安全移入废纸篓。
 - **桌面级原生交互体验**：
+  - **动态数字过渡（Numeric Text Transitions）**：磁盘已用、可清理总量、各分类项数与清理历史容量变化均享受系统级平滑翻页动画；
+  - **微触觉按压与悬停反馈（Tactile & Hover Feedback）**：卡片与行操作配备 `macPressable` 微缩放与 `macRowHover` 平滑淡入淡出插值；
   - **右键快捷菜单**：清理项与 App 残留均支持右键「在访达中高亮显示」、「拷贝绝对路径」与「切换勾选」；
-  - **macOS HIG 原生列表**：采用系统级 Grouped List 分组容器与单像素分割线，支持鼠标行悬停高亮（`macRowHover`），彻底告别卡片套卡片（Card-in-Card）；
+  - **macOS HIG 原生容器与材质**：采用系统级 Grouped List 分组容器、原生 `.bar` 工具栏材质与暗色边缘清晰度增强，彻底告别卡片套卡片（Card-in-Card）；
   - **系统级 Squircle 标识**：为 6 大清理分类配备 macOS 系统设置同款平滑圆角彩色底板；
   - **清理完成 Toast HUD**：系统级操作反馈胶囊，动态提示释放容量。
 - **清理历史**（融合 Mole `mo history`）：记录每次清理的时间/分类/大小/模式，清晰可追溯。

@@ -14,8 +14,8 @@ extension Color {
 
 enum Theme {
     // Brand & Accent (Apple HIG 原生标准强调色)
-    static let actionBlue = Color(hex: 0x0071e3)          // macOS 系统级交互蓝
-    static let focusBlue = Color(hex: 0x0071e3)           // 聚焦框色
+    static let actionBlue = Color.accentColor             // macOS 系统级自适应强调蓝
+    static let focusBlue = Color.accentColor              // 聚焦框色
     static let skyLinkBlue = Color(hex: 0x2997ff)         // 链接蓝
 
     // Surfaces
@@ -68,6 +68,11 @@ enum Theme {
     // HIG 标准内容边距
     static let contentPadding: CGFloat = 20
 
+    // MARK: - Animation Tokens (macOS 原生动效规范)
+    static let spring = Animation.spring(response: 0.35, dampingFraction: 0.82)
+    static let smoothTransition = Animation.easeInOut(duration: 0.2)
+    static let fastTransition = Animation.easeOut(duration: 0.12)
+
     // MARK: - Adaptive Semantic Colors (macOS 13+)
     static let windowBackground = Color(nsColor: .windowBackgroundColor)
     static let controlBackground = Color(nsColor: .controlBackgroundColor)
@@ -80,7 +85,7 @@ enum Theme {
 
 // MARK: - macOS HIG 原生容器与修饰符（取代 AI 塑料感 ModernCard）
 
-/// macOS 原生分组容器（对齐系统设置、Xcode 分组框质感：纯净底色 + 极细单像素边框 + 极其克制的 1px 微阴影）
+/// macOS 原生分组容器（对齐系统设置、Xcode 分组框质感：纯净底色 + 极细单像素边框 + 极其克制的微阴影，支持平滑悬停动效）
 struct MacCardModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     var cornerRadius: CGFloat = Theme.radiusMd
@@ -92,44 +97,36 @@ struct MacCardModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(
                         colorScheme == .dark
-                            ? Color(nsColor: .controlBackgroundColor).opacity(0.65)
+                            ? Color(nsColor: .controlBackgroundColor).opacity(isHovered ? 0.78 : 0.65)
                             : Color(nsColor: .controlBackgroundColor)
                     )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
-                        Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.45 : 0.65),
+                        Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? (isHovered ? 0.72 : 0.45) : (isHovered ? 0.85 : 0.65)),
                         lineWidth: 0.8
                     )
             )
             .shadow(
-                color: Color.black.opacity(colorScheme == .dark ? 0.18 : (isHovered ? 0.05 : 0.02)),
-                radius: isHovered ? 2 : 1,
+                color: Color.black.opacity(colorScheme == .dark ? (isHovered ? 0.32 : 0.18) : (isHovered ? 0.08 : 0.02)),
+                radius: isHovered ? 3.5 : 1,
                 x: 0,
-                y: 1
+                y: isHovered ? 2 : 1
             )
+            .animation(Theme.fastTransition, value: isHovered)
     }
 }
 
-/// macOS 标准工具栏/底栏背景（摒弃浮夸的 Web 弥散模糊，回归 macOS 原生半透平整质感）
+/// macOS 标准工具栏/底栏背景（采用系统级原生材质 .bar）
 struct MacBarModifier: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
-
     func body(content: Content) -> some View {
         content
-            .background(
-                Rectangle()
-                    .fill(
-                        colorScheme == .dark
-                            ? Color(nsColor: .windowBackgroundColor).opacity(0.92)
-                            : Color(nsColor: .windowBackgroundColor).opacity(0.96)
-                    )
-            )
+            .background(.bar)
     }
 }
 
-/// macOS 原生行悬停交互
+/// macOS 原生行悬停交互（平滑插值淡入淡出）
 struct MacRowHoverModifier: ViewModifier {
     @State private var isHovered = false
     var cornerRadius: CGFloat = Theme.radiusSm
@@ -138,11 +135,33 @@ struct MacRowHoverModifier: ViewModifier {
         content
             .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(isHovered ? Color.primary.opacity(0.045) : Color.clear)
+                    .fill(isHovered ? Color.primary.opacity(0.05) : Color.clear)
             )
             .onHover { hovering in
-                isHovered = hovering
+                withAnimation(Theme.fastTransition) {
+                    isHovered = hovering
+                }
             }
+    }
+}
+
+/// macOS 原生微触觉反馈按钮样式
+struct MacPressableButtonStyle: ButtonStyle {
+    var scale: CGFloat = 0.98
+    var pressedOpacity: Double = 0.88
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1.0)
+            .opacity(configuration.isPressed ? pressedOpacity : 1.0)
+            .animation(Theme.fastTransition, value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == MacPressableButtonStyle {
+    static var macPressable: MacPressableButtonStyle { MacPressableButtonStyle() }
+    static func macPressable(scale: CGFloat = 0.98, opacity: Double = 0.88) -> MacPressableButtonStyle {
+        MacPressableButtonStyle(scale: scale, pressedOpacity: opacity)
     }
 }
 
@@ -234,6 +253,7 @@ struct HudToastModifier: ViewModifier {
                 )
                 .padding(.bottom, 20)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                .animation(Theme.spring, value: isPresented)
                 .zIndex(99)
             }
         }

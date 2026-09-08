@@ -84,10 +84,12 @@ struct DashboardView: View {
                         .tracking(-0.5)
                         .foregroundColor(Theme.labelPrimary)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
                     Text("\(app.scannedCount)/\(CleanCategory.allCases.count) 分类已扫")
                         .font(Theme.monoFont(12))
                         .foregroundColor(Theme.labelTertiary)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
             }
             Spacer()
@@ -167,6 +169,7 @@ struct DashboardView: View {
                             .font(Theme.displayFont(18, weight: .semibold))
                             .foregroundColor(Theme.labelPrimary)
                             .monospacedDigit()
+                            .contentTransition(.numericText())
                         Text("已用")
                             .font(Theme.bodyFont(11))
                             .foregroundColor(Theme.labelTertiary)
@@ -196,6 +199,7 @@ struct DashboardView: View {
                 .font(Theme.monoFont(12, weight: .medium))
                 .foregroundColor(Theme.labelPrimary)
                 .monospacedDigit()
+                .contentTransition(.numericText())
         }
     }
 
@@ -210,7 +214,7 @@ struct DashboardView: View {
                 .font(Theme.bodyFont(12, weight: .semibold))
                 .foregroundColor(Theme.labelSecondary)
 
-            // 系统级分段进度条
+            // 系统级分段进度条（带平滑弹簧动效）
             GeometryReader { geo in
                 let w = geo.size.width
                 HStack(spacing: 2) {
@@ -231,6 +235,7 @@ struct DashboardView: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .animation(Theme.spring, value: totals)
             }
             .frame(height: 6)
             .background(Color(nsColor: .separatorColor).opacity(0.2))
@@ -265,8 +270,45 @@ struct DashboardView: View {
     // MARK: - 风险提醒卡片
 
     private var riskAlertCard: some View {
+        RiskAlertCardView()
+    }
+
+    // MARK: - 最近历史
+
+    private var recentHistory: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceSm) {
+            HStack {
+                Text("最近清理")
+                    .font(Theme.bodyFont(12, weight: .semibold))
+                    .foregroundColor(Theme.labelSecondary)
+                Spacer()
+                Button("查看全部 →") {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        app.destination = .history
+                    }
+                }
+                .buttonStyle(.borderless)
+                .font(Theme.bodyFont(12, weight: .medium))
+                .foregroundColor(Theme.actionBlue)
+            }
+            ForEach(app.history.prefix(3)) { record in
+                HistoryRow(record: record)
+            }
+        }
+    }
+}
+
+// MARK: - 电脑风险提醒卡片组件
+
+struct RiskAlertCardView: View {
+    @EnvironmentObject private var app: AppState
+    @State private var isHovered = false
+
+    var body: some View {
         Button {
-            app.destination = .riskCheck
+            withAnimation(.easeOut(duration: 0.15)) {
+                app.destination = .riskCheck
+            }
         } label: {
             HStack(spacing: Theme.spaceSm) {
                 // 图标：系统标准着色
@@ -314,49 +356,37 @@ struct DashboardView: View {
                         Text("高 \(app.riskCounts[.high, default: 0])")
                             .font(Theme.monoFont(11, weight: .medium))
                             .foregroundColor(Theme.textDanger)
+                            .contentTransition(.numericText())
                         Text("中 \(app.riskCounts[.medium, default: 0])")
                             .font(Theme.monoFont(11, weight: .medium))
                             .foregroundColor(Theme.textWarning)
+                            .contentTransition(.numericText())
                         Text("低 \(app.riskCounts[.low, default: 0])")
                             .font(Theme.monoFont(11, weight: .medium))
                             .foregroundColor(Theme.labelTertiary)
+                            .contentTransition(.numericText())
                     }
                 }
                 if app.isRiskScanning {
                     ProgressView().controlSize(.small)
+                        .transition(.opacity)
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(Theme.labelTertiary.opacity(0.8))
+                        .transition(.opacity)
                 }
             }
             .padding(.horizontal, Theme.spaceSm)
             .padding(.vertical, Theme.spaceXs)
             .contentShape(Rectangle())
-            .macCard(cornerRadius: Theme.radiusMd)
+            .macCard(cornerRadius: Theme.radiusMd, isHovered: isHovered)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.macPressable)
+        .onHover { hovering in
+            isHovered = hovering
+        }
         .accessibilityIdentifier("riskAlertCard")
-    }
-
-    // MARK: - 最近历史
-
-    private var recentHistory: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceSm) {
-            HStack {
-                Text("最近清理")
-                    .font(Theme.bodyFont(12, weight: .semibold))
-                    .foregroundColor(Theme.labelSecondary)
-                Spacer()
-                Button("查看全部 →") { app.destination = .history }
-                    .buttonStyle(.borderless)
-                    .font(Theme.bodyFont(12, weight: .medium))
-                    .foregroundColor(Theme.actionBlue)
-            }
-            ForEach(app.history.prefix(3)) { record in
-                HistoryRow(record: record)
-            }
-        }
     }
 }
 
@@ -365,12 +395,15 @@ struct DashboardView: View {
 struct DashboardCategoryCard: View {
     @EnvironmentObject private var app: AppState
     let category: CleanCategory
+    @State private var isHovered = false
 
     private var st: CategoryState { app.state(for: category) }
 
     var body: some View {
         Button {
-            app.destination = .category(category)
+            withAnimation(.easeOut(duration: 0.15)) {
+                app.destination = .category(category)
+            }
         } label: {
             HStack(spacing: Theme.spaceSm) {
                 Image(systemName: category.icon)
@@ -390,22 +423,29 @@ struct DashboardCategoryCard: View {
                         .font(Theme.bodyFont(11))
                         .foregroundColor(st.isScanned ? Theme.labelSecondary : Theme.labelTertiary)
                         .monospacedDigit()
+                        .contentTransition(.numericText())
                 }
                 Spacer()
                 if st.isScanning {
                     ProgressView().controlSize(.small)
+                        .transition(.opacity)
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(Theme.labelTertiary.opacity(0.8))
+                        .transition(.opacity)
                 }
             }
             .padding(.horizontal, Theme.spaceSm)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
-            .macCard(cornerRadius: Theme.radiusSm)
+            .macCard(cornerRadius: Theme.radiusSm, isHovered: isHovered)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.macPressable)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .animation(Theme.fastTransition, value: st.isScanning)
         .accessibilityIdentifier("dashboardCategory_\(category.rawValue)")
     }
 }

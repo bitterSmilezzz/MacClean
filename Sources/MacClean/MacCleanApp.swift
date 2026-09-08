@@ -161,8 +161,14 @@ struct ContentView: View {
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
                         AIChatView()
+                            .overlay(
+                                Rectangle()
+                                    .fill(Theme.separator.opacity(0.5))
+                                    .frame(width: 0.8),
+                                alignment: .leading
+                            )
                             .transition(.move(edge: .trailing).combined(with: .opacity))
-                            .shadow(color: .black.opacity(0.10), radius: 18, x: -4, y: 0)
+                            .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
                     }
                     .zIndex(10)
                 }
@@ -172,8 +178,14 @@ struct ContentView: View {
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
                         AIReviewView()
+                            .overlay(
+                                Rectangle()
+                                    .fill(Theme.separator.opacity(0.5))
+                                    .frame(width: 0.8),
+                                alignment: .leading
+                            )
                             .transition(.move(edge: .trailing).combined(with: .opacity))
-                            .shadow(color: .black.opacity(0.10), radius: 18, x: -4, y: 0)
+                            .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
                     }
                     .zIndex(11)
                 }
@@ -202,6 +214,8 @@ struct ContentView: View {
                 RiskView()
             }
         }
+        .transition(.opacity)
+        .animation(Theme.smoothTransition, value: app.destination)
         // 任一抽屉展开都留白（AI 对话 / AI 再筛查）
         .padding(.trailing, (app.ai.isDrawerOpen || app.aiReview.isDrawerOpen) ? 344 : 0)
         .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)

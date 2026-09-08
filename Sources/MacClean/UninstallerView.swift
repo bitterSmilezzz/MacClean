@@ -114,24 +114,32 @@ struct UninstallerView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelTertiary)
                 TextField("搜索 App", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(Theme.bodyFont(12))
             }
-            .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, Theme.spaceXs)
-            .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.canvas))
-            
-            .padding(.horizontal, Theme.contentPadding)
-            .padding(.top, Theme.contentPadding)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                    .fill(Color.primary.opacity(0.04))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .stroke(Theme.separator.opacity(0.6), lineWidth: 0.8)
+                    )
+            )
+            .padding(.horizontal, Theme.spaceSm)
+            .padding(.top, Theme.spaceSm)
             .padding(.bottom, Theme.spaceSm)
 
             ScrollView {
-                VStack(spacing: Theme.spaceSm) {
+                VStack(spacing: 4) {
                     ForEach(filteredApps) { app in
                         Button {
-                            uninstaller.select(app)
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                uninstaller.select(app)
+                            }
                         } label: {
                             AppRow(app: app, isSelected: uninstaller.selectedApp == app)
                         }
@@ -157,26 +165,25 @@ struct UninstallerView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(app.name)
                             .font(Theme.displayFont(20, weight: .semibold))
-                            .foregroundColor(Theme.ink)
+                            .foregroundColor(Theme.labelPrimary)
                         Text(app.path)
                             .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.inkMuted48)
+                            .foregroundColor(Theme.labelSecondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         if let bundleID = app.bundleID {
                             Text(bundleID)
                                 .font(Theme.bodyFont(11))
-                                .foregroundColor(Theme.inkMuted48.opacity(0.8))
+                                .foregroundColor(Theme.labelTertiary)
                         }
                     }
                     Spacer()
                     Text("本体 \(app.size.byteStringCN)")
                         .font(Theme.bodyFont(14, weight: .semibold))
-                        .foregroundColor(Theme.inkMuted80)
+                        .foregroundColor(Theme.labelPrimary)
                 }
                 .padding(Theme.spaceMd)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.canvas))
-                
+                .macCard(cornerRadius: Theme.radiusMd)
                 .padding(Theme.spaceMd)
 
                 if app.isRunning {
@@ -294,10 +301,13 @@ struct UninstallerView: View {
             VStack(alignment: .trailing, spacing: 0) {
                 Text("已选 \(uninstaller.selectedFiles.count) 项")
                     .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.inkMuted48)
+                    .foregroundColor(Theme.labelTertiary)
+                    .contentTransition(.numericText())
                 Text(uninstaller.selectedSize.byteStringCN)
                     .font(Theme.displayFont(20, weight: .semibold))
-                    .foregroundColor(Theme.ink)
+                    .foregroundColor(Theme.labelPrimary)
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
             }
 
             // 彻底删除（红色，需二次确认）
@@ -337,6 +347,7 @@ struct UninstallerView: View {
 struct AppRow: View {
     let app: InstalledApp
     let isSelected: Bool
+    @State private var isHovered = false
 
     private var appIcon: NSImage {
         NSWorkspace.shared.icon(forFile: app.path)
@@ -369,8 +380,13 @@ struct AppRow: View {
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(isSelected ? Theme.actionBlue.opacity(0.12) : Color.clear)
+                .fill(isSelected ? Theme.actionBlue.opacity(0.14) : (isHovered ? Color.primary.opacity(0.045) : Color.clear))
         )
+        .onHover { hovering in
+            withAnimation(Theme.fastTransition) {
+                isHovered = hovering
+            }
+        }
         .contextMenu {
             Button {
                 let url = URL(fileURLWithPath: app.path)

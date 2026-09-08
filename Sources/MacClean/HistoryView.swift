@@ -12,41 +12,49 @@ struct HistoryView: View {
             header
             Divider().overlay(Theme.hairline)
 
-            if app.history.isEmpty {
-                VStack(spacing: Theme.spaceSm) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 36, weight: .light))
-                        .foregroundColor(Theme.inkMuted48.opacity(0.6))
-                    Text("暂无清理记录")
-                        .font(Theme.displayFont(22, weight: .semibold))
-                        .foregroundColor(Theme.ink)
-                    Text("完成一次清理后，记录会显示在这里")
-                        .font(Theme.bodyFont(13))
-                        .foregroundColor(Theme.inkMuted48)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(Array(app.history.enumerated()), id: \.element.id) { index, record in
-                            if index > 0 {
-                                Divider()
-                                    .overlay(Theme.separator.opacity(0.35))
-                                    .padding(.leading, 38)
-                            }
-                            HistoryRow(record: record)
-                        }
+            Group {
+                if app.history.isEmpty {
+                    VStack(spacing: Theme.spaceSm) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 36, weight: .light))
+                            .foregroundColor(Theme.labelTertiary.opacity(0.6))
+                        Text("暂无清理记录")
+                            .font(Theme.displayFont(22, weight: .semibold))
+                            .foregroundColor(Theme.labelPrimary)
+                        Text("完成一次清理后，记录会显示在这里")
+                            .font(Theme.bodyFont(13))
+                            .foregroundColor(Theme.labelSecondary)
                     }
-                    .macCard(cornerRadius: Theme.radiusMd)
-                    .padding(Theme.spaceMd)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Array(app.history.enumerated()), id: \.element.id) { index, record in
+                                if index > 0 {
+                                    Divider()
+                                        .overlay(Theme.separator.opacity(0.35))
+                                        .padding(.leading, 38)
+                                }
+                                HistoryRow(record: record)
+                            }
+                        }
+                        .macCard(cornerRadius: Theme.radiusMd)
+                        .padding(Theme.spaceMd)
+                    }
                 }
             }
+            .transition(.opacity)
+            .animation(Theme.smoothTransition, value: app.history.isEmpty)
 
             footer
         }
         .background(Theme.windowBackground)
         .confirmationDialog("清空历史记录？", isPresented: $confirmClear, titleVisibility: .visible) {
-            Button("清空", role: .destructive) { app.clearHistory() }
+            Button("清空", role: .destructive) {
+                withAnimation(Theme.smoothTransition) {
+                    app.clearHistory()
+                }
+            }
             Button("取消", role: .cancel) {}
         }
     }
@@ -83,10 +91,12 @@ struct HistoryView: View {
                 .font(Theme.bodyFont(12))
                 .foregroundColor(Theme.labelTertiary)
                 .monospacedDigit()
+                .contentTransition(.numericText())
             Text("累计释放 \(totalBytes.byteStringCN)")
                 .font(Theme.bodyFont(13, weight: .semibold))
                 .foregroundColor(Theme.labelPrimary)
                 .monospacedDigit()
+                .contentTransition(.numericText())
             Spacer()
             Button {
                 confirmClear = true

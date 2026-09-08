@@ -46,7 +46,8 @@ struct CategoryDetailView: View {
                 .padding(.horizontal, Theme.contentPadding)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.dangerRed.opacity(0.06))
+                .background(Theme.dangerRed.opacity(0.12))
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             // AI 再筛查状态横幅（进度 / 错误 / 完成摘要）
@@ -61,7 +62,8 @@ struct CategoryDetailView: View {
                 .padding(.horizontal, Theme.contentPadding)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.actionBlue.opacity(0.05))
+                .background(Theme.actionBlue.opacity(0.10))
+                .transition(.move(edge: .top).combined(with: .opacity))
             } else if let reviewError = app.aiReview.lastError {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -80,7 +82,8 @@ struct CategoryDetailView: View {
                 .padding(.horizontal, Theme.contentPadding)
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.warningOrange.opacity(0.06))
+                .background(Theme.warningOrange.opacity(0.12))
+                .transition(.move(edge: .top).combined(with: .opacity))
             } else {
                 let reviewSummary = app.aiReview.summary(for: st.items)
                 if !reviewSummary.isEmpty {
@@ -96,22 +99,27 @@ struct CategoryDetailView: View {
                     .padding(.horizontal, Theme.contentPadding)
                     .padding(.vertical, 6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.actionBlue.opacity(0.05))
+                    .background(Theme.actionBlue.opacity(0.10))
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
 
-            if st.isScanning {
-                scanningView
-            } else if !st.isScanned {
-                emptyView
-            } else if st.items.isEmpty {
-                emptyResultView
-            } else if filteredItems.isEmpty {
-                // 有扫描结果但过滤无匹配
-                noFilterMatchView
-            } else {
-                itemList
+            Group {
+                if st.isScanning {
+                    scanningView
+                } else if !st.isScanned {
+                    emptyView
+                } else if st.items.isEmpty {
+                    emptyResultView
+                } else if filteredItems.isEmpty {
+                    // 有扫描结果但过滤无匹配
+                    noFilterMatchView
+                } else {
+                    itemList
+                }
             }
+            .transition(.opacity)
+            .animation(Theme.smoothTransition, value: st.isScanning)
 
             footer
         }
@@ -448,10 +456,12 @@ struct CategoryDetailView: View {
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.labelTertiary)
                     .monospacedDigit()
+                    .contentTransition(.numericText())
                 Text(shownSize.byteStringCN)
                     .font(Theme.displayFont(18, weight: .semibold))
                     .foregroundColor(Theme.labelPrimary)
                     .monospacedDigit()
+                    .contentTransition(.numericText())
             }
 
             // 清理（原生 macOS 主按钮）
@@ -549,13 +559,14 @@ struct ItemRowView: View {
                     .foregroundColor(Theme.labelPrimary)
                     .monospacedDigit()
 
-                // 展开/收起路径备注
+                // 展开/收起路径备注（平滑旋转动效）
                 Button {
-                    withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
+                    withAnimation(Theme.fastTransition) { isExpanded.toggle() }
                 } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(Theme.labelTertiary)
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
                         .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
