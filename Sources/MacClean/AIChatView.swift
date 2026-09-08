@@ -421,7 +421,7 @@ struct AISettingsView: View {
             }
         }
         .padding(Theme.spaceXl)
-        .frame(width: 520, height: 500)
+        .frame(width: 540, height: 560)
         .onAppear {
             let cfg = AIConfig.load()
             baseURL = cfg.baseURL
@@ -574,6 +574,45 @@ struct AISettingsView: View {
                         Text("低于 \(app.diskMonitor.config.lowSpaceThresholdGB) GB")
                             .font(Theme.monoFont(13))
                             .foregroundColor(Theme.dangerRed)
+                    }
+                }
+                .padding(.leading, 12)
+            }
+
+            Divider().overlay(Theme.separator.opacity(0.3))
+
+            Toggle("开启智能定时静默清理（仅限安全缓存与日志）", isOn: $app.diskMonitor.config.autoCleanEnabled)
+                .font(Theme.bodyFont(13, weight: .medium))
+                .toggleStyle(.switch)
+                .tint(Theme.actionBlue)
+
+            if app.diskMonitor.config.autoCleanEnabled {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("遵循最高安全护栏：自动清理仅限「安全」风险且长期未在用项目，默认安全移入废纸篓，绝不影响正在运行的 App。")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.inkMuted48)
+
+                    Toggle("免打扰/闲时时间段保护", isOn: $app.diskMonitor.config.dndEnabled)
+                        .font(Theme.bodyFont(12))
+                        .toggleStyle(.checkbox)
+
+                    if app.diskMonitor.config.dndEnabled {
+                        HStack(spacing: 8) {
+                            Text("允许自动清理时段：")
+                                .font(Theme.bodyFont(12))
+                                .foregroundColor(Theme.inkMuted80)
+                            Picker("", selection: $app.diskMonitor.config.dndStartHour) {
+                                ForEach(0..<24) { h in Text("\(h):00").tag(h) }
+                            }
+                            .frame(width: 80)
+                            Text("至")
+                                .font(Theme.bodyFont(12))
+                                .foregroundColor(Theme.inkMuted80)
+                            Picker("", selection: $app.diskMonitor.config.dndEndHour) {
+                                ForEach(0..<24) { h in Text("\(h):00").tag(h) }
+                            }
+                            .frame(width: 80)
+                        }
                     }
                 }
                 .padding(.leading, 12)

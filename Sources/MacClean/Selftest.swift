@@ -737,11 +737,38 @@ enum Selftest {
             cfg.scanIntervalHours = 6
             cfg.lowSpaceAlertEnabled = true
             cfg.lowSpaceThresholdGB = 20
+            cfg.autoCleanEnabled = true
+            cfg.dndEnabled = true
+            cfg.dndStartHour = 22
+            cfg.dndEndHour = 6
             cfg.save()
 
             let loaded = DiskMonitorConfig.load()
             guard loaded.autoScanEnabled == true && loaded.scanIntervalHours == 6 else { return false }
             guard loaded.lowSpaceAlertEnabled == true && loaded.lowSpaceThresholdGB == 20 else { return false }
+            guard loaded.autoCleanEnabled == true && loaded.dndEnabled == true else { return false }
+            guard loaded.dndStartHour == 22 && loaded.dndEndHour == 6 else { return false }
+            return true
+        }
+        check("智能静默清理：免打扰时间窗口判定") {
+            var cfg = DiskMonitorConfig()
+            cfg.dndEnabled = true
+            cfg.dndStartHour = 23
+            cfg.dndEndHour = 7
+
+            let cal = Calendar.current
+            // 构造 02:00（在允许窗口内）
+            var compsNight = cal.dateComponents([.year, .month, .day], from: Date())
+            compsNight.hour = 2
+            let dateNight = cal.date(from: compsNight)!
+            guard cfg.isWithinAllowedWindow(date: dateNight) else { return false }
+
+            // 构造 14:00（在允许窗口外）
+            var compsDay = cal.dateComponents([.year, .month, .day], from: Date())
+            compsDay.hour = 14
+            let dateDay = cal.date(from: compsDay)!
+            guard !cfg.isWithinAllowedWindow(date: dateDay) else { return false }
+
             return true
         }
         check("磁盘监控：空间充足时不触发预警弹窗与通知") {
