@@ -8,16 +8,21 @@ struct CategoryDetailView: View {
     @State private var showCleanSheet = false
     @State private var permanentMode = false
     @State private var filterQuery = ""
+    @State private var selectedTypeFilter: LargeFileTypeFilter = .all
     @State private var showHud = false
     @State private var hudMessage = ""
 
     private var st: CategoryState { app.state(for: category) }
 
-    /// 过滤后的列表（支持名称/路径子串匹配，大小写不敏感）
+    /// 过滤后的列表（支持文本子串匹配与大文件类型细分，大小写不敏感）
     private var filteredItems: [CleanItem] {
+        var result = st.items
+        if category == .largeFiles && selectedTypeFilter != .all {
+            result = result.filter { selectedTypeFilter.matches(item: $0) }
+        }
         let q = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return st.items }
-        return st.items.filter {
+        guard !q.isEmpty else { return result }
+        return result.filter {
             $0.name.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
                 || $0.path.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }
@@ -104,6 +109,11 @@ struct CategoryDetailView: View {
                 }
             }
 
+            // 大文件细分分类筛选条（安装包、视频、压缩包、镜像、文档等）
+            if category == .largeFiles && st.isScanned && !st.items.isEmpty {
+                largeFileTypeFilterBar
+            }
+
             Group {
                 if st.isScanning {
                     scanningView
@@ -133,8 +143,9 @@ struct CategoryDetailView: View {
         .hudToast(isPresented: $showHud, text: hudMessage)
         .sheet(isPresented: $showCleanSheet) {
             // 过滤激活且有隐藏已选时，确认弹窗显示全量口径并附提示（二轮 #4）
-            let filtering = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let hiddenSelected = filtering ? max(0, st.selectedCount - filteredItems.filter(\.isSelected).count) : 0
+            let hasFilter = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (category == .largeFiles && selectedTypeFilter != .all)
+            let hiddenSelected = hasFilter ? max(0, st.selectedCount - filteredItems.filter(\.isSelected).count) : 0
             CleanConfirmSheet(
                 count: st.selectedCount,
                 size: st.selectedSize,
@@ -175,7 +186,9 @@ struct CategoryDetailView: View {
             // 三巡：过滤无匹配（filteredItems 空）时隐藏，避免空集 allSatisfy=true 误显示"取消全选"
             if st.isScanned && !st.items.isEmpty && !filteredItems.isEmpty {
                 Button {
-                    if filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let hasActiveFilter = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || (category == .largeFiles && selectedTypeFilter != .all)
+                    if !hasActiveFilter {
                         st.setAllSelected(!st.allSelected)
                     } else {
                         // 过滤中：仅切换可见项（filteredItems）的勾选
@@ -436,6 +449,7 @@ struct CategoryDetailView: View {
     private var footer: some View {
         // M5：过滤激活时统计口径切换为可见项，并提示隐藏已选
         let filtering = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (category == .largeFiles && selectedTypeFilter != .all)
         let visibleSelected = filteredItems.filter(\.isSelected)
         let hiddenSelectedCount = st.selectedCount - visibleSelected.count
         let shownCount = filtering ? visibleSelected.count : st.selectedCount
@@ -720,5 +734,115 @@ struct ReviewBadge: View {
             .padding(.vertical, 2)
             .background(Capsule().fill(bg.opacity(0.12)))
             .accessibilityLabel("AI 结论：\(verdict.label)")
+    }
+}
+
+// MARK: - 大文件细分类型过滤
+
+enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case installer = "安装包"
+    case archive = "压缩包"
+    case media = "音视频"
+    case diskImage = "磁盘镜像"
+    case simulator = "模拟器与备份"
+    case other = "其他"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .installer: return "shippingbox"
+        case .archive: return "doc.zipper"
+        case .media: return "play.rectangle"
+        case .diskImage: return "opticaldisc"
+        case .simulator: return "iphone"
+        case .other: return "doc"
+        }
+    }
+
+    func matches(item: CleanItem) -> Bool {
+        let name = item.name.lowercased()
+        let path = item.path.lowercased()
+        let ext = (name as NSString).pathExtension.lowercased()
+
+        switch self {
+        case .all:
+            return true
+        case .installer:
+            let installerExts = ["dmg", "pkg", "iso", "app", "ipa"]
+            return installerExts.contains(ext) || name.contains("installer") || item.note.contains("安装")
+        case .archive:
+            let archiveExts = ["zip", "tar", "gz", "tgz", "bz2", "7z", "rar", "xz"]
+            return archiveExts.contains(ext)
+        case .media:
+            let mediaExts = ["mp4", "mov", "mkv", "avi", "wmv", "mp3", "flac", "wav", "aac", "m4a", "webm"]
+            return mediaExts.contains(ext)
+        case .diskImage:
+            let imageExts = ["dmg", "iso", "img", "vdi", "vmdk", "qcow2"]
+            return imageExts.contains(ext)
+        case .simulator:
+            return path.contains("devices") || path.contains("mobilesync") || item.note.contains("模拟器") || item.note.contains("备份")
+        case .other:
+            return !LargeFileTypeFilter.installer.matches(item: item)
+                && !LargeFileTypeFilter.archive.matches(item: item)
+                && !LargeFileTypeFilter.media.matches(item: item)
+                && !LargeFileTypeFilter.diskImage.matches(item: item)
+                && !LargeFileTypeFilter.simulator.matches(item: item)
+        }
+    }
+}
+
+extension CategoryDetailView {
+    /// 大文件类型细分过滤栏
+    var largeFileTypeFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(LargeFileTypeFilter.allCases, id: \.self) { filter in
+                    let isSelected = selectedTypeFilter == filter
+                    let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
+
+                    Button {
+                        withAnimation(Theme.fastTransition) {
+                            selectedTypeFilter = filter
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: filter.icon)
+                                .font(.system(size: 11, weight: .medium))
+                            Text(filter.rawValue)
+                                .font(Theme.bodyFont(12, weight: isSelected ? .semibold : .regular))
+                            Text("\(count)")
+                                .font(Theme.monoFont(10, weight: .medium))
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(
+                                    Capsule()
+                                        .fill(isSelected ? Color.white.opacity(0.25) : Color.primary.opacity(0.08))
+                                )
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                                .fill(isSelected ? Theme.actionBlue : Color.primary.opacity(0.04))
+                        )
+                        .foregroundColor(isSelected ? .white : Theme.labelSecondary)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                                .stroke(isSelected ? Color.clear : Theme.separator.opacity(0.5), lineWidth: 0.8)
+                        )
+                    }
+                    .buttonStyle(.macPressable)
+                }
+            }
+            .padding(.horizontal, Theme.contentPadding)
+            .padding(.vertical, 6)
+        }
+        .background(Theme.controlBackground.opacity(0.4))
+        .overlay(alignment: .bottom) {
+            Divider().overlay(Theme.hairline)
+        }
     }
 }

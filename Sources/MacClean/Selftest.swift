@@ -711,6 +711,20 @@ enum Selftest {
             guard NSApplication.shared.dockTile.badgeLabel == nil else { return false }
             return true
         }
+        check("大文件细分过滤：类型规则与匹配断言") {
+            let dmg = CleanItem(name: "Xcode_16.dmg", path: "/Downloads/Xcode_16.dmg", size: 10_000_000_000, risk: .review, category: .largeFiles)
+            let zip = CleanItem(name: "dataset.zip", path: "/Downloads/dataset.zip", size: 2_000_000_000, risk: .review, category: .largeFiles)
+            let mov = CleanItem(name: "demo.mov", path: "/Downloads/demo.mov", size: 1_500_000_000, risk: .review, category: .largeFiles)
+            let sim = CleanItem(name: "iPhone 15 Pro", path: "/Library/Developer/CoreSimulator/Devices/UUID", size: 5_000_000_000, risk: .danger, category: .largeFiles, note: "模拟器缓存")
+            let unknown = CleanItem(name: "raw_data.bin", path: "/Downloads/raw_data.bin", size: 1_000_000_000, risk: .review, category: .largeFiles)
+
+            guard LargeFileTypeFilter.installer.matches(item: dmg) && !LargeFileTypeFilter.installer.matches(item: zip) else { return false }
+            guard LargeFileTypeFilter.archive.matches(item: zip) && !LargeFileTypeFilter.archive.matches(item: mov) else { return false }
+            guard LargeFileTypeFilter.media.matches(item: mov) && !LargeFileTypeFilter.media.matches(item: dmg) else { return false }
+            guard LargeFileTypeFilter.simulator.matches(item: sim) && !LargeFileTypeFilter.simulator.matches(item: dmg) else { return false }
+            guard LargeFileTypeFilter.other.matches(item: unknown) && !LargeFileTypeFilter.other.matches(item: dmg) else { return false }
+            return true
+        }
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")
