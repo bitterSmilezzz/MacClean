@@ -67,13 +67,8 @@ final class DuplicateState: ObservableObject {
     @Published var progressFraction: Double = 0
     @Published var lastSummary: String?
 
-    /// 扫描范围根目录（默认包含“下载”、“图片/相册”、“文稿”、“桌面”）
-    @Published var searchPaths: [String] = [
-        "~/Downloads",
-        "~/Pictures",
-        "~/Documents",
-        "~/Desktop"
-    ]
+    /// 扫描范围根目录（默认从 DirectoryScopeManager 同步，也可直接自定义）
+    @Published var searchPaths: [String] = DirectoryScopeManager.shared.searchRoots
 
     /// 最小过滤文件大小（小于此大小的文件不参与比对，默认 1 MB = 1_048_576 字节）
     @Published var minSizeBytes: Int64 = 1_048_576
@@ -81,17 +76,56 @@ final class DuplicateState: ObservableObject {
     /// 当前视图过滤类型
     @Published var filterKind: DuplicateGroupFilter = .all
 
+    /// 当前激活的目录分支过滤路径（为空则显示全部）
+    @Published var activeDirectoryFilter: String? = nil
+
     /// 过滤后的展示分组
     var filteredGroups: [DuplicateGroup] {
+        var result: [DuplicateGroup]
         switch filterKind {
         case .all:
-            return groups
+            result = groups
         case .exact:
-            return groups.filter { $0.matchKind == .exact }
+            result = groups.filter { $0.matchKind == .exact }
         case .similar:
-            return groups.filter { $0.matchKind == .similar }
+            result = groups.filter { $0.matchKind == .similar }
         case .similarImage:
-            return groups.filter { $0.matchKind == .similarImage }
+            result = groups.filter { $0.matchKind == .similarImage }
+        }
+
+        if let dirFilter = activeDirectoryFilter, !dirFilter.isEmpty {
+            let expandedDir = CleanPaths.expand(dirFilter)
+            result = result.filter { group in
+                group.items.contains { item in
+                    let itemExp = CleanPaths.expand(item.path)
+                    return itemExp == expandedDir || itemExp.hasPrefix(expandedDir + "/")
+                }
+            }
+        }
+        return result
+    }
+
+    /// 提取当前全部文件条目（用于生成目录树）
+    var allFileEntries: [DirectoryTreeBuilder.FileEntry] {
+        var entries: [DirectoryTreeBuilder.FileEntry] = []
+        for group in groups {
+            for item in group.items {
+                entries.append(DirectoryTreeBuilder.FileEntry(path: item.path, size: item.size, isSelected: item.isSelected))
+            }
+        }
+        return entries
+    }
+
+    /// 批量切换某个目录（及其所有子目录）下重复副本的勾选状态
+    func toggleDirectorySelection(path: String, select: Bool) {
+        let expanded = CleanPaths.expand(path)
+        for gIndex in groups.indices {
+            for iIndex in groups[gIndex].items.indices {
+                let itemExp = CleanPaths.expand(groups[gIndex].items[iIndex].path)
+                if itemExp == expanded || itemExp.hasPrefix(expanded + "/") {
+                    groups[gIndex].items[iIndex].isSelected = select
+                }
+            }
         }
     }
 
@@ -251,8 +285,10 @@ enum DuplicateScanner {
 
             for case let fileURL as URL in enumerator {
                 let path = fileURL.path
-                // 白名单过滤（路径与文件扩展名排除）
-                if whitelist.isWhitelisted(path: path) || whitelist.isExtensionWhitelisted(path: path) { continue }
+                // 白名单与目录范围排除过滤（路径、文件扩展名与用户排除子目录）
+                if whitelist.isWhitelisted(path: path) ||
+                   whitelist.isExtensionWhitelisted(path: path) ||
+                   DirectoryScopeManager.shared.isPathExcluded(path) { continue }
 
                 guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
                       values.isRegularFile == true,

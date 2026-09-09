@@ -7,6 +7,7 @@ struct DuplicateView: View {
     @State private var showConfirmSheet = false
     @State private var permanentMode = false
     @State private var showSettingsPopover = false
+    @State private var showDirectoryTreeSheet = false
     @State private var quickLookURL: URL?
     @State private var showHud = false
     @State private var hudMessage = ""
@@ -45,6 +46,22 @@ struct DuplicateView: View {
         .hudToast(isPresented: $showHud, text: hudMessage)
         .sheet(isPresented: $showConfirmSheet) {
             confirmCleanSheet
+        }
+        .sheet(isPresented: $showDirectoryTreeSheet) {
+            DirectoryTreeSheet(
+                title: "重复与相似文件目录树",
+                entries: dup.allFileEntries,
+                activeFilterPath: dup.activeDirectoryFilter,
+                onApplyFilter: { newFilter in
+                    dup.activeDirectoryFilter = newFilter
+                },
+                onToggleBatchSelection: { path, select in
+                    dup.toggleDirectorySelection(path: path, select: select)
+                },
+                onDismiss: {
+                    showDirectoryTreeSheet = false
+                }
+            )
         }
     }
 
@@ -100,6 +117,20 @@ struct DuplicateView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
+
+                Button {
+                    showDirectoryTreeSheet = true
+                } label: {
+                    Label(
+                        dup.activeDirectoryFilter != nil ? "目录树 (已筛选)" : "目录树筛选",
+                        systemImage: dup.activeDirectoryFilter != nil ? "folder.fill.badge.gearshape" : "folder.badge.gearshape"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .tint(dup.activeDirectoryFilter != nil ? Theme.warningOrange : Theme.actionBlue)
+                .accessibilityIdentifier("duplicateDirectoryTreeButton")
+                .help("按磁盘目录树逐层展开、批量勾选副本或分支筛选")
             }
 
             Button {
@@ -154,6 +185,12 @@ struct DuplicateView: View {
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 440)
+
+            if let dirFilter = dup.activeDirectoryFilter {
+                DirectoryFilterBadge(path: dirFilter) {
+                    dup.activeDirectoryFilter = nil
+                }
+            }
 
             Spacer()
 

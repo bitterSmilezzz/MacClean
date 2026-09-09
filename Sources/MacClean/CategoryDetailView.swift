@@ -10,17 +10,26 @@ struct CategoryDetailView: View {
     @State private var permanentMode = false
     @State private var filterQuery = ""
     @State private var selectedTypeFilter: LargeFileTypeFilter = .all
+    @State private var activeDirectoryFilter: String? = nil
+    @State private var showDirectoryTreeSheet = false
     @State private var showHud = false
     @State private var hudMessage = ""
     @State private var quickLookURL: URL?
 
     private var st: CategoryState { app.state(for: category) }
 
-    /// 过滤后的列表（支持文本子串匹配与大文件类型细分，大小写不敏感）
+    /// 过滤后的列表（支持文本子串匹配、大文件类型细分与目录树分支筛选，大小写不敏感）
     private var filteredItems: [CleanItem] {
         var result = st.items
         if category == .largeFiles && selectedTypeFilter != .all {
             result = result.filter { selectedTypeFilter.matches(item: $0) }
+        }
+        if category == .largeFiles, let dirFilter = activeDirectoryFilter, !dirFilter.isEmpty {
+            let expDir = CleanPaths.expand(dirFilter)
+            result = result.filter { item in
+                let itemExp = CleanPaths.expand(item.path)
+                return itemExp == expDir || itemExp.hasPrefix(expDir + "/")
+            }
         }
         let q = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return result }
@@ -147,7 +156,7 @@ struct CategoryDetailView: View {
         .sheet(isPresented: $showCleanSheet) {
             // 过滤激活且有隐藏已选时，确认弹窗显示全量口径并附提示（二轮 #4）
             let hasFilter = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || (category == .largeFiles && selectedTypeFilter != .all)
+                || (category == .largeFiles && (selectedTypeFilter != .all || activeDirectoryFilter != nil))
             let hiddenSelected = hasFilter ? max(0, st.selectedCount - filteredItems.filter(\.isSelected).count) : 0
             CleanConfirmSheet(
                 count: st.selectedCount,
@@ -160,6 +169,29 @@ struct CategoryDetailView: View {
             ) { permanent in
                 app.cleanSelected(in: category, permanently: permanent)
             }
+        }
+        .sheet(isPresented: $showDirectoryTreeSheet) {
+            let entries = st.items.map { DirectoryTreeBuilder.FileEntry(path: $0.path, size: $0.size, isSelected: $0.isSelected) }
+            DirectoryTreeSheet(
+                title: "大文件分布目录树",
+                entries: entries,
+                activeFilterPath: activeDirectoryFilter,
+                onApplyFilter: { newFilter in
+                    activeDirectoryFilter = newFilter
+                },
+                onToggleBatchSelection: { path, select in
+                    let exp = CleanPaths.expand(path)
+                    for item in st.items {
+                        let itemExp = CleanPaths.expand(item.path)
+                        if itemExp == exp || itemExp.hasPrefix(exp + "/") {
+                            st.setSelected(item.id, select)
+                        }
+                    }
+                },
+                onDismiss: {
+                    showDirectoryTreeSheet = false
+                }
+            )
         }
     }
 
@@ -500,7 +532,7 @@ struct CategoryDetailView: View {
     private var footer: some View {
         // M5：过滤激活时统计口径切换为可见项，并提示隐藏已选
         let filtering = !filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || (category == .largeFiles && selectedTypeFilter != .all)
+            || (category == .largeFiles && (selectedTypeFilter != .all || activeDirectoryFilter != nil))
         let visibleSelected = filteredItems.filter(\.isSelected)
         let hiddenSelectedCount = st.selectedCount - visibleSelected.count
         let shownCount = filtering ? visibleSelected.count : st.selectedCount
@@ -974,6 +1006,37 @@ extension CategoryDetailView {
                         )
                     }
                     .buttonStyle(.macPressable)
+                }
+
+                // 目录树筛选入口
+                Button {
+                    showDirectoryTreeSheet = true
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: activeDirectoryFilter != nil ? "folder.fill.badge.gearshape" : "folder.badge.gearshape")
+                            .font(.system(size: 11, weight: .medium))
+                        Text(activeDirectoryFilter != nil ? "目录树 (已筛选)" : "目录树")
+                            .font(Theme.bodyFont(12, weight: activeDirectoryFilter != nil ? .semibold : .regular))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .fill(activeDirectoryFilter != nil ? Theme.warningOrange : Color.primary.opacity(0.04))
+                    )
+                    .foregroundColor(activeDirectoryFilter != nil ? .white : Theme.labelSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
+                            .stroke(activeDirectoryFilter != nil ? Color.clear : Theme.separator.opacity(0.5), lineWidth: 0.8)
+                    )
+                }
+                .buttonStyle(.macPressable)
+                .accessibilityIdentifier("largeFilesDirectoryTreeButton")
+
+                if let dirFilter = activeDirectoryFilter {
+                    DirectoryFilterBadge(path: dirFilter) {
+                        activeDirectoryFilter = nil
+                    }
                 }
             }
             .padding(.horizontal, Theme.contentPadding)
