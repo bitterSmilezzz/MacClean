@@ -210,6 +210,8 @@ final class AppState: ObservableObject {
             scanRisks()
         case .duplicates:
             duplicateState.startScan()
+        case .spaceTreemap:
+            break
         }
     }
 

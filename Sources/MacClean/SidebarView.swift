@@ -44,6 +44,14 @@ struct SidebarView: View {
                             app.destination = .search
                         }
                     }
+                    // 空间透视（Treemap 矩形树图与旭日图）
+                    ToolRow(icon: "square.split.bottomrightquarter", title: "空间透视",
+                            subtitle: "Treemap 与旭日图全景",
+                            isActive: app.destination == .spaceTreemap) {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            app.destination = .spaceTreemap
+                        }
+                    }
 
                     Divider().overlay(Theme.separator).padding(.vertical, 4)
 

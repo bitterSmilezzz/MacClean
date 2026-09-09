@@ -149,9 +149,30 @@ struct DashboardView: View {
         let diskColor = isHighUsage ? Theme.warningOrange : Theme.actionBlue
 
         return VStack(alignment: .leading, spacing: Theme.spaceSm) {
-            Text("磁盘空间")
-                .font(Theme.bodyFont(12, weight: .semibold))
-                .foregroundColor(Theme.labelSecondary)
+            HStack {
+                Text("磁盘空间")
+                    .font(Theme.bodyFont(12, weight: .semibold))
+                    .foregroundColor(Theme.labelSecondary)
+                Spacer()
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        app.destination = .spaceTreemap
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "square.split.bottomrightquarter")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text("空间透视")
+                    }
+                    .font(Theme.bodyFont(10, weight: .medium))
+                    .foregroundColor(Theme.actionBlue)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.actionBlue.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .help("查看 Treemap 矩形树图与旭日图全景透视")
+            }
 
             HStack(spacing: Theme.spaceMd) {
                 ZStack {

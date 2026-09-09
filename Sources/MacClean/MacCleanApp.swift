@@ -370,6 +370,8 @@ struct ContentView: View {
                 SearchView()
             case .riskCheck:
                 RiskView()
+            case .spaceTreemap:
+                SpaceVisualizerView()
             }
         }
         .transition(.opacity)

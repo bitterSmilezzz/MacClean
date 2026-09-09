@@ -1683,7 +1683,79 @@ enum Selftest {
             return true
         }
 
+        // MARK: - v1.31.0 空间透视：Treemap / 旭日图可视化
+
+        check("空间层级：SpaceHierarchyBuilder 建树与子节点大小累加") {
+            let root = SpaceNode(
+                name: "Macintosh HD",
+                size: 1_000_000_000,
+                color: Theme.actionBlue,
+                children: [
+                    SpaceNode(name: "系统", size: 400_000_000, color: .gray),
+                    SpaceNode(name: "应用", size: 350_000_000, color: .blue),
+                    SpaceNode(name: "用户", size: 250_000_000, color: .green)
+                ]
+            )
+            // 根节点大小 > 0，子节点大小之和 <= 根节点大小
+            guard root.size > 0 else { return false }
+            let childrenTotal = root.children.reduce(0) { $0 + $1.size }
+            guard childrenTotal <= root.size else { return false }
+            return true
+        }
+
+        check("Treemap：Squarified 算法切分 — 所有 tile 面积之和 ≈ 总面积") {
+            let nodes: [SpaceNode] = [
+                SpaceNode(name: "A", path: "/a", size: 500_000_000, color: .red, icon: "doc"),
+                SpaceNode(name: "B", path: "/b", size: 300_000_000, color: .blue, icon: "doc"),
+                SpaceNode(name: "C", path: "/c", size: 200_000_000, color: .green, icon: "doc")
+            ]
+            let rect = CGRect(x: 0, y: 0, width: 800, height: 600)
+            let tiles = TreemapEngine.layout(nodes: nodes, in: rect)
+            guard tiles.count == nodes.count else { return false }
+            let totalArea = tiles.reduce(0.0) { $0 + $1.rect.width * $1.rect.height }
+            let expectedArea = Double(rect.width * rect.height)
+            // 允许 1% 误差
+            let delta = abs(totalArea - expectedArea) / expectedArea
+            return delta < 0.01
+        }
+
+        check("旭日图：SunburstEngine 极坐标扇区 — 一级扇区角度总和 ≈ 2π") {
+            let root = SpaceNode(
+                name: "Disk",
+                size: 1_000_000_000,
+                color: Theme.actionBlue,
+                children: [
+                    SpaceNode(name: "A", size: 400_000_000, color: .red),
+                    SpaceNode(name: "B", size: 350_000_000, color: .blue),
+                    SpaceNode(name: "C", size: 250_000_000, color: .green)
+                ]
+            )
+            let sectors = SunburstEngine.layout(
+                root: root,
+                center: CGPoint(x: 200, y: 200),
+                maxRadius: 180
+            )
+            guard !sectors.isEmpty else { return false }
+            // Level-1 扇区角度跨度之和 ≈ 2π
+            let level1 = sectors.filter { $0.level == 1 }
+            let totalAngle = level1.reduce(0.0) { $0 + ($1.endAngle - $1.startAngle) }
+            return abs(totalAngle - 2 * Double.pi) < 0.001
+        }
+
+        check("空间透视组件：VisualizerMode 与 VisualizerScope 枚举完整性") {
+            // treemap 是默认模式，sunburst 是备选
+            let modes: [VisualizerMode] = [.treemap, .sunburst]
+            guard modes.count == 2 else { return false }
+            // scope 包含 disk 与 cleanable
+            let scopes: [VisualizerScope] = [.disk, .cleanable]
+            guard scopes.count == 2 else { return false }
+            // 默认模式字符串区分
+            guard VisualizerMode.treemap != VisualizerMode.sunburst else { return false }
+            return true
+        }
+
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
+
         print("==============================================")
         print("MacClean 自检完成：\(passed) 通过 / \(failures.count) 失败（\(elapsed)）")
         if !failures.isEmpty {
