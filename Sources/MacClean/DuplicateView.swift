@@ -8,6 +8,7 @@ struct DuplicateView: View {
     @State private var permanentMode = false
     @State private var showSettingsPopover = false
     @State private var showDirectoryTreeSheet = false
+    @State private var comparingGroup: DuplicateGroup? = nil
     @State private var quickLookURL: URL?
     @State private var showHud = false
     @State private var hudMessage = ""
@@ -62,6 +63,11 @@ struct DuplicateView: View {
                     showDirectoryTreeSheet = false
                 }
             )
+        }
+        .sheet(item: $comparingGroup) { grp in
+            PhotoCompareSheet(group: grp, dupState: dup) {
+                comparingGroup = nil
+            }
         }
     }
 
@@ -266,9 +272,15 @@ struct DuplicateView: View {
         ScrollView {
             LazyVStack(spacing: Theme.spaceSm) {
                 ForEach(dup.filteredGroups) { group in
-                    DuplicateGroupCard(group: group) { url in
-                        quickLookURL = url
-                    }
+                    DuplicateGroupCard(
+                        group: group,
+                        onPreview: { url in
+                            quickLookURL = url
+                        },
+                        onCompare: { grp in
+                            comparingGroup = grp
+                        }
+                    )
                 }
             }
             .padding(Theme.spaceMd)
@@ -358,7 +370,12 @@ struct DuplicateGroupCard: View {
     @EnvironmentObject private var app: AppState
     let group: DuplicateGroup
     var onPreview: ((URL) -> Void)? = nil
+    var onCompare: ((DuplicateGroup) -> Void)? = nil
     private var dup: DuplicateState { app.duplicateState }
+
+    private var isImageGroup: Bool {
+        group.matchKind == .similarImage || (!group.items.isEmpty && group.items.allSatisfy { ImageHash.isImageFile(path: $0.path) })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -398,6 +415,25 @@ struct DuplicateGroupCard: View {
                     .lineLimit(1)
 
                 Spacer()
+
+                if isImageGroup && group.items.count >= 2 {
+                    Button {
+                        onCompare?(group)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "square.split.2x1")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("对比照片与EXIF")
+                        }
+                        .font(Theme.bodyFont(10, weight: .semibold))
+                        .foregroundColor(Color.purple)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color.purple.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("双栏对比组内照片视觉细节与 EXIF 快门曝光参数")
+                }
 
                 if group.matchKind == .exact {
                     Text("每份 \(group.fileSize.byteStringCN) · 共 \(group.items.count) 份")
@@ -442,7 +478,7 @@ struct DuplicateGroupCard: View {
             // 副本文件行
             VStack(spacing: 0) {
                 ForEach(group.items) { item in
-                    DuplicateFileRow(group: group, item: item, onPreview: onPreview)
+                    DuplicateFileRow(group: group, item: item, onPreview: onPreview, onCompare: onCompare)
                 }
             }
         }
@@ -495,6 +531,7 @@ struct DuplicateFileRow: View {
     let group: DuplicateGroup
     let item: DuplicateFileItem
     var onPreview: ((URL) -> Void)? = nil
+    var onCompare: ((DuplicateGroup) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -560,6 +597,21 @@ struct DuplicateFileRow: View {
 
             Spacer()
 
+            if ImageHash.isImageFile(path: item.path) && group.items.count >= 2 {
+                Button {
+                    onCompare?(group)
+                } label: {
+                    Image(systemName: "square.split.2x1")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Color.purple)
+                        .frame(width: 24, height: 24)
+                        .background(Color.purple.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help("在双栏对比弹窗中查看照片细节与 EXIF 快门参数")
+            }
+
             Button {
                 let url = URL(fileURLWithPath: item.path)
                 onPreview?(url)
@@ -589,6 +641,16 @@ struct DuplicateFileRow: View {
             .accessibilityHidden(true)
         )
         .contextMenu {
+            if ImageHash.isImageFile(path: item.path) && group.items.count >= 2 {
+                Button {
+                    onCompare?(group)
+                } label: {
+                    Label("双栏对比照片与 EXIF 参数", systemImage: "square.split.2x1")
+                }
+
+                Divider()
+            }
+
             Button {
                 let url = URL(fileURLWithPath: item.path)
                 onPreview?(url)
