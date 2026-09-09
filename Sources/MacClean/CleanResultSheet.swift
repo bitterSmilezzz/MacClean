@@ -269,6 +269,7 @@ struct CleanResultSheet: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
+            .accessibilityIdentifier("resultSheetHistoryButton")
 
             Spacer()
 
@@ -280,6 +281,7 @@ struct CleanResultSheet: View {
             .controlSize(.regular)
             .tint(Theme.actionBlue)
             .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("resultSheetDoneButton")
         }
     }
 }

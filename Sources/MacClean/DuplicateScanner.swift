@@ -2,10 +2,11 @@ import Foundation
 import CryptoKit
 import Combine
 
-/// 匹配类型：精确重复或相似衍生
+/// 匹配类型：精确重复、相似衍生或相似图片
 enum DuplicateGroupMatchKind: String, Codable, CaseIterable, Equatable {
     case exact = "完全一致"       // SHA-256 分块哈希完全一致
     case similar = "相似衍生"     // 同名副本 (copy, (1), _副本等) 或 格式衍生
+    case similarImage = "相似图片" // 感知哈希 (dHash) 识别视觉相似图片
 }
 
 /// 过滤器类型
@@ -13,6 +14,7 @@ enum DuplicateGroupFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case exact = "完全一致"
     case similar = "相似衍生"
+    case similarImage = "相似图片"
 
     var id: String { rawValue }
 }
@@ -65,9 +67,10 @@ final class DuplicateState: ObservableObject {
     @Published var progressFraction: Double = 0
     @Published var lastSummary: String?
 
-    /// 扫描范围根目录（默认包含“下载”、“文稿”、“桌面”）
+    /// 扫描范围根目录（默认包含“下载”、“图片/相册”、“文稿”、“桌面”）
     @Published var searchPaths: [String] = [
         "~/Downloads",
+        "~/Pictures",
         "~/Documents",
         "~/Desktop"
     ]
@@ -87,6 +90,8 @@ final class DuplicateState: ObservableObject {
             return groups.filter { $0.matchKind == .exact }
         case .similar:
             return groups.filter { $0.matchKind == .similar }
+        case .similarImage:
+            return groups.filter { $0.matchKind == .similarImage }
         }
     }
 
@@ -97,6 +102,10 @@ final class DuplicateState: ObservableObject {
 
     var similarGroupsCount: Int {
         groups.filter { $0.matchKind == .similar }.count
+    }
+
+    var similarImageGroupsCount: Int {
+        groups.filter { $0.matchKind == .similarImage }.count
     }
 
     /// 浪费的总体积
@@ -248,13 +257,21 @@ enum DuplicateScanner {
                 guard let values = try? fileURL.resourceValues(forKeys: Set(keys)),
                       values.isRegularFile == true,
                       values.isSymbolicLink != true,
-                      let size = values.fileSize,
-                      Int64(size) >= minSize else { continue }
+                      let size = values.fileSize else { continue }
 
                 let sz = Int64(size)
-                sizeMap[sz, default: []].append(path)
-                allCandidates.append((path: path, size: sz))
-                candidateFiles += 1
+                let isImg = ImageHash.isImageFile(path: path)
+                let meetsGeneralSize = sz >= minSize
+                let meetsImageSize = isImg && sz >= min(minSize, 50_000)
+
+                if meetsGeneralSize {
+                    sizeMap[sz, default: []].append(path)
+                    allCandidates.append((path: path, size: sz))
+                    candidateFiles += 1
+                } else if meetsImageSize {
+                    allCandidates.append((path: path, size: sz))
+                    candidateFiles += 1
+                }
             }
         }
 
@@ -402,6 +419,142 @@ enum DuplicateScanner {
                 suggestionNote: "同词干衍生副本或多格式文件"
             )
             resultGroups.append(group)
+        }
+
+        // 第四阶段：基于感知哈希 (dHash) 智能排查相似图片（连拍、轻微裁剪、不同分辨率）
+        progress(0.85, "正在比对图片感知指纹…")
+        let existingGroupPathSets = Set(resultGroups.map { Set($0.items.map(\.path)) })
+        let imageCandidates = allCandidates.filter { cand in
+            ImageHash.isImageFile(path: cand.path) && !exactMatchedPaths.contains(cand.path)
+        }
+
+        // 优先比对体积较大的候选图片，上限 500 张以确保流畅度与秒级响应
+        var sortedImageCandidates = imageCandidates
+        sortedImageCandidates.sort { $0.size > $1.size }
+        let targetedImages = Array(sortedImageCandidates.prefix(500))
+
+        struct ImageFeature {
+            let path: String
+            let size: Int64
+            let hash: UInt64
+            let modificationDate: Date?
+        }
+
+        var features: [ImageFeature] = []
+        features.reserveCapacity(targetedImages.count)
+        for (idx, cand) in targetedImages.enumerated() {
+            if idx % 25 == 0 {
+                let p = 0.85 + 0.1 * (Double(idx) / Double(max(1, targetedImages.count)))
+                progress(p, "正在提取图片感知特征 (\(idx)/\(targetedImages.count))…")
+            }
+            if let h = ImageHash.computeDHash(path: cand.path) {
+                let mtime = FileSystem.modificationDate(cand.path)
+                features.append(ImageFeature(path: cand.path, size: cand.size, hash: h, modificationDate: mtime))
+            }
+        }
+
+        let fCount = features.count
+        if fCount >= 2 {
+            var parent = Array(0..<fCount)
+            func findRoot(_ i: Int) -> Int {
+                var r = i
+                while r != parent[r] { r = parent[r] }
+                var curr = i
+                while curr != r {
+                    let next = parent[curr]
+                    parent[curr] = r
+                    curr = next
+                }
+                return r
+            }
+            func unionNodes(_ i: Int, _ j: Int) {
+                let rootI = findRoot(i)
+                let rootJ = findRoot(j)
+                if rootI != rootJ {
+                    parent[rootJ] = rootI
+                }
+            }
+
+            for i in 0..<(fCount - 1) {
+                let hashI = features[i].hash
+                for j in (i + 1)..<fCount {
+                    let hashJ = features[j].hash
+                    // 汉明距离 <= 8 (感知相似度 >= 87.5%)
+                    if ImageHash.isSimilar(hashI, hashJ, maxDistance: 8) {
+                        unionNodes(i, j)
+                    }
+                }
+            }
+
+            var clusters: [Int: [ImageFeature]] = [:]
+            for i in 0..<fCount {
+                let root = findRoot(i)
+                clusters[root, default: []].append(features[i])
+            }
+
+            for (_, members) in clusters where members.count >= 2 {
+                let memberPaths = Set(members.map(\.path))
+                // 避免与前序阶段产生的完全一致组重复
+                if existingGroupPathSets.contains(memberPaths) { continue }
+                if existingGroupPathSets.contains(where: { memberPaths.isSubset(of: $0) }) { continue }
+
+                // 排序规则：
+                // 1. 体积最大排最前（分辨率更高、无损或未过度压缩的高清原片）
+                // 2. 修改时间较早排前
+                // 3. 路径短排前
+                var sortedMembers = members
+                sortedMembers.sort { a, b in
+                    if a.size != b.size {
+                        return a.size > b.size
+                    }
+                    if let d1 = a.modificationDate, let d2 = b.modificationDate, d1 != d2 {
+                        return d1 < d2
+                    }
+                    return a.path.count < b.path.count
+                }
+
+                let baseHash = sortedMembers[0].hash
+                var items: [DuplicateFileItem] = []
+                var similarities: [Double] = []
+
+                for (idx, m) in sortedMembers.enumerated() {
+                    let filename = (m.path as NSString).lastPathComponent
+                    let sim = ImageHash.similarity(baseHash, m.hash)
+                    let simPct = Int(round(sim * 100))
+                    if idx > 0 { similarities.append(sim) }
+
+                    var item = DuplicateFileItem(
+                        path: m.path,
+                        name: filename,
+                        size: m.size,
+                        modificationDate: m.modificationDate
+                    )
+                    if idx == 0 {
+                        item.isOriginal = true
+                        item.isSelected = false
+                        item.recommendationReason = "推荐保留（最高画质原图）"
+                    } else {
+                        item.isOriginal = false
+                        item.isSelected = false
+                        item.recommendationReason = "相似图片 (相似度 \(simPct)%)"
+                    }
+                    items.append(item)
+                }
+
+                let avgSize = items.reduce(0) { $0 + $1.size } / Int64(items.count)
+                let minPct = similarities.isEmpty ? 100 : Int(round((similarities.min() ?? 1.0) * 100))
+                let maxPct = similarities.isEmpty ? 100 : Int(round((similarities.max() ?? 1.0) * 100))
+                let simNote = minPct == maxPct ? "感知相似度 \(minPct)%" : "感知相似度 \(minPct)%~\(maxPct)%"
+
+                let group = DuplicateGroup(
+                    hash: "dhash:\(String(baseHash, radix: 16))",
+                    fileSize: avgSize,
+                    items: items,
+                    matchKind: .similarImage,
+                    suggestionNote: "\(simNote)，已为您推荐保留画质最优的原图"
+                )
+                resultGroups.append(group)
+            }
         }
 
         // 按可节省空间从大到小排序

@@ -60,7 +60,7 @@ struct DuplicateView: View {
                         .font(Theme.displayFont(16, weight: .semibold))
                         .foregroundColor(Theme.ink)
                 }
-                Text("基于 SHA-256 分块哈希与智能词干识别，精确去重并排查相似衍生副本。")
+                Text("基于 SHA-256 分块哈希、感知哈希 (dHash) 与智能词干识别，精确去重并排查相似图片与衍生副本。")
                     .font(Theme.bodyFont(11))
                     .foregroundColor(Theme.inkMuted48)
             }
@@ -150,9 +150,10 @@ struct DuplicateView: View {
                 Text("全部 (\(dup.groups.count))").tag(DuplicateGroupFilter.all)
                 Text("完全一致 (\(dup.exactGroupsCount))").tag(DuplicateGroupFilter.exact)
                 Text("相似衍生 (\(dup.similarGroupsCount))").tag(DuplicateGroupFilter.similar)
+                Text("相似图片 (\(dup.similarImageGroupsCount))").tag(DuplicateGroupFilter.similarImage)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 440)
 
             Spacer()
 
@@ -334,6 +335,17 @@ struct DuplicateGroupCard: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(Theme.actionBlue.opacity(0.12)))
+                } else if group.matchKind == .similarImage {
+                    HStack(spacing: 3) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .font(.system(size: 9))
+                        Text("相似图片")
+                    }
+                    .font(Theme.bodyFont(10, weight: .semibold))
+                    .foregroundColor(Color.purple)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.purple.opacity(0.12)))
                 } else {
                     Text("相似衍生")
                         .font(Theme.bodyFont(10, weight: .semibold))
@@ -352,6 +364,10 @@ struct DuplicateGroupCard: View {
 
                 if group.matchKind == .exact {
                     Text("每份 \(group.fileSize.byteStringCN) · 共 \(group.items.count) 份")
+                        .font(Theme.bodyFont(11))
+                        .foregroundColor(Theme.labelSecondary)
+                } else if group.matchKind == .similarImage {
+                    Text("共 \(group.items.count) 张相似图片")
                         .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelSecondary)
                 } else {
@@ -397,6 +413,45 @@ struct DuplicateGroupCard: View {
     }
 }
 
+/// 缩略图视图（图片文件优先下采样显示微缩图，其余使用系统图标）
+struct DuplicateThumbnailView: View {
+    let path: String
+    let isImage: Bool
+
+    var body: some View {
+        Group {
+            if isImage, let img = generateThumbnail(for: path) {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: path))
+                    .resizable()
+            }
+        }
+        .frame(width: 26, height: 26)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(Theme.hairline, lineWidth: 0.5)
+        )
+    }
+
+    private func generateThumbnail(for filePath: String) -> NSImage? {
+        let url = URL(fileURLWithPath: filePath)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 64,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ]
+        guard let cgImg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cgImg, size: NSSize(width: 26, height: 26))
+    }
+}
+
 /// 单个副本行
 struct DuplicateFileRow: View {
     @EnvironmentObject private var app: AppState
@@ -415,6 +470,8 @@ struct DuplicateFileRow: View {
             }
             .buttonStyle(.plain)
 
+            DuplicateThumbnailView(path: item.path, isImage: ImageHash.isImageFile(path: item.path))
+
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(item.name)
@@ -430,12 +487,13 @@ struct DuplicateFileRow: View {
                             .padding(.vertical, 1)
                             .background(RoundedRectangle(cornerRadius: 3).fill(Theme.actionBlue.opacity(0.1)))
                     } else if let reason = item.recommendationReason {
+                        let isPurple = reason.contains("相似度") || group.matchKind == .similarImage
                         Text(reason)
-                            .font(Theme.bodyFont(10))
-                            .foregroundColor(Theme.labelTertiary)
+                            .font(Theme.bodyFont(10, weight: isPurple ? .medium : .regular))
+                            .foregroundColor(isPurple ? Color.purple : Theme.labelTertiary)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.04)))
+                            .background(RoundedRectangle(cornerRadius: 3).fill(isPurple ? Color.purple.opacity(0.1) : Color.primary.opacity(0.04)))
                     }
                 }
 
