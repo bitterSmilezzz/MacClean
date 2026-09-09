@@ -386,6 +386,20 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// 菜单栏助手一键快速安全清理：自动勾选所有 safe 级别、未在用且未加入白名单的缓存与日志项并移入废纸篓
+    func quickCleanSafeItems() {
+        guard !isCleaning else { return }
+        for st in categories {
+            for i in 0..<st.items.count {
+                let item = st.items[i]
+                if item.risk == .safe && !item.usage.isRecentlyUsed && !whitelist.isWhitelisted(path: item.path) {
+                    st.items[i].isSelected = true
+                }
+            }
+        }
+        cleanSelectedAcrossCategories(permanently: false)
+    }
+
     /// 记录一次清理历史（Mole `mo history` 思路）
     func recordClean(categoryName: String, itemCount: Int, bytes: Int64,
                      mode: String, failures: Int) {

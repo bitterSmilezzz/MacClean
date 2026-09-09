@@ -1,6 +1,15 @@
 import Foundation
 import Combine
 
+/// 菜单栏助手常驻图标显示模式
+enum MenuBarDisplayMode: String, Codable, CaseIterable, Identifiable {
+    case iconOnly = "仅图标"
+    case iconAndDisk = "图标 + 可用磁盘"
+    case iconAndMemory = "图标 + 内存压力"
+
+    var id: String { rawValue }
+}
+
 /// 磁盘低空间警戒、定时巡检与智能静默清理配置
 struct DiskMonitorConfig: Codable, Equatable {
     /// 是否开启定时自动巡检扫描
@@ -23,6 +32,9 @@ struct DiskMonitorConfig: Codable, Equatable {
     /// 智能清理分类：默认仅限最安全的用户缓存与日志临时文件
     var autoCleanUserCaches: Bool = true
     var autoCleanLogsAndTemp: Bool = true
+
+    /// 菜单栏助手显示模式
+    var menuBarDisplayMode: MenuBarDisplayMode = .iconOnly
 
     private static let key = "MacClean_DiskMonitorConfig"
 

@@ -618,6 +618,33 @@ struct AISettingsView: View {
                 }
                 .padding(.leading, 12)
             }
+
+            Divider().overlay(Theme.separator.opacity(0.3))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("系统菜单栏常驻助手")
+                    .font(Theme.bodyFont(13, weight: .medium))
+                    .foregroundColor(Theme.ink)
+
+                HStack {
+                    Text("菜单栏常驻图标显示内容")
+                        .font(Theme.bodyFont(12))
+                        .foregroundColor(Theme.inkMuted80)
+                    Spacer()
+                    Picker("", selection: $app.diskMonitor.config.menuBarDisplayMode) {
+                        ForEach(MenuBarDisplayMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .frame(width: 150)
+                }
+                .padding(.leading, 12)
+
+                Text("常驻于系统右上角菜单栏，随时查看实时磁盘空间、内存压力分布并进行快捷全盘扫描与清理。")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.inkMuted48)
+                    .padding(.leading, 12)
+            }
         }
     }
 

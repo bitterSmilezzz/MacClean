@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct MacCleanApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var app = AppState()
 
     init() {
@@ -132,7 +133,7 @@ struct MacCleanApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "mainWindow") {
             ContentView()
                 .environmentObject(app)
                 .frame(minWidth: 1080, minHeight: 680)
@@ -223,6 +224,29 @@ struct MacCleanApp: App {
                 .keyboardShortcut(",", modifiers: .command)
             }
         }
+
+        MenuBarExtra {
+            MenuBarView()
+                .environmentObject(app)
+        } label: {
+            MenuBarLabelView()
+                .environmentObject(app)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            for window in sender.windows {
+                if window.canBecomeMain {
+                    window.makeKeyAndOrderFront(nil)
+                    return true
+                }
+            }
+        }
+        return true
     }
 }
 

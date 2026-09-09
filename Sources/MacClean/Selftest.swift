@@ -1108,6 +1108,57 @@ enum Selftest {
             return true
         }
 
+        check("系统监控：真实物理内存采集与压力计算") {
+            let stats = MemoryStats.current()
+            guard stats.totalBytes > 0, stats.usedBytes > 0 else { return false }
+            guard !stats.usedString.isEmpty, !stats.totalString.isEmpty else { return false }
+
+            // 压力等级判定测试
+            let normal = MemoryStats(totalBytes: 100, usedBytes: 50)
+            guard normal.pressure == .normal, normal.pressure.rawValue == "正常" else { return false }
+
+            let moderate = MemoryStats(totalBytes: 100, usedBytes: 70)
+            guard moderate.pressure == .moderate, moderate.pressure.rawValue == "适中" else { return false }
+
+            let high = MemoryStats(totalBytes: 100, usedBytes: 90)
+            guard high.pressure == .high, high.pressure.rawValue == "紧张" else { return false }
+
+            return true
+        }
+
+        check("菜单栏配置：显示模式与持久化序列化") {
+            var cfg = DiskMonitorConfig()
+            cfg.menuBarDisplayMode = .iconAndDisk
+            let data = try JSONEncoder().encode(cfg)
+            let decoded = try JSONDecoder().decode(DiskMonitorConfig.self, from: data)
+            guard decoded.menuBarDisplayMode == .iconAndDisk else { return false }
+
+            cfg.menuBarDisplayMode = .iconAndMemory
+            let data2 = try JSONEncoder().encode(cfg)
+            let decoded2 = try JSONDecoder().decode(DiskMonitorConfig.self, from: data2)
+            guard decoded2.menuBarDisplayMode == .iconAndMemory else { return false }
+
+            return true
+        }
+
+        check("菜单栏组件：MenuBarLabelView 与 MenuBarCategoryRow 渲染") {
+            let app = AppState()
+            let labelView = MenuBarLabelView().environmentObject(app)
+            _ = try labelView.inspect()
+
+            let cat = CleanCategory.userCaches
+            let st = app.state(for: cat)
+            var clicked = false
+            let rowView = MenuBarCategoryRow(category: cat, state: st) {
+                clicked = true
+            }
+            let inspected = try rowView.inspect()
+            try inspected.find(ViewType.Button.self).tap()
+            guard clicked else { return false }
+
+            return true
+        }
+
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")
         print("MacClean 自检完成：\(passed) 通过 / \(failures.count) 失败（\(elapsed)）")
