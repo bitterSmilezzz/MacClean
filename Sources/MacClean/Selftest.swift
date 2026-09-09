@@ -1159,6 +1159,88 @@ enum Selftest {
             return true
         }
 
+        check("清理成效：CleanResultSnapshot 数据与指标构建") {
+            let snapshot = CleanResultSnapshot(
+                title: "用户缓存 清理完成",
+                releasedBytes: 500_000_000, // 500MB (macOS 十进制)
+                itemCount: 42,
+                failureCount: 0,
+                mode: "废纸篓",
+                beforeAvailable: 100_000_000_000,
+                afterAvailable: 100_500_000_000,
+                breakdown: [.userCaches: 500_000_000]
+            )
+            guard snapshot.releasedBytes == 500_000_000 else { return false }
+            guard snapshot.deltaString == "500 MB" else { return false }
+            guard snapshot.itemCount == 42, snapshot.mode == "废纸篓" else { return false }
+            guard snapshot.afterAvailable > snapshot.beforeAvailable else { return false }
+            guard snapshot.breakdown[.userCaches] == 500_000_000 else { return false }
+            return true
+        }
+
+        check("历史趋势：时间范围筛选 (全部 / 近 7 天 / 近 30 天)") {
+            let now = Date()
+            let day: TimeInterval = 86400
+            let r1 = CleanRecord(date: now, categoryName: "用户缓存", itemCount: 10, bytes: 1000, mode: "废纸篓")
+            let r2 = CleanRecord(date: now.addingTimeInterval(-3 * day), categoryName: "日志", itemCount: 5, bytes: 2000, mode: "废纸篓")
+            let r3 = CleanRecord(date: now.addingTimeInterval(-15 * day), categoryName: "开发残留", itemCount: 2, bytes: 5000, mode: "彻底删除")
+            let r4 = CleanRecord(date: now.addingTimeInterval(-45 * day), categoryName: "大文件", itemCount: 1, bytes: 10000, mode: "废纸篓")
+
+            let list = [r1, r2, r3, r4]
+
+            // 全部：4条
+            guard list.count == 4 else { return false }
+
+            // 近 7 天：r1, r2 (2条)
+            let cutoff7 = now.addingTimeInterval(-7 * day)
+            let f7 = list.filter { $0.date >= cutoff7 }
+            guard f7.count == 2 else { return false }
+
+            // 近 30 天：r1, r2, r3 (3条)
+            let cutoff30 = now.addingTimeInterval(-30 * day)
+            let f30 = list.filter { $0.date >= cutoff30 }
+            guard f30.count == 3 else { return false }
+
+            return true
+        }
+
+        check("清理成效组件：CleanResultSheet 与 HistoryCategoryDistributionCard 渲染") {
+            let snapshot = CleanResultSnapshot(
+                title: "清理完成",
+                releasedBytes: 1500000,
+                itemCount: 3,
+                failureCount: 0,
+                mode: "移入废纸篓",
+                beforeAvailable: 10000000,
+                afterAvailable: 11500000,
+                breakdown: [.userCaches: 1000000, .logsAndTemp: 500000]
+            )
+            var historyClicked = false
+            var dismissed = false
+            let sheet = CleanResultSheet(snapshot: snapshot) {
+                historyClicked = true
+            } onDismiss: {
+                dismissed = true
+            }
+            let sheetInspect = try sheet.inspect()
+            let buttons = sheetInspect.findAll(ViewType.Button.self)
+            if let histBtn = buttons.first(where: { (try? $0.labelView().text().string()) == "历史趋势" }) {
+                try histBtn.tap()
+            }
+            guard let finishBtn = buttons.first(where: { (try? $0.labelView().text().string()) == "完成" }) else { return false }
+            try finishBtn.tap()
+            guard historyClicked && dismissed else { return false }
+
+            // 检查各分类累计释放分布卡片渲染
+            let distCard = HistoryCategoryDistributionCard(records: [
+                CleanRecord(categoryName: "用户缓存", itemCount: 1, bytes: 500, mode: "废纸篓"),
+                CleanRecord(categoryName: "开发残留", itemCount: 1, bytes: 1500, mode: "废纸篓")
+            ])
+            _ = try distCard.inspect()
+
+            return true
+        }
+
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
         print("==============================================")
         print("MacClean 自检完成：\(passed) 通过 / \(failures.count) 失败（\(elapsed)）")

@@ -19,6 +19,8 @@ final class AppState: ObservableObject {
     @Published var categories: [CategoryState] = CleanCategory.allCases.map { CategoryState(category: $0) }
     @Published var isCleaning = false
     @Published var lastCleanSummary: String?
+    @Published var lastCleanResult: CleanResultSnapshot?
+    @Published var showCleanResultSheet: Bool = false
     @Published var history: [CleanRecord] = []
     let uninstaller = UninstallerState()
     var ai = AIState()   // 需为 var：Binding（$app.ai.xxx）不能穿过 let 属性
@@ -258,6 +260,7 @@ final class AppState: ObservableObject {
         }
         // M3：快照本次清理的 item id，避免清理期间新勾选项被误移出
         let cleaningIDs = Set(items.map(\.id))
+        let beforeAvailable = diskAvailable
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Cleaner.clean(items, permanently: permanently) { _ in }
@@ -301,6 +304,20 @@ final class AppState: ObservableObject {
                     parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
                 }
                 self.lastCleanSummary = parts.joined(separator: "，")
+                if result.releasedBytes > 0 || result.succeeded > 0 {
+                    self.lastCleanResult = CleanResultSnapshot(
+                        title: "\(cat.title) 清理完成",
+                        releasedBytes: result.releasedBytes,
+                        itemCount: result.succeeded,
+                        failureCount: result.failures.count,
+                        mode: permanently ? "彻底删除" : "废纸篓",
+                        beforeAvailable: beforeAvailable,
+                        afterAvailable: self.diskAvailable,
+                        breakdown: [cat: result.releasedBytes],
+                        timestamp: Date()
+                    )
+                    self.showCleanResultSheet = true
+                }
                 NotificationManager.shared.notifyCleanCompleted(
                     releasedBytes: result.releasedBytes,
                     failureCount: result.failures.count
@@ -328,12 +345,14 @@ final class AppState: ObservableObject {
         let contributingCategories = categories.filter { cat in
             items.contains { $0.category == cat.category && cleaningIDs.contains($0.id) }
         }
+        let beforeAvailable = diskAvailable
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Cleaner.clean(items, permanently: permanently) { _ in }
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let done = result.succeededItemIDs
+                var breakdown: [CleanCategory: Int64] = [:]
                 // #7（二轮）：按成功项逐分类记账，而非全记到第一个贡献分类
                 for st in contributingCategories {
                     // LOW-4：用 Cleaner 逐 item 实际释放字节记账（与全局 releasedBytes 口径一致），
@@ -342,6 +361,9 @@ final class AppState: ObservableObject {
                     let releasedHere = originalItems
                         .filter { cleaningIDs.contains($0.id) && done.contains($0.id) }
                         .reduce(Int64(0)) { $0 + (result.releasedBytesByItem[$1.id] ?? 0) }
+                    if releasedHere > 0 {
+                        breakdown[st.category] = releasedHere
+                    }
                     // #1（二轮）：filter 保留快照外新勾选项
                     st.items = originalItems.map { item in
                         guard item.isSelected, cleaningIDs.contains(item.id) else { return item }
@@ -378,6 +400,20 @@ final class AppState: ObservableObject {
                     parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
                 }
                 self.lastCleanSummary = parts.joined(separator: "，")
+                if result.releasedBytes > 0 || result.succeeded > 0 {
+                    self.lastCleanResult = CleanResultSnapshot(
+                        title: "聚合清理完成",
+                        releasedBytes: result.releasedBytes,
+                        itemCount: result.succeeded,
+                        failureCount: result.failures.count,
+                        mode: permanently ? "彻底删除" : "废纸篓",
+                        beforeAvailable: beforeAvailable,
+                        afterAvailable: self.diskAvailable,
+                        breakdown: breakdown,
+                        timestamp: Date()
+                    )
+                    self.showCleanResultSheet = true
+                }
                 NotificationManager.shared.notifyCleanCompleted(
                     releasedBytes: result.releasedBytes,
                     failureCount: result.failures.count

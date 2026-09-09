@@ -338,6 +338,18 @@ struct ContentView: View {
         } message: {
             Text("当前可用空间仅剩 \(app.diskAvailable.byteStringCN)，已低于预设的警戒阈值 \(app.diskMonitor.config.lowSpaceThresholdGB) GB。建议立即执行系统深度清理释放空间！")
         }
+        .sheet(isPresented: $app.showCleanResultSheet) {
+            if let snapshot = app.lastCleanResult {
+                CleanResultSheet(snapshot: snapshot) {
+                    app.showCleanResultSheet = false
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        app.destination = .history
+                    }
+                } onDismiss: {
+                    app.showCleanResultSheet = false
+                }
+            }
+        }
     }
 
     private var mainContent: some View {

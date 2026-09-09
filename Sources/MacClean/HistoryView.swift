@@ -1,13 +1,37 @@
 import SwiftUI
 
+/// 历史时间跨度筛选
+enum HistoryTimeRange: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case last7Days = "近 7 天"
+    case last30Days = "近 30 天"
+
+    var id: String { rawValue }
+}
+
 /// 清理历史（融合 Mole `mo history`）
 struct HistoryView: View {
     @EnvironmentObject private var app: AppState
     @State private var confirmClear = false
     @State private var showHud = false
     @State private var hudMessage = ""
+    @State private var selectedRange: HistoryTimeRange = .all
 
-    private var totalBytes: Int64 { app.history.reduce(0) { $0 + $1.bytes } }
+    private var filteredRecords: [CleanRecord] {
+        let now = Date()
+        switch selectedRange {
+        case .all:
+            return app.history
+        case .last7Days:
+            let cutoff = now.addingTimeInterval(-7 * 86400)
+            return app.history.filter { $0.date >= cutoff }
+        case .last30Days:
+            let cutoff = now.addingTimeInterval(-30 * 86400)
+            return app.history.filter { $0.date >= cutoff }
+        }
+    }
+
+    private var totalBytes: Int64 { filteredRecords.reduce(0) { $0 + $1.bytes } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,23 +55,45 @@ struct HistoryView: View {
                 } else {
                     ScrollView {
                         VStack(spacing: Theme.spaceMd) {
-                            // 趋势图表：当记录 >= 2 时展示释放趋势
-                            if app.history.count >= 2 {
-                                HistoryTrendChart(records: app.history)
-                            }
-
-                            // 详细流水记录列表
-                            VStack(spacing: 0) {
-                                ForEach(Array(app.history.enumerated()), id: \.element.id) { index, record in
-                                    if index > 0 {
-                                        Divider()
-                                            .overlay(Theme.separator.opacity(0.35))
-                                            .padding(.leading, 38)
+                            if filteredRecords.isEmpty {
+                                VStack(spacing: Theme.spaceSm) {
+                                    Image(systemName: "calendar.badge.exclamationmark")
+                                        .font(.system(size: 32))
+                                        .foregroundColor(Theme.labelTertiary)
+                                    Text("所选时间段（\(selectedRange.rawValue)）内暂无清理记录")
+                                        .font(Theme.bodyFont(13, weight: .medium))
+                                        .foregroundColor(Theme.labelSecondary)
+                                    Button("查看全部历史") {
+                                        withAnimation(Theme.smoothTransition) {
+                                            selectedRange = .all
+                                        }
                                     }
-                                    HistoryRow(record: record)
+                                    .buttonStyle(.link)
                                 }
+                                .frame(maxWidth: .infinity, minHeight: 180)
+                                .macCard(cornerRadius: Theme.radiusMd)
+                            } else {
+                                // 趋势图表：当记录 >= 2 时展示释放趋势
+                                if filteredRecords.count >= 2 {
+                                    HistoryTrendChart(records: filteredRecords, range: selectedRange)
+                                }
+
+                                // 各分类累计释放分布大卡
+                                HistoryCategoryDistributionCard(records: filteredRecords)
+
+                                // 详细流水记录列表
+                                VStack(spacing: 0) {
+                                    ForEach(Array(filteredRecords.enumerated()), id: \.element.id) { index, record in
+                                        if index > 0 {
+                                            Divider()
+                                                .overlay(Theme.separator.opacity(0.35))
+                                                .padding(.leading, 38)
+                                        }
+                                        HistoryRow(record: record)
+                                    }
+                                }
+                                .macCard(cornerRadius: Theme.radiusMd)
                             }
-                            .macCard(cornerRadius: Theme.radiusMd)
                         }
                         .padding(Theme.spaceMd)
                     }
@@ -91,6 +137,15 @@ struct HistoryView: View {
             }
             Spacer()
 
+            // 时间跨度筛选分段器
+            Picker("", selection: $selectedRange) {
+                ForEach(HistoryTimeRange.allCases) { range in
+                    Text(range.rawValue).tag(range)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 170)
+
             // 导出历史操作菜单
             Menu {
                 Button {
@@ -106,12 +161,12 @@ struct HistoryView: View {
                     Label("导出为文本报告…", systemImage: "doc.text")
                 }
             } label: {
-                Label("导出历史", systemImage: "square.and.arrow.up")
+                Label("导出", systemImage: "square.and.arrow.up")
             }
             .menuStyle(.borderedButton)
-            .controlSize(.large)
+            .controlSize(.regular)
             .tint(Theme.actionBlue)
-            .disabled(app.history.isEmpty)
+            .disabled(filteredRecords.isEmpty)
         }
         .padding(.horizontal, Theme.contentPadding)
         .padding(.vertical, Theme.spaceMd)
@@ -119,8 +174,8 @@ struct HistoryView: View {
     }
 
     private func exportCSV() {
-        let content = HistoryExporter.generateCSV(records: app.history)
-        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_History", ext: "csv")
+        let content = HistoryExporter.generateCSV(records: filteredRecords)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_History_\(selectedRange.rawValue)", ext: "csv")
         HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "csv") { ok, name in
             if ok, let name {
                 hudMessage = "已成功导出 \(name)"
@@ -130,8 +185,8 @@ struct HistoryView: View {
     }
 
     private func exportReport() {
-        let content = HistoryExporter.generateReport(records: app.history)
-        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_Report", ext: "md")
+        let content = HistoryExporter.generateReport(records: filteredRecords)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_Report_\(selectedRange.rawValue)", ext: "md")
         HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "md") { ok, name in
             if ok, let name {
                 hudMessage = "已成功导出 \(name)"
@@ -220,9 +275,88 @@ struct HistoryRow: View {
     }
 }
 
+/// 各分类累计释放分布卡片
+struct HistoryCategoryDistributionCard: View {
+    let records: [CleanRecord]
+
+    private var categoryTotals: [(name: String, bytes: Int64, count: Int, color: Color)] {
+        var bytesMap: [String: Int64] = [:]
+        var countMap: [String: Int] = [:]
+        for r in records {
+            bytesMap[r.categoryName, default: 0] += r.bytes
+            countMap[r.categoryName, default: 0] += 1
+        }
+        let sorted = bytesMap.sorted(by: { $0.value > $1.value })
+        return sorted.map { name, bytes in
+            let color: Color
+            if let cat = CleanCategory.allCases.first(where: { $0.title == name }) {
+                color = cat.accentColor
+            } else if name.contains("重复") {
+                color = Theme.actionBlue
+            } else if name.contains("卸载") {
+                color = .purple
+            } else {
+                color = Theme.warningOrange
+            }
+            return (name: name, bytes: bytes, count: countMap[name, default: 0], color: color)
+        }
+    }
+
+    var body: some View {
+        let total = max(1, records.reduce(0) { $0 + $1.bytes })
+        VStack(alignment: .leading, spacing: Theme.spaceSm) {
+            HStack {
+                Label("各分类累计释放占比", systemImage: "chart.pie.fill")
+                    .font(Theme.bodyFont(13, weight: .semibold))
+                    .foregroundColor(Theme.labelPrimary)
+
+                Spacer()
+
+                Text("共 \(categoryTotals.count) 个分类贡献")
+                    .font(Theme.bodyFont(11))
+                    .foregroundColor(Theme.labelTertiary)
+            }
+
+            // 多色水平堆叠比例条
+            GeometryReader { geo in
+                HStack(spacing: 2) {
+                    ForEach(categoryTotals, id: \.name) { item in
+                        let ratio = CGFloat(item.bytes) / CGFloat(total)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(item.color)
+                            .frame(width: max(3, geo.size.width * ratio - 2))
+                    }
+                }
+            }
+            .frame(height: 8)
+
+            // 图例与详情指标
+            FlowLayout(spacing: 10) {
+                ForEach(categoryTotals, id: \.name) { item in
+                    let pct = Int(Double(item.bytes) / Double(total) * 100)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(item.color)
+                            .frame(width: 7, height: 7)
+                        Text(item.name)
+                            .font(Theme.bodyFont(11, weight: .regular))
+                            .foregroundColor(Theme.labelSecondary)
+                        Text("\(item.bytes.byteStringCN) (\(pct)%)")
+                            .font(Theme.monoFont(11, weight: .medium))
+                            .foregroundColor(Theme.labelPrimary)
+                    }
+                }
+            }
+        }
+        .padding(Theme.spaceMd)
+        .macCard(cornerRadius: Theme.radiusMd)
+    }
+}
+
 /// 清理历史趋势图表（展示最近清理的释放容量分布、峰值与平均值）
 struct HistoryTrendChart: View {
     let records: [CleanRecord]
+    var range: HistoryTimeRange = .all
 
     @State private var hoveredRecord: CleanRecord?
 
@@ -252,7 +386,7 @@ struct HistoryTrendChart: View {
                     Text("清理释放趋势")
                         .font(Theme.bodyFont(13, weight: .semibold))
                         .foregroundColor(Theme.labelPrimary)
-                    Text("最近 \(chartRecords.count) 次清理流水分布")
+                    Text(range == .all ? "最近 \(chartRecords.count) 次清理流水分布" : "\(range.rawValue) \(chartRecords.count) 次清理流水分布")
                         .font(Theme.bodyFont(11))
                         .foregroundColor(Theme.labelTertiary)
                 }

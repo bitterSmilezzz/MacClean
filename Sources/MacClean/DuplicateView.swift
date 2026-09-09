@@ -287,7 +287,30 @@ struct DuplicateView: View {
             permanent: $permanentMode,
             recentlyUsedCount: 0
         ) { permanent in
-            _ = dup.cleanSelected(permanently: permanent)
+            let beforeAvailable = app.diskAvailable
+            let result = dup.cleanSelected(permanently: permanent)
+            if result.releasedBytes > 0 || result.succeeded > 0 {
+                app.refreshDisk()
+                app.recordClean(
+                    categoryName: "重复文件",
+                    itemCount: result.succeeded,
+                    bytes: result.releasedBytes,
+                    mode: permanent ? "彻底删除" : "废纸篓",
+                    failures: result.failures.count
+                )
+                app.lastCleanResult = CleanResultSnapshot(
+                    title: "重复文件清理完成",
+                    releasedBytes: result.releasedBytes,
+                    itemCount: result.succeeded,
+                    failureCount: result.failures.count,
+                    mode: permanent ? "彻底删除" : "废纸篓",
+                    beforeAvailable: beforeAvailable,
+                    afterAvailable: app.diskAvailable,
+                    breakdown: [.largeFiles: result.releasedBytes],
+                    timestamp: Date()
+                )
+                app.showCleanResultSheet = true
+            }
         }
     }
 }
