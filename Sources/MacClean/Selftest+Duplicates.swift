@@ -4,6 +4,7 @@ import Darwin
 import Combine
 import CoreGraphics
 import ImageIO
+import CryptoKit
 
 // 自检套件：重复文件
 //
@@ -229,6 +230,134 @@ extension Selftest {
             guard let original = group.items.first(where: \.isOriginal) else { return false }
             guard original.path == f1 else { return false }
             guard group.wastedBytes == Int64(dataSmall.count) else { return false }
+
+            return true
+        }
+
+        check("重复文件：多级稀疏采样秒级过滤头同尾异假阳性大文件") {
+            let tmpDir = "/private/tmp/macclean-sample-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            // 构造 4 个 1.2MB 大小完全相同的文件：
+            // 文件 A: 头 H, 中 M1, 尾 T1
+            // 文件 B: 头 H, 中 M1, 尾 T2 (头同尾异，模拟格式相同的不同视频/压缩包)
+            // 文件 C: 头 H, 中 M2, 尾 T1 (头尾同中异)
+            // 文件 D: 文件 A 的完全拷贝
+            let totalBytes = 1_200_000
+            let headSize = 16384
+            let tailSize = 16384
+            let midSize = 16384
+            let midOffset = (totalBytes / 2) - (midSize / 2)
+
+            func makeData(midByte: UInt8, tailByte: UInt8) -> Data {
+                var d = Data(repeating: 0x48, count: headSize) // Head 'H'
+                d.append(Data(repeating: 0x00, count: midOffset - headSize))
+                d.append(Data(repeating: midByte, count: midSize))
+                let remaining = totalBytes - d.count - tailSize
+                d.append(Data(repeating: 0x00, count: remaining))
+                d.append(Data(repeating: tailByte, count: tailSize))
+                return d
+            }
+
+            let dataA = makeData(midByte: 0x31, tailByte: 0x54) // M1, T1
+            let dataB = makeData(midByte: 0x31, tailByte: 0x58) // M1, T2 (尾部不同)
+            let dataC = makeData(midByte: 0x32, tailByte: 0x54) // M2, T1 (中部不同)
+            let dataD = dataA
+
+            let pathA = "\(tmpDir)/videoA.mp4"
+            let pathB = "\(tmpDir)/videoB.mp4"
+            let pathC = "\(tmpDir)/videoC.mp4"
+            let pathD = "\(tmpDir)/videoD_copy.mp4"
+
+            FileManager.default.createFile(atPath: pathA, contents: dataA)
+            FileManager.default.createFile(atPath: pathB, contents: dataB)
+            FileManager.default.createFile(atPath: pathC, contents: dataC)
+            FileManager.default.createFile(atPath: pathD, contents: dataD)
+
+            // 1. 传统头 8KB 哈希：4 个文件完全相同（假阳性）
+            let headA = DuplicateScanner.calculatePartialHash(at: pathA, length: 8192)
+            let headB = DuplicateScanner.calculatePartialHash(at: pathB, length: 8192)
+            let headC = DuplicateScanner.calculatePartialHash(at: pathC, length: 8192)
+            let headD = DuplicateScanner.calculatePartialHash(at: pathD, length: 8192)
+            guard headA != nil, headA == headB, headB == headC, headC == headD else { return false }
+
+            // 2. 多级自适应采样哈希：能精准区分尾部或中部不同的文件
+            let sampleA = DuplicateScanner.calculateSampledHash(at: pathA, fileSize: Int64(totalBytes))
+            let sampleB = DuplicateScanner.calculateSampledHash(at: pathB, fileSize: Int64(totalBytes))
+            let sampleC = DuplicateScanner.calculateSampledHash(at: pathC, fileSize: Int64(totalBytes))
+            let sampleD = DuplicateScanner.calculateSampledHash(at: pathD, fileSize: Int64(totalBytes))
+
+            guard let sA = sampleA, let sB = sampleB, let sC = sampleC, let sD = sampleD else { return false }
+            // A 与 D 相同
+            guard sA == sD else { return false }
+            // 尾部不同则采样哈希不同
+            guard sA != sB else { return false }
+            // 中部不同则采样哈希不同
+            guard sA != sC else { return false }
+
+            // 3. 端到端扫描：仅 A 与 D 归为一组，B 与 C 被前置淘汰，不产生假阳性
+            let groups = DuplicateScanner.scanDuplicates(in: [tmpDir], minSize: 100_000) { _, _ in }
+            guard groups.count == 1 else { return false }
+            let group = groups[0]
+            guard group.matchKind == .exact, group.items.count == 2 else { return false }
+            let groupedPaths = Set(group.items.map(\.path))
+            guard groupedPaths.contains(pathA) && groupedPaths.contains(pathD) else { return false }
+            guard !groupedPaths.contains(pathB) && !groupedPaths.contains(pathC) else { return false }
+
+            return true
+        }
+
+        check("重复文件：自适应大缓冲 SHA256 与标准哈希一致性") {
+            let tmpDir = "/private/tmp/macclean-sha-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            // 构造 1.5MB 测试文件跨越 1MB 自适应缓冲边界
+            var testData = Data(capacity: 1_500_000)
+            for i in 0..<150 {
+                testData.append(Data(repeating: UInt8(i % 255), count: 10_000))
+            }
+            let testFile = "\(tmpDir)/test_adaptive.dat"
+            FileManager.default.createFile(atPath: testFile, contents: testData)
+
+            // 标准 CryptoKit 哈希作为黄金标准
+            let expectedDigest = CryptoKit.SHA256.hash(data: testData)
+            let expectedHex = expectedDigest.map { String(format: "%02hhx", $0) }.joined()
+
+            // 引擎自适应分块哈希
+            guard let engineHex = DuplicateScanner.calculateFullSHA256(at: testFile) else { return false }
+            guard engineHex == expectedHex else { return false }
+
+            return true
+        }
+
+        check("重复文件：并发特征提取与即时取消响应") {
+            let tmpDir = "/private/tmp/macclean-concurrent-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            // 创建 6 个重复对
+            for i in 1...6 {
+                let data = "MacCleanConcurrencyTestFilePayload-\(i)".data(using: .utf8)!
+                FileManager.default.createFile(atPath: "\(tmpDir)/file_\(i)_1.bin", contents: data)
+                FileManager.default.createFile(atPath: "\(tmpDir)/file_\(i)_2.bin", contents: data)
+            }
+
+            // 1. 正常并发比对应准确找到 6 组
+            let groups = DuplicateScanner.scanDuplicates(in: [tmpDir], minSize: 10) { _, _ in }
+            guard groups.count == 6 else { return false }
+            for g in groups {
+                guard g.items.count == 2 else { return false }
+            }
+
+            // 2. 模拟取消信号应即时安全退出，返回空列表
+            let cancelledGroups = DuplicateScanner.scanDuplicates(
+                in: [tmpDir],
+                minSize: 10,
+                isCancelled: { true }
+            ) { _, _ in }
+            guard cancelledGroups.isEmpty else { return false }
 
             return true
         }
