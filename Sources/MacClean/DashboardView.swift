@@ -115,13 +115,22 @@ struct DashboardView: View {
                 Button {
                     app.scanAll()
                 } label: {
-                    Label(app.scannedCount > 0 ? "重新扫描全部" : "扫描全部分类", systemImage: "arrow.clockwise")
-                        .font(Typo.row)
-                        .frame(minWidth: 124)
+                    HStack(spacing: 6) {
+                        if app.isScanningAll {
+                            ProgressView()
+                                .controlSize(.small)
+                                .progressViewStyle(.circular)
+                        }
+                        Label(app.isScanningAll ? "扫描中…"
+                              : app.scannedCount > 0 ? "重新扫描全部" : "扫描全部分类",
+                              systemImage: "arrow.clockwise")
+                    }
+                    .font(Typo.row)
+                    .frame(minWidth: 124)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .disabled(app.categories.contains { $0.isScanning })
+                .disabled(app.isScanningAll || app.categories.contains { $0.isScanning })
 
                 Button {
                     app.aiReview.review(items: app.categories.flatMap { $0.items })
@@ -191,11 +200,18 @@ struct DashboardView: View {
     }
 
     private var scanStatusText: String {
+        if app.isScanningAll {
+            let done = Int(app.scanProgress * Double(CleanCategory.allCases.count))
+            return "正在并发扫描… \(done)/\(CleanCategory.allCases.count)"
+        }
         if app.categories.contains(where: { $0.isScanning }) {
             return "正在扫描…"
         }
         if app.scannedCount == 0 {
             return "尚未扫描。先扫描一次看看能释放多少空间。"
+        }
+        if let dur = app.lastScanDuration {
+            return "\(app.scannedCount)/\(CleanCategory.allCases.count) 个分类已扫描 · 用时 \(String(format: "%.1f", dur)) 秒"
         }
         return "\(app.scannedCount)/\(CleanCategory.allCases.count) 个分类已扫描"
     }

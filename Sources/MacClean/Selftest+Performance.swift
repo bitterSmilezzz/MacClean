@@ -40,6 +40,58 @@ extension Selftest {
             // 缓存后应为亚毫秒级；未缓存时这里会明显变慢
             return elapsed < 0.05
         }
+        // MARK: - 并发扫描加速（v1.33.0）
+
+        check("并发扫描：concurrentPerform 结果完整性（6 个分类全部返回）") {
+            // scanAllCategories 内部用 concurrentPerform，必须确保全部 6 个分类都有结果
+            let results = Scanner.scanAllCategories()
+            let allCats = Set(CleanCategory.allCases)
+            let returnedCats = Set(results.keys)
+            if returnedCats != allCats {
+                let missing = allCats.subtracting(returnedCats)
+                print("      缺失分类: \(missing.map(\.title))")
+            }
+            return returnedCats == allCats
+        }
+
+        check("并发扫描：FileSystem.measure 多线程并发无崩溃") {
+            // 10 线程并发读写测量缓存（NSLock 保护），不能崩溃或死锁
+            FileSystem.beginMeasurementSession()
+            let paths = ["/tmp", "/private/tmp", "/var/tmp",
+                         NSHomeDirectory(), "/usr/local", "/usr/bin",
+                         "/System", "/Library", "/Applications", "/dev"]
+            let lock = NSLock()
+            var successCount = 0
+            DispatchQueue.concurrentPerform(iterations: paths.count) { i in
+                let _ = FileSystem.measure(at: paths[i])
+                lock.lock()
+                successCount += 1
+                lock.unlock()
+            }
+            return successCount == paths.count
+        }
+
+        check("并发扫描：scanAllCategoriesWithProgress 回调完整性（6 次回调全部触发）") {
+            // 回调必须精确触发 6 次，每个分类一次
+            var callbackCats = Set<CleanCategory>()
+            let callbackLock = NSLock()
+            // 用 DispatchQueue.global 作为回调队列（非主队列，避免死锁）
+            Scanner.scanAllCategoriesWithProgress(callbackQueue: .global()) { cat, _ in
+                callbackLock.lock()
+                callbackCats.insert(cat)
+                callbackLock.unlock()
+            }
+            // concurrentPerform 是同步的，执行完后回调已全部 dispatch，
+            // 但回调在 .global() 上异步执行，需短暂等待
+            Thread.sleep(forTimeInterval: 0.1)
+            callbackLock.lock()
+            let count = callbackCats.count
+            callbackLock.unlock()
+            if count != CleanCategory.allCases.count {
+                print("      回调触发 \(count)/\(CleanCategory.allCases.count) 次")
+            }
+            return count == CleanCategory.allCases.count
+        }
 
     }
 }

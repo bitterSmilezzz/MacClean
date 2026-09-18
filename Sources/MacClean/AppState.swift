@@ -39,6 +39,14 @@ final class AppState: ObservableObject {
     @Published var riskScanned = false
     @Published var riskLastError: String?
 
+    // MARK: - 并发扫描进度（v1.33.0）
+    /// 是否正在执行整轮全量扫描
+    @Published var isScanningAll = false
+    /// 整轮扫描进度 (0.0 ~ 1.0)，每完成一个分类步进 1/6
+    @Published var scanProgress: Double = 0
+    /// 上一轮整轮扫描耗时（秒），供 Dashboard 展示
+    @Published var lastScanDuration: TimeInterval?
+
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -171,10 +179,59 @@ final class AppState: ObservableObject {
     }
 
     /// 扫描全部分类（侧边栏「全部扫描」）
+    ///
+    /// **v1.33.0 重构**：改用 `DispatchGroup` + `Scanner.scanAllCategoriesWithProgress`
+    /// 实现真正的多核并发扫描。每个分类完成后立即刷新对应 UI（渐进式），
+    /// 而不是等全部做完才一次性显示。同时记录整轮扫描耗时供 Dashboard 展示。
     func scanAll() {
-        // 会话边界：整轮只划一次，6 个分类共享同一份测量缓存
-        FileSystem.beginMeasurementSession()
-        for cat in CleanCategory.allCases { scan(cat, resetMeasurementSession: false) }
+        guard !isScanningAll else { return }
+
+        // 重置进度状态
+        isScanningAll = true
+        scanProgress = 0
+        lastScanDuration = nil
+
+        // 准备阶段（主线程）：标记所有分类为扫描中、清旧 AI 结论
+        let allCats = CleanCategory.allCases
+        var categoryStates: [CleanCategory: CategoryState] = [:]
+        for cat in allCats {
+            let st = state(for: cat)
+            st.isScanning = true
+            st.lastError = nil
+            let oldIDs = Set(st.items.map(\.id))
+            aiReview.removeReviews(for: oldIDs)
+            categoryStates[cat] = st
+        }
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let totalCategories = Double(allCats.count)
+
+        // 并发扫描（后台线程），每个分类完成后回调主线程渐进刷新
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            Scanner.scanAllCategoriesWithProgress(callbackQueue: .main) { cat, outcome in
+                guard let self else { return }
+                if let st = categoryStates[cat] {
+                    st.items = outcome.items
+                    st.issues = outcome.issues
+                    st.isScanned = true
+                    st.isScanning = false
+                    NotificationManager.shared.notifyScanCompleted(
+                        categoryName: cat.title,
+                        itemCount: outcome.items.count,
+                        totalBytes: outcome.items.reduce(Int64(0)) { $0 + $1.size }
+                    )
+                }
+                self.scanProgress = min(1.0, self.scanProgress + 1.0 / totalCategories)
+
+                // 当所有分类都完成时收尾
+                let allDone = self.categories.allSatisfy { $0.isScanned && !$0.isScanning }
+                if allDone {
+                    self.lastScanDuration = CFAbsoluteTimeGetCurrent() - startTime
+                    self.isScanningAll = false
+                    self.refreshDisk()
+                }
+            }
+        }
     }
 
     /// 将指定路径加入白名单并立刻从当前已扫描项目中移除
