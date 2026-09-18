@@ -46,10 +46,14 @@ final class AppState: ObservableObject {
     @Published var scanProgress: Double = 0
     /// 上一轮整轮扫描耗时（秒），供 Dashboard 展示
     @Published var lastScanDuration: TimeInterval?
+    /// 增量扫描缓存命中数量（v1.34.0）
+    @Published var incrementalHits: Int = 0
 
     private var cancellables = Set<AnyCancellable>()
 
     init() {
+        // 加载跨会话增量扫描缓存
+        IncrementalCache.loadFromDisk()
         // 关键：把每个 CategoryState 的变更转发到 AppState，
         // 否则勾选状态变化不会触发 CategoryDetailView 重绘（@Published 不监听嵌套对象）
         for state in categories {
@@ -186,10 +190,12 @@ final class AppState: ObservableObject {
     func scanAll() {
         guard !isScanningAll else { return }
 
-        // 重置进度状态
+        // 重置进度与增量缓存统计
         isScanningAll = true
         scanProgress = 0
         lastScanDuration = nil
+        incrementalHits = 0
+        IncrementalCache.resetStats()
 
         // 准备阶段（主线程）：标记所有分类为扫描中、清旧 AI 结论
         let allCats = CleanCategory.allCases
@@ -227,8 +233,10 @@ final class AppState: ObservableObject {
                 let allDone = self.categories.allSatisfy { $0.isScanned && !$0.isScanning }
                 if allDone {
                     self.lastScanDuration = CFAbsoluteTimeGetCurrent() - startTime
+                    self.incrementalHits = IncrementalCache.hitCount
                     self.isScanningAll = false
                     self.refreshDisk()
+                    IncrementalCache.saveToDisk()
                 }
             }
         }
@@ -445,6 +453,7 @@ final class AppState: ObservableObject {
                                                            runningBlocked: runningBlocked)
                 self.isCleaning = false
                 self.refreshDisk()
+                IncrementalCache.saveToDisk()
                 self.reportAggregateCleanOutcome(result: result,
                                                  breakdown: breakdown,
                                                  runningBlocked: runningBlocked,

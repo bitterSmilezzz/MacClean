@@ -52,7 +52,7 @@ enum FileSystem {
     // 现在合并成一次遍历，并在一次扫描会话内缓存：`size` 与 `usage` 都读同一份结果。
 
     /// 一次遍历得到的测量结果。
-    struct Measurement: Equatable {
+    struct Measurement: Equatable, Codable {
         var size: Int64 = 0
         var newest: Date?
         /// 7 天内修改过的文件数（活跃度信号）
@@ -89,6 +89,9 @@ enum FileSystem {
     /// `Cleaner` 删除后必须调用：否则紧接着的重新扫描会命中旧缓存，
     /// 给一个已经删掉的目录报出删除前的体积。
     static func invalidateMeasurements(for paths: [String]) {
+        // v1.34.0 联动跨会话增量指纹缓存失效
+        IncrementalCache.invalidate(paths)
+
         measurementLock.lock()
         defer { measurementLock.unlock() }
         for p in paths {
@@ -166,7 +169,13 @@ enum FileSystem {
         return result
     }
 
-    /// 取路径的测量结果（带会话内缓存）。**会做全量遍历**，只用于算体积。
+    /// 取路径的测量结果（带会话内缓存与跨会话增量指纹缓存）。
+    ///
+    /// v1.34.0 增强：
+    /// ① 先查单次扫描会话缓存 `measurementCache`（零成本）；
+    /// ② 未命中则查跨会话增量指纹缓存 `IncrementalCache`（仅微秒级 lstat 校验指纹）；
+    /// ③ 指纹匹配直接复用上次全量递归结果，避免成千上万小文件重复遍历；
+    /// ④ 均未命中才执行实际 `computeMeasurement`，并回填两级缓存。
     static func measure(at path: String) -> Measurement {
         let key = cacheKey(path)
         measurementLock.lock()
@@ -176,11 +185,24 @@ enum FileSystem {
         }
         measurementLock.unlock()
 
+        // ② 查跨会话增量指纹缓存
+        if let incHit = IncrementalCache.lookup(at: path) {
+            measurementLock.lock()
+            measurementCache[key] = incHit
+            measurementLock.unlock()
+            return incHit
+        }
+
+        // ④ 深度递归遍历测算
         let computed = computeMeasurement(at: path)
 
         measurementLock.lock()
         measurementCache[key] = computed
         measurementLock.unlock()
+
+        // 写入增量指纹缓存
+        IncrementalCache.update(at: path, measurement: computed)
+
         return computed
     }
 

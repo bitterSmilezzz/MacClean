@@ -211,7 +211,11 @@ struct DashboardView: View {
             return "尚未扫描。先扫描一次看看能释放多少空间。"
         }
         if let dur = app.lastScanDuration {
-            return "\(app.scannedCount)/\(CleanCategory.allCases.count) 个分类已扫描 · 用时 \(String(format: "%.1f", dur)) 秒"
+            let base = "\(app.scannedCount)/\(CleanCategory.allCases.count) 个分类已扫描 · 用时 \(String(format: "%.1f", dur)) 秒"
+            if app.incrementalHits > 0 {
+                return "\(base) · 增量命中 \(app.incrementalHits) 项"
+            }
+            return base
         }
         return "\(app.scannedCount)/\(CleanCategory.allCases.count) 个分类已扫描"
     }

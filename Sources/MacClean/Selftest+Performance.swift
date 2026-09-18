@@ -93,5 +93,77 @@ extension Selftest {
             return count == CleanCategory.allCases.count
         }
 
+        // MARK: - 增量扫描缓存（v1.34.0）
+
+        check("增量扫描缓存：目录指纹计算与幂等性") {
+            let tmpDir = NSTemporaryDirectory() + "macclean_inc_test_\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            let subFile1 = tmpDir + "/a.txt"
+            let subFile2 = tmpDir + "/b.txt"
+            try? "hello".write(toFile: subFile1, atomically: true, encoding: .utf8)
+            try? "world123".write(toFile: subFile2, atomically: true, encoding: .utf8)
+
+            guard let fp1 = IncrementalCache.fingerprint(for: tmpDir) else { return false }
+            guard let fp2 = IncrementalCache.fingerprint(for: tmpDir) else { return false }
+
+            return fp1 == fp2 && fp1.isDirectory && fp1.childCount == 2
+        }
+
+        check("增量扫描缓存：跨会话缓存命中与 Measurement 零误差复用") {
+            let tmpDir = NSTemporaryDirectory() + "macclean_inc_test_\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            let subFile = tmpDir + "/data.bin"
+            let data = Data(repeating: 0xAB, count: 4096)
+            try? data.write(to: URL(fileURLWithPath: subFile))
+
+            IncrementalCache.resetStats()
+            IncrementalCache.invalidate([tmpDir])
+
+            // 第 1 次测量：新路径，此时增量缓存必然未命中
+            FileSystem.beginMeasurementSession()
+            let m1 = FileSystem.measure(at: tmpDir)
+
+            // 第 2 次测量：开启新一轮会话（清空单次会话缓存），模拟用户重新扫描
+            FileSystem.beginMeasurementSession()
+            let initialHits = IncrementalCache.hitCount
+            let m2 = FileSystem.measure(at: tmpDir)
+
+            // 结果必须与第一次完全一致，且增量缓存命中计数递增
+            let sizeMatches = m1.size > 0 && m1.size == m2.size && m1.newest == m2.newest
+            let hitMatches = IncrementalCache.hitCount == initialHits + 1
+            return sizeMatches && hitMatches
+        }
+
+        check("增量扫描缓存：失效联动与文件变动感知") {
+            let tmpDir = NSTemporaryDirectory() + "macclean_inc_test_\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: tmpDir) }
+
+            let subFile = tmpDir + "/chunk.bin"
+            try? Data(repeating: 0x01, count: 1024).write(to: URL(fileURLWithPath: subFile))
+
+            // 首次测量
+            FileSystem.beginMeasurementSession()
+            let m1 = FileSystem.measure(at: tmpDir)
+            guard m1.size > 0 else { return false }
+
+            // 修改目录内容（追加新文件改变子项数与指纹）
+            let subFile2 = tmpDir + "/chunk2.bin"
+            try? Data(repeating: 0x02, count: 8192).write(to: URL(fileURLWithPath: subFile2))
+
+            // 主动通知失效（模拟清理或文件变动）
+            FileSystem.invalidateMeasurements(for: [tmpDir])
+
+            FileSystem.beginMeasurementSession()
+            let m2 = FileSystem.measure(at: tmpDir)
+
+            // 重新测量后必须反映最新体积增长且两文件都被计入
+            return m2.size > m1.size
+        }
+
     }
 }
