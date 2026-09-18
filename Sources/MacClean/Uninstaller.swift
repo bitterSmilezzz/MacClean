@@ -87,8 +87,11 @@ final class UninstallerState: ObservableObject {
         let files = selectedFiles
         guard !files.isEmpty, !isUninstalling else { return false }
         isUninstalling = true
+        // 走 A1 规则编号（本质 = 已卸载 App 的残留 → 需确认）。
+        // 注意：卸载器这里的"选择"是用户先明确点了要卸载某个 App 才产生的，
+        // 与分类扫描里"一键全选"的风险性质不同，因此不套用 selectAllSafe 的限制。
         let items = files.map {
-            CleanItem(name: $0.name, path: $0.path, size: $0.size, risk: .review,
+            CleanItem(name: $0.name, path: $0.path, size: $0.size, rule: "A1",
                       category: .appResidue, note: "\($0.kind) · App 卸载残留")
         }
         // L5（数据层审查）：避免主线程同步执行大目录 trashItem 阻塞 UI——后台执行 + 主线程回写

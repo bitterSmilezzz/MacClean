@@ -36,7 +36,10 @@ enum HistoryStore {
 
     static var fileURL: URL {
         if let override = fileURLOverride { return override }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // 不用 `.first!`：这个 API 在正常环境下必定返回一个元素，但"环境不正常"
+        // （沙盒异常、容器损坏）时崩的是整个 App。退到 ~/Library/Application Support 即可。
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         let dir = base.appendingPathComponent("MacClean", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("history.json")
@@ -95,12 +98,18 @@ struct SearchResult: Identifiable, Equatable {
     let subtitle: String
     /// 大小（history 也用，无则 0）
     let size: Int64
-    let risk: RiskLevel?
+    /// 处置结论（唯一结论：可清理 / 使用中 / 需确认 / 勿删）。
+    ///
+    /// 直接取 `CleanItem.recommendation`，检索页不自行推导——历史上这里放的是手写的
+    /// `RiskLevel`，与"使用频率"各说各话，正是"安全 + 近期使用"自相矛盾的来源之一。
+    /// 历史记录（`CleanRecord`）不对应具体清理项，故为 nil。
+    let recommendation: Recommendation?
 
     static func from(item: CleanItem) -> SearchResult {
         SearchResult(id: "item-\(item.category.rawValue)-\(item.id.uuidString)",
                      kind: .item(item.category), name: item.name,
-                     subtitle: item.path, size: item.size, risk: item.risk)
+                     subtitle: item.path, size: item.size,
+                     recommendation: item.recommendation)
     }
 
     static func from(record: CleanRecord) -> SearchResult {
@@ -109,7 +118,7 @@ struct SearchResult: Identifiable, Equatable {
         return SearchResult(id: "history-\(record.id.uuidString)",
                             kind: .history(record), name: record.categoryName,
                             subtitle: f.string(from: record.date) + " · \(record.mode)",
-                            size: record.bytes, risk: nil)
+                            size: record.bytes, recommendation: nil)
     }
 }
 

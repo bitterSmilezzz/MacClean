@@ -12,3 +12,8 @@ dist/
 
 # 临时
 *.log
+
+# 并行重构用的独立构建目录
+.build-agent*/
+.build-main/
+.build-wmo/

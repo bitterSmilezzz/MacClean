@@ -74,7 +74,7 @@ enum HistoryExporter {
 
         for r in records {
             let dateStr = dateFormatter.string(from: r.date)
-            let status = r.failures > 0 ? "⚠️ \(r.failures) 项失败" : "✅ 成功"
+            let status = r.failures > 0 ? "\(r.failures) 项失败" : "成功"
             report += "| \(dateStr) | \(r.categoryName) | \(r.mode) | \(r.itemCount) 项 | \(r.bytes.byteStringCN) | \(status) |\n"
         }
 
@@ -117,18 +117,23 @@ enum HistoryExporter {
 
     // MARK: - 清理项目与大文件清单导出
     /// 生成清理项清单 CSV（支持大文件、缓存、日志等各分类）
+    ///
+    /// 结论列取 `CleanItem.recommendation`（唯一结论），并把它的 `reason` 单独成一列——
+    /// CSV 是表格，放得下"为什么是这个结论"，而只留一个标签会让导出件重新变得无法追问。
     static func generateItemsCSV(items: [CleanItem], categoryTitle: String) -> String {
         var csv = "\u{FEFF}" // UTF-8 BOM
-        csv += "分类,名称,大小,字节数,风险等级,使用情况,主路径,备注\n"
+        csv += "分类,名称,大小,字节数,处置结论,结论依据,使用情况,主路径,备注\n"
         for item in items {
             let cat = escapeCSV(categoryTitle)
             let name = escapeCSV(item.name)
             let sizeStr = escapeCSV(item.size.byteStringCN)
-            let risk = escapeCSV(item.risk.label)
+            let recommendation = item.recommendation
+            let verdict = escapeCSV(recommendation.label)
+            let reason = escapeCSV(recommendation.reason)
             let usage = escapeCSV(item.usage.label)
             let path = escapeCSV(item.path)
             let note = escapeCSV(item.note)
-            csv += "\(cat),\(name),\(sizeStr),\(item.size),\(risk),\(usage),\(path),\(note)\n"
+            csv += "\(cat),\(name),\(sizeStr),\(item.size),\(verdict),\(reason),\(usage),\(path),\(note)\n"
         }
         return csv
     }
@@ -143,14 +148,16 @@ enum HistoryExporter {
         总计项目：\(items.count) 项
         总计占用：\(totalBytes.byteStringCN) (\(totalBytes) 字节)
 
-        | 名称 | 大小 | 风险 | 使用频率 | 路径 |
-        | :--- | :--- | :--- | :--- | :--- |
+        | 名称 | 大小 | 处置结论 | 结论依据 | 使用频率 | 路径 |
+        | :--- | :--- | :--- | :--- | :--- | :--- |
 
         """
         for item in items {
             let name = item.name.replacingOccurrences(of: "|", with: "\\|")
             let path = item.path.replacingOccurrences(of: "|", with: "\\|")
-            report += "| \(name) | \(item.size.byteStringCN) | \(item.risk.label) | \(item.usage.label) | `\(path)` |\n"
+            let recommendation = item.recommendation
+            let reason = recommendation.reason.replacingOccurrences(of: "|", with: "\\|")
+            report += "| \(name) | \(item.size.byteStringCN) | \(recommendation.label) | \(reason) | \(item.usage.label) | `\(path)` |\n"
         }
         return report
     }
@@ -191,12 +198,12 @@ enum HistoryExporter {
         for (idx, g) in groups.enumerated() {
             report += "\n### 第 \(idx + 1) 组：\(g.matchKind.rawValue) · 浪费 \(g.wastedBytes.byteStringCN)\n"
             if !g.suggestionNote.isEmpty {
-                report += "> 💡 \(g.suggestionNote)\n\n"
+                report += "> \(g.suggestionNote)\n\n"
             }
             report += "| 角色 | 文件名 | 大小 | 修改时间 | 路径 |\n"
             report += "| :--- | :--- | :--- | :--- | :--- |\n"
             for item in g.items {
-                let role = item.isOriginal ? "⭐️ **推荐保留**" : "🗑️ 建议清理"
+                let role = item.isOriginal ? "**推荐保留**" : "建议清理"
                 let name = item.name.replacingOccurrences(of: "|", with: "\\|")
                 let mtimeStr = item.modificationDate.map { Date.usageFormatter.string(from: $0) } ?? "-"
                 let path = item.path.replacingOccurrences(of: "|", with: "\\|")

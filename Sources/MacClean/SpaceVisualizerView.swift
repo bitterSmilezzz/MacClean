@@ -47,7 +47,17 @@ struct SunburstArcShape: Shape {
 }
 
 /// 磁盘空间占用 Treemap / 太阳花旭日图可视化主视图
+///
+/// 重写要点：
+///  - 图表本身就是数据可视化，分类色照旧（`SpaceNode.color` 来自 `ChartPalette`）；
+///    但图表**周围**的一切——标题栏、面包屑、探查条、图例——全部收回到单一强调色与文本灰阶，
+///    否则六种分类色会从画布溢出成整页的装饰色。
+///  - 顶部标题区删掉「通过交互式 Treemap…宏观洞察」这类装饰性副标题：它不携带信息，
+///    只是把标题行撑满。当前层级的体积是真实数据，留在面包屑条右侧。
+///  - `Divider().overlay(...)` 统一换成 `Hairline`，避免各处分隔线深浅不一。
+///  - 探查条上的三个等高描边按钮减为一个主操作 + 两个文本动作，降低视觉噪声。
 struct SpaceVisualizerView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var app: AppState
 
     @State var mode: VisualizerMode = .treemap
@@ -64,7 +74,7 @@ struct SpaceVisualizerView: View {
             initialRoot = SpaceHierarchyBuilder.buildDiskOverview(app: appState)
         } else {
             // 临时根，在 onAppear 或首轮中与环境 app 结合
-            initialRoot = SpaceNode(name: "Macintosh HD", size: 1, color: Theme.actionBlue)
+            initialRoot = SpaceNode(name: "Macintosh HD", size: 1, color: Accent.tint)
         }
         self._rootNode = State(initialValue: initialRoot)
         self._currentNode = State(initialValue: initialRoot)
@@ -72,15 +82,15 @@ struct SpaceVisualizerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // MARK: - 顶栏控制栏 (模式、维度、下钻返回)
+            // MARK: - 顶栏控制栏 (模式、维度、刷新)
             topBar
 
-            Divider().overlay(Theme.separator)
+            Hairline()
 
             // MARK: - 面包屑路径条
             breadcrumbBar
 
-            Divider().overlay(Theme.separator.opacity(0.5))
+            Hairline()
 
             // MARK: - 主图表画布区 (Treemap / Sunburst)
             ZStack {
@@ -91,14 +101,14 @@ struct SpaceVisualizerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.canvas)
+            .background(Surface.window)
 
-            Divider().overlay(Theme.separator)
+            Hairline()
 
-            // MARK: - 底部悬停探查器卡片
+            // MARK: - 底部悬停探查条
             detailInspector
         }
-        .background(Theme.canvas)
+        .background(Surface.window)
         .onAppear {
             reloadHierarchy()
         }
@@ -110,24 +120,12 @@ struct SpaceVisualizerView: View {
 
     // MARK: - 顶栏
     private var topBar: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 6) {
-                Image(systemName: "square.split.bottomrightquarter")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Theme.actionBlue)
+        HStack(spacing: Space.sm) {
+            Text("空间透视")
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("空间透视与图表分析")
-                        .font(Theme.displayFont(15, weight: .bold))
-                        .foregroundColor(Theme.labelPrimary)
-
-                    Text("通过交互式 Treemap 矩形树图与极坐标旭日图，宏观洞察磁盘占用分布")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelSecondary)
-                }
-            }
-
-            Spacer()
+            Spacer(minLength: Space.sm)
 
             // 范围选择器
             Picker("透视范围", selection: $scope) {
@@ -135,6 +133,7 @@ struct SpaceVisualizerView: View {
                 Text("可清理细分").tag(VisualizerScope.cleanable)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .frame(width: 170)
             .controlSize(.small)
 
@@ -144,6 +143,7 @@ struct SpaceVisualizerView: View {
                 Text("旭日图").tag(VisualizerMode.sunburst)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .frame(width: 150)
             .controlSize(.small)
 
@@ -152,82 +152,90 @@ struct SpaceVisualizerView: View {
                 reloadHierarchy()
             } label: {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .medium))
+                    .font(Typo.caption)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
             .help("重新扫描并刷新空间树")
+            .accessibilityLabel("重新扫描并刷新空间树")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .barSurface()
     }
 
     // MARK: - 面包屑导航栏
     private var breadcrumbBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Space.xs) {
             Button {
                 popToRoot()
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: rootNode.icon ?? "internaldrive")
-                        .font(.system(size: 11))
+                HStack(spacing: Space.xxs) {
+                    IconSlot(
+                        systemName: rootNode.icon ?? "internaldrive",
+                        size: 11,
+                        color: breadcrumbStack.isEmpty ? Ink.primary : Ink.secondary,
+                        width: 14
+                    )
                     Text(rootNode.name)
-                        .font(Theme.bodyFont(12, weight: breadcrumbStack.isEmpty ? .bold : .regular))
+                        .font(breadcrumbStack.isEmpty ? Typo.rowStrong : Typo.row)
+                        .foregroundStyle(breadcrumbStack.isEmpty ? Ink.primary : Ink.secondary)
                 }
-                .foregroundColor(breadcrumbStack.isEmpty ? Theme.actionBlue : Theme.labelSecondary)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .pressable()
 
             ForEach(breadcrumbStack.indices, id: \.self) { idx in
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9))
-                    .foregroundColor(Theme.labelTertiary)
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.quaternary)
 
                 Button {
                     popTo(index: idx)
                 } label: {
                     Text(breadcrumbStack[idx].name)
-                        .font(Theme.bodyFont(12, weight: .regular))
-                        .foregroundColor(Theme.labelSecondary)
+                        .font(Typo.row)
+                        .foregroundStyle(Ink.secondary)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .pressable()
             }
 
             if !breadcrumbStack.isEmpty {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9))
-                    .foregroundColor(Theme.labelTertiary)
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.quaternary)
 
                 Text(currentNode.name)
-                    .font(Theme.bodyFont(12, weight: .bold))
-                    .foregroundColor(Theme.actionBlue)
+                    .font(Typo.rowStrong)
+                    .foregroundStyle(Ink.primary)
             }
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
             if !breadcrumbStack.isEmpty {
                 Button {
                     popOneLevel()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "arrow.uturn.backward")
-                            .font(.system(size: 10))
-                        Text("返回上一层")
-                            .font(Theme.bodyFont(11, weight: .medium))
-                    }
+                    Label("返回上一层", systemImage: "arrow.uturn.backward")
+                        .font(Typo.caption)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
 
-            Text("当前层级总计：\(currentNode.formattedSize)")
-                .font(Theme.monoFont(11, weight: .medium))
-                .foregroundColor(Theme.labelSecondary)
+            HStack(spacing: Space.xxs) {
+                Text("当前层级总计")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                Text(currentNode.formattedSize)
+                    .font(.mcNumeric(11, weight: .medium))
+                    .foregroundStyle(Ink.secondary)
+                    .motionSafeNumericTransition()
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.025))
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, 7)
     }
 
     // MARK: - Treemap 矩形树图部分
@@ -241,7 +249,7 @@ struct SpaceVisualizerView: View {
                 }
             }
         }
-        .padding(8)
+        .padding(Space.xs)
     }
 
     private func computeTreemapTiles(in size: CGSize) -> [TreemapTile] {
@@ -257,43 +265,44 @@ struct SpaceVisualizerView: View {
         let height = tile.rect.height - 2
 
         return ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(tile.node.color.opacity(isHovered ? 0.92 : 0.78))
+            RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                .fill(tile.node.color.opacity(isHovered ? 0.95 : 0.78))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(isHovered ? Color.white.opacity(0.9) : Theme.hairline, lineWidth: isHovered ? 1.5 : 0.5)
+                    RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                        .stroke(isHovered ? Color.white.opacity(0.9) : Surface.hairline, lineWidth: isHovered ? 1.5 : 0.5)
                 )
 
             // 内部文本（空间足够时才展示，避免重叠溢出）
             if width >= 50 && height >= 32 {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Space.xxs) {
                         if let icon = tile.node.icon {
                             Image(systemName: icon)
-                                .font(.system(size: 10))
+                                .font(Typo.micro)
                         }
                         Text(tile.node.name)
-                            .font(Theme.bodyFont(11, weight: .bold))
+                            .font(Typo.caption)
+                            .fontWeight(.semibold)
                             .lineLimit(1)
                     }
 
                     Text(tile.node.formattedSize)
-                        .font(Theme.monoFont(10, weight: .medium))
+                        .font(.mcNumeric(10, weight: .medium))
 
                     if height >= 52 {
                         Text(tile.node.percentageString(of: currentNode.size))
-                            .font(Theme.monoFont(9))
+                            .font(.mcNumeric(10))
                             .opacity(0.85)
                     }
                 }
-                .foregroundColor(.white)
+                .foregroundStyle(tile.node.color.readableForeground(for: colorScheme))
                 .padding(6)
             }
         }
         .frame(width: max(0, width), height: max(0, height))
         .contentShape(Rectangle())
         .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.12)) {
+            withAnimation(Motion.micro) {
                 hoveredNode = hovering ? tile.node : nil
             }
         }
@@ -319,33 +328,34 @@ struct SpaceVisualizerView: View {
 
                 // 中心核心圆盘 (Level 0 当前层级)
                 Circle()
-                    .fill(Theme.parchment)
+                    .fill(Surface.group)
                     .frame(width: CGFloat(maxRadius * 0.54), height: CGFloat(maxRadius * 0.54))
                     .overlay(
                         Circle()
-                            .stroke(Theme.hairline, lineWidth: 0.5)
+                            .stroke(Surface.hairline, lineWidth: 0.5)
                     )
                     .overlay(
                         VStack(spacing: 2) {
                             Image(systemName: currentNode.icon ?? "chart.pie.fill")
-                                .font(.system(size: 16))
-                                .foregroundColor(Theme.actionBlue)
+                                .font(Typo.title)
+                                .foregroundStyle(Ink.secondary)
 
                             Text(currentNode.name)
-                                .font(Theme.bodyFont(11, weight: .bold))
-                                .foregroundColor(Theme.labelPrimary)
+                                .font(Typo.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(Ink.primary)
                                 .lineLimit(1)
 
                             Text(currentNode.formattedSize)
-                                .font(Theme.monoFont(12, weight: .semibold))
-                                .foregroundColor(Theme.labelSecondary)
+                                .font(.mcNumeric(12, weight: .semibold))
+                                .foregroundStyle(Ink.secondary)
                         }
-                        .padding(8)
+                        .padding(Space.xs)
                     )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(8)
+        .padding(Space.xs)
     }
 
     private func sunburstSectorView(sector: SunburstSector, center: CGPoint) -> some View {
@@ -361,11 +371,11 @@ struct SpaceVisualizerView: View {
             .fill(sector.node.color.opacity(isHovered ? 0.95 : (sector.level == 1 ? 0.82 : 0.65)))
             .overlay(
                 shape
-                    .stroke(isHovered ? Color.white : Theme.canvas.opacity(0.8), lineWidth: isHovered ? 2.0 : 1.0)
+                    .stroke(isHovered ? Color.white : Surface.window.opacity(0.8), lineWidth: isHovered ? 2.0 : 1.0)
             )
             .contentShape(shape)
             .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.1)) {
+                withAnimation(Motion.micro) {
                     hoveredNode = hovering ? sector.node : nil
                 }
             }
@@ -376,59 +386,58 @@ struct SpaceVisualizerView: View {
             }
     }
 
-    // MARK: - 底部悬停探查器卡片
+    // MARK: - 底部悬停探查条
+    //
+    // 左侧是"当前指向的节点"的读数：色点（对应画布里的序列色）+ 图标 + 名称 + 体积 + 占比 + 路径。
+    // 读数用 `.mcNumeric` 等宽数字，鼠标扫过画布时数字不会左右跳动。
     private var detailInspector: some View {
         let target = hoveredNode ?? currentNode
-        return HStack(spacing: 12) {
-            // 图标与色彩
-            HStack(spacing: 6) {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(target.color)
-                    .frame(width: 14, height: 14)
+        return HStack(spacing: Space.sm) {
+            // 序列色点：与画布中该节点的填充色一一对应
+            Circle()
+                .fill(target.color)
+                .frame(width: 7, height: 7)
 
-                Image(systemName: target.icon ?? "folder")
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.labelPrimary)
+            IconSlot(systemName: target.icon ?? "folder", size: 12, color: Ink.secondary, width: 16)
 
-                Text(target.name)
-                    .font(Theme.bodyFont(13, weight: .bold))
-                    .foregroundColor(Theme.labelPrimary)
-            }
-
-            Text("·")
-                .foregroundColor(Theme.labelTertiary)
+            Text(target.name)
+                .font(Typo.rowStrong)
+                .foregroundStyle(Ink.primary)
+                .lineLimit(1)
 
             Text(target.formattedSize)
-                .font(Theme.monoFont(13, weight: .semibold))
-                .foregroundColor(Theme.actionBlue)
+                .font(.mcNumeric(12, weight: .semibold))
+                .foregroundStyle(Ink.primary)
 
-            Text("(\(target.percentageString(of: currentNode.size)))")
-                .font(Theme.monoFont(11))
-                .foregroundColor(Theme.labelSecondary)
+            Text(target.percentageString(of: currentNode.size))
+                .font(.mcNumeric(11))
+                .foregroundStyle(Ink.tertiary)
 
             if let p = target.path, !p.isEmpty {
-                Text("·")
-                    .foregroundColor(Theme.labelTertiary)
+                Rectangle()
+                    .fill(Surface.hairline.opacity(0.6))
+                    .frame(width: 0.5, height: 14)
 
                 Text(p)
-                    .font(Theme.monoFont(10))
-                    .foregroundColor(Theme.labelTertiary)
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
-            // 快捷操作按钮
+            // 动作：一个主操作 + 两个文本动作，避免一排等重描边按钮
             if let p = target.path, !p.isEmpty {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: CleanPaths.expand(p))])
                 } label: {
                     Label("在访达中显示", systemImage: "folder")
-                        .font(Theme.bodyFont(11))
+                        .font(Typo.caption)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .pressable()
+                .foregroundStyle(Accent.tint)
             }
 
             if let cat = target.category {
@@ -436,10 +445,9 @@ struct SpaceVisualizerView: View {
                     app.destination = .category(cat)
                 } label: {
                     Label("前往清理", systemImage: "arrow.right.circle")
-                        .font(Theme.bodyFont(11))
+                        .font(Typo.caption)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Theme.actionBlue)
                 .controlSize(.small)
             }
 
@@ -448,22 +456,23 @@ struct SpaceVisualizerView: View {
                     drillDown(into: target)
                 } label: {
                     Label("下钻透视", systemImage: "plus.magnifyingglass")
-                        .font(Theme.bodyFont(11))
+                        .font(Typo.caption)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .pressable()
+                .foregroundStyle(Accent.tint)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .background(Surface.group)
     }
 
     // MARK: - 下钻与导航
 
     func drillDown(into node: SpaceNode) {
         guard !node.children.isEmpty else { return }
-        withAnimation(Theme.smoothTransition) {
+        withAnimation(Motion.standard) {
             breadcrumbStack.append(currentNode)
             currentNode = node
             hoveredNode = nil
@@ -472,7 +481,7 @@ struct SpaceVisualizerView: View {
 
     func popOneLevel() {
         guard let parent = breadcrumbStack.popLast() else { return }
-        withAnimation(Theme.smoothTransition) {
+        withAnimation(Motion.standard) {
             currentNode = parent
             hoveredNode = nil
         }
@@ -481,7 +490,7 @@ struct SpaceVisualizerView: View {
     func popTo(index: Int) {
         guard breadcrumbStack.indices.contains(index) else { return }
         let target = breadcrumbStack[index]
-        withAnimation(Theme.smoothTransition) {
+        withAnimation(Motion.standard) {
             breadcrumbStack = Array(breadcrumbStack.prefix(index))
             currentNode = target
             hoveredNode = nil
@@ -489,7 +498,7 @@ struct SpaceVisualizerView: View {
     }
 
     func popToRoot() {
-        withAnimation(Theme.smoothTransition) {
+        withAnimation(Motion.standard) {
             breadcrumbStack.removeAll()
             currentNode = rootNode
             hoveredNode = nil

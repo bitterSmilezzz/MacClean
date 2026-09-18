@@ -24,12 +24,15 @@ final class AIState: ObservableObject {
 
     /// 针对某个清理项发起提问（构造上下文 + 本地占用检测 + 自动发送）
     func askAbout(item: CleanItem) {
+        // 唯一结论入口：结论与依据成对送给模型，不在提问层自行拼接
+        let recommendation = item.recommendation
         ask(context: AskContext(
             title: item.name,
             path: item.path,
             size: item.size,
             category: item.category.title,
-            risk: item.risk.label,
+            risk: recommendation.label,
+            verdictReason: recommendation.reason,
             note: item.note,
             lastUsed: item.lastUsed,
             usage: item.usage
@@ -43,7 +46,9 @@ final class AIState: ObservableObject {
             path: file.path,
             size: file.size,
             category: "App 关联文件",
-            risk: "谨慎",
+            // RelatedFile 没有 ItemNature，推不出结论，因此给中性保守值。
+            // 用「需确认」而不是退休词汇「谨慎」。
+            risk: "需确认",
             note: file.kind,
             kind: file.kind
         ))
@@ -53,7 +58,7 @@ final class AIState: ObservableObject {
     func askAbout(title: String, path: String, size: Int64, category: String, note: String) {
         ask(context: AskContext(
             title: title, path: path, size: size,
-            category: category, risk: "谨慎", note: note
+            category: category, risk: "需确认", note: note
         ))
     }
 
@@ -93,8 +98,10 @@ final class AIState: ObservableObject {
             summaryParts.append("\(cat.title) \(st.items.count) 项")
             total += st.items.count
             for item in top {
+                let recommendation = item.recommendation
                 all.append(AskListItem(index: index, name: item.name, path: item.path,
-                                       size: item.size, risk: item.risk.label))
+                                       size: item.size, risk: recommendation.label,
+                                       verdictReason: recommendation.reason))
                 index += 1
             }
         }
@@ -136,8 +143,10 @@ final class AIState: ObservableObject {
             } else if item.usage != .unknown {
                 usageDesc = item.usage.label
             }
+            let recommendation = item.recommendation
             list.append(AskListItem(index: i + 1, name: item.name, path: item.path,
-                                    size: item.size, risk: item.risk.label,
+                                    size: item.size, risk: recommendation.label,
+                                    verdictReason: recommendation.reason,
                                     usageDesc: usageDesc))
         }
         var ctx = AskContext(title: summary, path: "", size: 0, category: "列表", risk: "", note: "")
@@ -220,7 +229,7 @@ final class AIState: ObservableObject {
         }
     }
 
-    /// 打开抽屉（✨ / 问列表 / 设置入口统一走这里）
+    /// 打开抽屉（问单项 / 问列表 / 设置入口统一走这里）
     /// 与 AI 筛查抽屉互斥：开对话抽屉时收起筛查抽屉
     func openDrawer() {
         withAnimation(.easeOut(duration: 0.25)) { isDrawerOpen = true }

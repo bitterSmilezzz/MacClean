@@ -29,17 +29,33 @@ struct DuplicateGroup: Identifiable, Equatable {
     var suggestionNote: String = ""
 
     /// 浪费的空间（除保留一个推荐副本外，其余多余副本的总体积）
+    ///
+    /// **按互异 inode 计算，而不是按路径条数**：多条硬链接指向同一份数据时，
+    /// 删掉其中任意几条都不会释放空间，把它们算进"可节省"就是虚报。
     var wastedBytes: Int64 {
         guard items.count > 1 else { return 0 }
+        let reclaimable = Int64(max(0, items.distinctInodeCount - 1))
         if matchKind == .exact {
-            return fileSize * Int64(items.count - 1)
+            return fileSize * reclaimable
         } else {
-            // 相似文件大小可能不一致，浪费体积为除推荐保留项之外的所有项大小之和
-            let total = items.reduce(0) { $0 + $1.size }
-            let keptSize = items.first(where: \.isOriginal)?.size ?? (items.first?.size ?? 0)
-            return max(0, total - keptSize)
+            // 相似文件大小可能不一致：按"除去保留项之外、且不是同一 inode 的那些"求和
+            let kept = items.first(where: \.isOriginal) ?? items.first
+            var seenInodes = Set<String>()
+            if let k = kept?.inodeKey { seenInodes.insert(k) }
+            var total: Int64 = 0
+            for item in items where item.id != kept?.id {
+                if let k = item.inodeKey {
+                    if seenInodes.contains(k) { continue }   // 同一 inode 的硬链接，删了不省空间
+                    seenInodes.insert(k)
+                }
+                total += item.size
+            }
+            return max(0, total)
         }
     }
+
+    /// 本组里有多少条是"删了也不释放空间"的硬链接副本（用于如实告知用户）
+    var hardLinkCount: Int { items.hardLinkRedundantCount }
 
     /// 选中的待清理体积
     var selectedBytes: Int64 {
@@ -57,6 +73,33 @@ struct DuplicateFileItem: Identifiable, Equatable {
     var isSelected: Bool = false
     var isOriginal: Bool = false  // 推荐保留的主文件
     var recommendationReason: String? = nil  // 推荐保留或清理的原因说明
+
+    /// 硬链接标识（`设备号:inode`）。
+    ///
+    /// **为什么必须有**：两个路径若是指向同一 inode 的硬链接，它们的大小与 SHA-256
+    /// 完全相同，必然被分进同一组——但删掉其中一个**释放 0 字节**（数据仍由另一条链接持有）。
+    /// 不区分 inode 就会把同一份数据反复计入"可节省空间"，报出一个删了也拿不到的数字。
+    /// 实测 macOS 上 Time Machine 本地快照、`cp -l` 备份、部分包管理器的 store 都会产生硬链接。
+    var inodeKey: String? = nil
+}
+
+extension Array where Element == DuplicateFileItem {
+    /// 这一组里**真正**占用空间的互异 inode 数量。
+    /// 没有 inode 信息（取不到 stat）时按"每个路径各占一份"保守计算。
+    var distinctInodeCount: Int {
+        var keys = Set<String>()
+        var unknown = 0
+        for item in self {
+            if let key = item.inodeKey { keys.insert(key) } else { unknown += 1 }
+        }
+        return keys.count + unknown
+    }
+
+    /// 这一组里指向同一 inode 的重复链接（即"删了也不省空间"的那些）。
+    /// 每组每条 inode 只保留一条，其余都是硬链接副本。
+    var hardLinkRedundantCount: Int {
+        Swift.max(0, count - distinctInodeCount)
+    }
 }
 
 /// 重复文件扫描与管理状态
@@ -156,9 +199,30 @@ final class DuplicateState: ObservableObject {
         groups.reduce(0) { $0 + $1.selectedBytes }
     }
 
+    /// 取消请求标志。扫描在后台线程读取，主线程写入 —— 用锁包一层，
+    /// 避免 TSan 报竞争（Bool 的读写不是语言层面保证的原子操作）。
+    private let cancelLock = NSLock()
+    private var _cancelRequested = false
+    private var cancelRequested: Bool {
+        get { cancelLock.lock(); defer { cancelLock.unlock() }; return _cancelRequested }
+        set { cancelLock.lock(); _cancelRequested = newValue; cancelLock.unlock() }
+    }
+
+    /// 请求停止当前扫描。哈希阶段会逐文件轮询这个标志并尽快退出。
+    func cancelScan() {
+        guard isScanning else { return }
+        cancelRequested = true
+        scanProgressMessage = "正在停止…"
+    }
+
     /// 启动重复文件扫描
     func startScan() {
-        guard !isScanning else { return }
+        // 已在扫描时不再静默丢弃：明确告诉用户"要么等、要么先停"
+        guard !isScanning else {
+            lastSummary = "已有一次扫描在进行中；如需重来请先点「停止」。"
+            return
+        }
+        cancelRequested = false
         isScanning = true
         scanProgressMessage = "正在枚举文件…"
         progressFraction = 0.05
@@ -171,6 +235,7 @@ final class DuplicateState: ObservableObject {
             let resultGroups = DuplicateScanner.scanDuplicates(
                 in: paths,
                 minSize: minSize,
+                isCancelled: { [weak self] in self?.cancelRequested ?? true },
                 progress: { fraction, msg in
                     DispatchQueue.main.async {
                         self?.progressFraction = fraction
@@ -180,21 +245,40 @@ final class DuplicateState: ObservableObject {
             )
 
             DispatchQueue.main.async {
-                self?.groups = resultGroups
-                self?.isScanning = false
-                self?.progressFraction = 1.0
-                let totalFiles = resultGroups.reduce(0) { $0 + $1.items.count }
-                self?.scanProgressMessage = "扫描完成，发现 \(resultGroups.count) 组重复文件（共 \(totalFiles) 个副本）"
+                guard let self else { return }
+                let wasCancelled = self.cancelRequested
+                self.cancelRequested = false
+                self.isScanning = false
+                // 取消时**保留上一次的结果**，不要把用户已有的列表清空
+                if !wasCancelled {
+                    self.groups = resultGroups
+                    self.progressFraction = 1.0
+                    let totalFiles = resultGroups.reduce(0) { $0 + $1.items.count }
+                    self.scanProgressMessage = "扫描完成，发现 \(resultGroups.count) 组重复文件（共 \(totalFiles) 个副本）"
+                } else {
+                    self.scanProgressMessage = "已停止扫描（保留上次结果）"
+                    self.lastSummary = "扫描已停止。"
+                }
             }
         }
     }
 
     /// 智能自动勾选重复项（每组默认保留 1 个原始副本，其余自动勾选以便清理）
+    ///
+    /// **硬链接副本不勾选**：它们与组内某条路径共享同一 inode，删掉一个字节都不会释放，
+    /// 勾上只会让"可节省空间"看起来更大、实际清理后对不上账。
     func autoSelectDuplicates() {
         for gIndex in groups.indices {
+            // 每组每条 inode 只保留第一个见到的，其余同 inode 的都是硬链接副本
+            var seenInodes = Set<String>()
             for iIndex in groups[gIndex].items.indices {
-                // 若是推荐保留的原始项，则不勾选；其余副本默认勾选
-                groups[gIndex].items[iIndex].isSelected = !groups[gIndex].items[iIndex].isOriginal
+                let item = groups[gIndex].items[iIndex]
+                var isHardLinkCopy = false
+                if let key = item.inodeKey {
+                    if seenInodes.contains(key) { isHardLinkCopy = true } else { seenInodes.insert(key) }
+                }
+                // 若是推荐保留的原始项，或只是同一 inode 的硬链接，则不勾选；其余副本默认勾选
+                groups[gIndex].items[iIndex].isSelected = !item.isOriginal && !isHardLinkCopy
             }
         }
     }
@@ -225,7 +309,8 @@ final class DuplicateState: ObservableObject {
                         name: item.name,
                         path: item.path,
                         size: item.size,
-                        risk: .review,
+                        nature: .userData,
+                        consequence: "重复副本；同组内已保留另一份，删除这一份不会丢失内容",
                         category: .largeFiles,
                         note: "重复副本（原文件保留）"
                     )
@@ -257,10 +342,26 @@ final class DuplicateState: ObservableObject {
 /// 重复文件扫描底层引擎（基于大小快速聚类 + SHA-256 分块哈希检验）
 enum DuplicateScanner {
 
+    /// 取路径的硬链接标识 `设备号:inode`。
+    ///
+    /// 用途：区分"内容相同的两份拷贝"（删一份能省空间）与"指向同一 inode 的两条硬链接"
+    /// （删一条**一个字节都不省**）。二者大小与 SHA-256 完全一致，只有 inode 能分开。
+    /// 取不到时返回 nil，调用方按"各占一份"保守处理。
+    static func inodeKey(forPath path: String) -> String? {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return nil }
+        return "\(st.st_dev):\(st.st_ino)"
+    }
+
+
     /// 在指定根目录集合中查找重复文件
+    /// - Parameter isCancelled: 逐文件轮询的取消判据。
+    ///   重复扫描会对每个候选文件做全量 SHA-256，大盘上动辄几分钟；
+    ///   原实现没有任何取消途径，用户只能干等（再次点扫描还会被 `guard !isScanning` 静默丢弃）。
     static func scanDuplicates(
         in directories: [String],
         minSize: Int64,
+        isCancelled: () -> Bool = { false },
         progress: @escaping (Double, String) -> Void
     ) -> [DuplicateGroup] {
         let fm = FileManager.default
@@ -284,6 +385,7 @@ enum DuplicateScanner {
             ) else { continue }
 
             for case let fileURL as URL in enumerator {
+                if isCancelled() { return [] }
                 let path = fileURL.path
                 // 白名单与目录范围排除过滤（路径、文件扩展名与用户排除子目录）
                 if whitelist.isWhitelisted(path: path) ||
@@ -327,6 +429,7 @@ enum DuplicateScanner {
             // 1. 头 8KB 快速比对
             var partialMap: [String: [String]] = [:]
             for p in paths {
+                if isCancelled() { return [] }
                 if let headerHash = calculatePartialHash(at: p, length: 8192) {
                     partialMap[headerHash, default: []].append(p)
                 }
@@ -336,10 +439,12 @@ enum DuplicateScanner {
             for (_, sameHeaderPaths) in partialMap where sameHeaderPaths.count >= 2 {
                 var fullHashMap: [String: [DuplicateFileItem]] = [:]
                 for p in sameHeaderPaths {
+                    if isCancelled() { return [] }
                     guard let fullHash = calculateFullSHA256(at: p) else { continue }
                     let mtime = FileSystem.modificationDate(p)
                     let name = (p as NSString).lastPathComponent
-                    let item = DuplicateFileItem(path: p, name: name, size: size, modificationDate: mtime)
+                    let item = DuplicateFileItem(path: p, name: name, size: size, modificationDate: mtime,
+                                                 inodeKey: DuplicateScanner.inodeKey(forPath: p))
                     fullHashMap[fullHash, default: []].append(item)
                 }
 
@@ -399,7 +504,8 @@ enum DuplicateScanner {
                         path: cand.path,
                         name: name,
                         size: cand.size,
-                        modificationDate: mtime
+                        modificationDate: mtime,
+                        inodeKey: DuplicateScanner.inodeKey(forPath: cand.path)
                     )
                 )
             }
@@ -563,7 +669,8 @@ enum DuplicateScanner {
                         path: m.path,
                         name: filename,
                         size: m.size,
-                        modificationDate: m.modificationDate
+                        modificationDate: m.modificationDate,
+                        inodeKey: DuplicateScanner.inodeKey(forPath: m.path)
                     )
                     if idx == 0 {
                         item.isOriginal = true

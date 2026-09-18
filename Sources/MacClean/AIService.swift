@@ -37,7 +37,10 @@ struct AIConfig: Codable, Equatable {
     private static let keychainAccount = "aiApiKey"
 
     private static var keyFileURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // 不用 `.first!`：这个 API 在正常环境下必定返回一个元素，但"环境不正常"
+        // （沙盒异常、容器损坏）时崩的是整个 App。退到 ~/Library/Application Support 即可。
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         let dir = base.appendingPathComponent("MacClean", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("ai.key")
@@ -179,7 +182,15 @@ struct AskListItem: Equatable {
     let name: String
     let path: String
     let size: Int64
+    /// 处置结论 label（可清理 / 使用中 / 需确认 / 勿删）。
+    ///
+    /// 字段名沿用历史的 `risk`：`AskContext.risk` 被 `AIChatView` 读取、被 `Selftest` 构造，
+    /// 改名会波及本任务范围外的文件。语义已随模型迁移——这里装的是**结论**，不是旧风险级。
     let risk: String
+    /// 结论依据（`Recommendation.reason`）。
+    ///
+    /// 模型需要"为什么是这个结论"才能复核，只给标签等于让它自己再猜一遍。
+    var verdictReason: String = ""
     /// 最近使用描述（如"3 天前 · 频繁使用中"；未知为空）
     var usageDesc: String = ""
 }
@@ -189,7 +200,10 @@ struct AskContext: Equatable {
     var path: String         // 主路径
     var size: Int64
     var category: String     // 所属分类或"App 关联文件"
-    var risk: String         // 风险等级
+    /// 处置结论 label（可清理 / 使用中 / 需确认 / 勿删）。字段名沿用历史的 `risk`，理由同 `AskListItem`。
+    var risk: String
+    /// 结论依据（`Recommendation.reason`）
+    var verdictReason: String = ""
     var note: String         // 扫描器备注
     var kind: String = ""    // 文件类别（卸载器：Application Support 等）
     var inUseBy: [String] = []   // 本地检测到的占用进程
@@ -220,7 +234,7 @@ enum AIService {
 
         var errorDescription: String? {
             switch self {
-            case .notConfigured: return "尚未配置 AI 接口：点击右上角 ⚙️ 填写 baseURL / API Key / 模型"
+            case .notConfigured: return "尚未配置 AI 接口：点击右上角的设置，填写 baseURL / API Key / 模型"
             case .badResponse: return "AI 接口返回了无法解析的响应"
             case .network(let msg): return "网络错误：\(msg)"
             }
@@ -320,8 +334,8 @@ enum AIService {
 
     /// 筛查提示词：要求模型按表格逐项给结论，并输出 JSON 数组
     private static let reviewPrompt = """
-    你是 MacClean 的清理专家。用户会给你一张"已扫描清理候选"表格，每行包含：编号 | 名称 | 路径 | 大小 | 风险 | 最近使用。
-    请逐项判断是否值得删除，判断依据：
+    你是 MacClean 的清理专家。用户会给你一张"已扫描清理候选"表格，每行包含：编号 | 名称 | 路径 | 大小 | 处置结论 | 最近使用。
+    「处置结论」是 MacClean 依据本地规则给出的结论（可清理 / 使用中 / 需确认 / 勿删），括号内是它的判断依据。请结合该依据逐项复核是否值得删除，判断依据：
     - 缓存/日志类即使最近在用也可删（可重建），但注明"频繁使用，删除后需重建"；
     - App 数据/个人文件/配置类不建议删（即使大）；
     - 长期未用（>90 天）且可重建的优先建议删；
@@ -355,7 +369,9 @@ enum AIService {
             let batch = Array(items[batchIndex..<min(batchIndex + batchSize, items.count)])
             let table = batch.enumerated().map { i, item in
                 let usage = item.lastUsed.map { "\($0.relativeUsage) · \(item.usage.label)" } ?? item.usage.label
-                return "\(i + 1) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(item.risk.label) | \(usage)"
+                let verdict = verdictCell(label: item.recommendation.label,
+                                          reason: item.recommendation.reason)
+                return "\(i + 1) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(verdict) | \(usage)"
             }.joined(separator: "\n")
             let userContent = "表格：\n\(table)"
 
@@ -415,9 +431,11 @@ enum AIService {
                     let reason = (obj["reason"] as? String) ?? ""
                     let verdict: ReviewVerdict
                     switch verdictRaw {
-                    case "可删": verdict = .delete
-                    case "谨慎": verdict = .caution
-                    case "不建议删": verdict = .keep
+                    // 提示词固定了输出词表（可删/谨慎/不建议删），但模型有可能把输入表格里的
+                    // 结论标签（可清理/使用中/需确认/勿删）原样回显，所以两套都认。
+                    case "可删", "可清理": verdict = .delete
+                    case "谨慎", "需确认", "使用中": verdict = .caution
+                    case "不建议删", "勿删": verdict = .keep
                     default: verdict = .unknown
                     }
                     // 按编号或名称匹配回 item（enumerated 防强制解包）
@@ -488,7 +506,7 @@ enum AIService {
 
     static let systemPrompt = """
     你是 MacClean 清理助手的专家，帮助用户判断文件/目录是否可以安全清理。\
-    用户会给出清理候选项的信息（单条模式：路径/大小/类别/风险/占用进程；\
+    用户会给出清理候选项的信息（单条模式：路径/大小/类别/处置结论与依据/占用进程；\
     列表模式：一张带序号的表格）。请用中文回答。
 
     【单条模式输出结构】
@@ -505,15 +523,28 @@ enum AIService {
     回答要简洁（单条 200 字内；列表模式尽量紧凑），不确定就明说"无法判断"。
     """
 
+    /// 把「结论 + 依据」渲染成提示词里的一格文本：`可清理（应用缓存文件，删除后应用会自动重建）`。
+    ///
+    /// 依据一并交给模型，而不是只给一个标签——模型要复核"能不能删"，缺了理由就只能自己重猜，
+    /// 那正是旧模型里"标签与事实各说各话"的翻版。表格以 `|` 分列，故把格内竖线换掉。
+    private static func verdictCell(label: String, reason: String) -> String {
+        let cleaned = reason
+            .replacingOccurrences(of: "|", with: "/")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? label : "\(label)（\(cleaned)）"
+    }
+
     static func render(context: AskContext) -> String {
         // 列表模式：按序号表格输出（Top N 截断）
         if context.isListMode {
             var lines: [String] = []
             lines.append("列表：\(context.listSummary)")
             lines.append("共 \(context.listTotal) 项，以下列出最大的 \(context.listItems.count) 项：")
-            lines.append("编号 | 名称 | 路径 | 大小 | 风险 | 最近使用")
+            lines.append("编号 | 名称 | 路径 | 大小 | 处置结论 | 最近使用")
             for item in context.listItems {
-                lines.append("\(item.index) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(item.risk) | \(item.usageDesc.isEmpty ? "未知" : item.usageDesc)")
+                let verdict = verdictCell(label: item.risk, reason: item.verdictReason)
+                lines.append("\(item.index) | \(item.name) | \(item.path) | \(item.size.byteStringCN) | \(verdict) | \(item.usageDesc.isEmpty ? "未知" : item.usageDesc)")
             }
             if context.listItems.count < context.listTotal {
                 lines.append("（其余 \(context.listTotal - context.listItems.count) 项未列出，均为更小的项）")
@@ -526,7 +557,8 @@ enum AIService {
         lines.append("- 路径：\(context.path)")
         lines.append("- 大小：\(context.sizeString)")
         lines.append("- 类别：\(context.category)")
-        lines.append("- 风险等级：\(context.risk)")
+        lines.append("- 处置结论：\(context.risk)")
+        if !context.verdictReason.isEmpty { lines.append("- 结论依据：\(context.verdictReason)") }
         if !context.kind.isEmpty { lines.append("- 文件类别：\(context.kind)") }
         if !context.note.isEmpty { lines.append("- 扫描备注：\(context.note)") }
         // 最近使用时间 + 使用频率（用户诉求：判断值不值得删）

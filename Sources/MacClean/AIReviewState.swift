@@ -75,22 +75,24 @@ final class AIReviewState: ObservableObject {
         completedCount = 0
         itemNames = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.name) })
         openDrawer()
-        appendLog("🤖 AI 再筛查启动：共 \(items.count) 项，按批次逐项分析…")
+        appendLog("AI 再筛查启动：共 \(items.count) 项，按批次逐项分析")
         let config = AIConfig.load()
         guard config.enabled else {
-            lastError = "AI 尚未配置：请先在 AI 面板 ⚙️ 完成配置并测试连接"
-            appendLog("❌ 未配置 AI：请先在 ⚙️ 完成配置并测试连接")
+            lastError = "AI 尚未配置：请先在设置面板完成配置并测试连接"
+            appendLog("未配置 AI：请先在设置面板完成配置并测试连接")
             return
         }
         isReviewing = true
         lastError = nil
         progressText = "准备筛查 \(items.count) 项…"
         task?.cancel()
+        // 外层 Task 已经隐式强持有 self 直到筛查结束，内层回调再写 [weak self] 既改变不了
+        // 生命周期，又会让捕获语义前后不一致（编译器 ImplicitStrongCapture 警告）。
+        // 这里统一按强捕获处理：筛查结束前 self 本来就该活着，日志才写得进去。
         task = Task {
             do {
-                let results = try await AIService.review(items: items, onBatchDone: { [weak self] batchReviews in
+                let results = try await AIService.review(items: items, onBatchDone: { batchReviews in
                     Task { @MainActor in
-                        guard let self else { return }
                         var merged = self.reviews
                         for r in batchReviews where r.verdict.isDecided {
                             merged[r.itemID] = r
@@ -99,13 +101,13 @@ final class AIReviewState: ObservableObject {
                         self.reviewedItemIDs.formUnion(batchReviews.map(\.itemID))
                         self.completedCount += batchReviews.count
                         let decided = batchReviews.filter { $0.verdict.isDecided }.count
-                        self.appendLog("✨ 本批完成：\(decided)/\(batchReviews.count) 项已标注结论")
+                        self.appendLog("本批完成：\(decided)/\(batchReviews.count) 项已标注结论")
                     }
-                }) { [weak self] msg in
+                }) { msg in
                     Task { @MainActor in
-                        self?.progressText = msg
+                        self.progressText = msg
                         if msg.hasPrefix("AI 筛查中（第") {
-                            self?.appendLog("⏳ \(msg)")
+                            self.appendLog(msg)
                         }
                     }
                 }
@@ -121,7 +123,7 @@ final class AIReviewState: ObservableObject {
                     isReviewing = false
                     progressText = "AI 筛查完成：\(results.count) 项已给出结论"
                     let decided = results.filter { $0.verdict.isDecided }.count
-                    appendLog("✅ 筛查完成：\(decided)/\(results.count) 项给出结论")
+                    appendLog("筛查完成：\(decided)/\(results.count) 项给出结论")
                     onFinished?()
                 }
             } catch {
@@ -130,7 +132,7 @@ final class AIReviewState: ObservableObject {
                     lastError = error.localizedDescription
                     isReviewing = false
                     progressText = nil
-                    appendLog("❌ 筛查失败：\(error.localizedDescription)")
+                    appendLog("筛查失败：\(error.localizedDescription)")
                 }
             }
         }

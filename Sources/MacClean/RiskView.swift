@@ -2,33 +2,27 @@ import SwiftUI
 
 /// 电脑风险提醒页：检查敏感数据泄露 / 网络暴露 / 系统安全 / 启动项等风险
 /// 与文件清理并列的第二功能模块：只读检查，不做删除
+///
+/// 重写要点：
+///  - 表头去掉「44pt 图标 + 橙色圆角底板 + 26pt 大标题 + 装饰性副标题」，只留一个
+///    `Typo.title` 标题；右侧依次是实时的高/中/低计数（语义色在这里是有含义的）和检查按钮。
+///  - 三个空状态改用 `EmptyState`；只有"开始检查"那个必须自己搭——因为
+///    `riskStartButton` 这个 accessibilityIdentifier 必须留在 `Button` 上，`EmptyState` 内部
+///    的按钮无法挂载标识符。
+///  - 每个严重度分组的"描边浮空卡片"改成 `GroupBox` inset group，行分隔交给 `GroupedRow`。
+///  - `RiskRow` 去掉图标彩色底板与严重度胶囊：图标直接进 `IconSlot`，严重度用彩色文字表达，
+///    展开箭头换成带按压反馈的 `IconSlot` 尺寸。
 struct RiskView: View {
     @EnvironmentObject private var app: AppState
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             // 风险扫描错误横幅
             if let err = app.riskLastError {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textDanger)
-                    Text(err)
-                        .font(Theme.bodyFont(14, weight: .medium))
-                        .foregroundColor(Theme.textDanger)
-                    Spacer()
-                    Button("重试") { app.scanRisks() }
-                        .buttonStyle(.borderless)
-                        .font(Theme.bodyFont(14, weight: .medium))
-                        .foregroundColor(Theme.actionBlue)
-                }
-                .padding(.horizontal, Theme.contentPadding)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.dangerRed.opacity(0.06))
+                errorBanner(err)
             }
 
             if app.isRiskScanning {
@@ -41,43 +35,26 @@ struct RiskView: View {
                 riskList
             }
         }
-        .background(Theme.windowBackground)
+        .background(Surface.window)
     }
 
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: Theme.spaceMd) {
-            Image(systemName: "exclamationmark.shield")
-                .font(.system(size: 20, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundColor(Theme.textWarning)
-                .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.warningOrange.opacity(0.12)))
+        HStack(spacing: Space.sm) {
+            Text("电脑风险提醒")
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("电脑风险提醒")
-                    .font(Theme.displayFont(26, weight: .semibold))
-                    .tracking(-0.3)
-                    .foregroundColor(Theme.labelPrimary)
-                Text("检查敏感数据泄露、网络暴露、系统安全与可疑启动项 · 只读检测，不删除任何文件")
-                    .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.labelSecondary)
-            }
-            Spacer()
+            Spacer(minLength: Space.md)
 
             if app.riskScanned && !app.riskItems.isEmpty {
-                HStack(spacing: 6) {
-                    Text("\(app.riskCounts[.high, default: 0]) 高")
-                        .font(Theme.monoFont(13, weight: .semibold))
-                        .foregroundColor(Theme.textDanger)
-                    Text("· \(app.riskCounts[.medium, default: 0]) 中")
-                        .font(Theme.monoFont(13, weight: .semibold))
-                        .foregroundColor(Theme.textWarning)
-                    Text("· \(app.riskCounts[.low, default: 0]) 低")
-                        .font(Theme.monoFont(13, weight: .semibold))
-                        .foregroundColor(Theme.labelTertiary)
+                HStack(spacing: Space.sm) {
+                    severityCount(app.riskCounts[.high, default: 0], label: "高", color: Signal.critical)
+                    severityCount(app.riskCounts[.medium, default: 0], label: "中", color: Signal.caution)
+                    severityCount(app.riskCounts[.low, default: 0], label: "低", color: Ink.tertiary)
                 }
+                .padding(.trailing, Space.xxs)
             }
 
             Button {
@@ -87,44 +64,72 @@ struct RiskView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            .tint(Theme.textWarning)
             .accessibilityIdentifier("riskScanButton")
             .disabled(app.isRiskScanning)
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceMd)
-        .frostedBar()
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .barSurface()
+    }
+
+    /// 高/中/低计数：数字等宽，颜色承载严重度含义。
+    private func severityCount(_ count: Int, label: String, color: Color) -> some View {
+        HStack(spacing: 3) {
+            Text("\(count)")
+                .font(.mcNumeric(12, weight: .semibold))
+                .motionSafeNumericTransition()
+            Text(label)
+                .font(Typo.caption)
+        }
+        .foregroundStyle(color)
+    }
+
+    private func errorBanner(_ err: String) -> some View {
+        HStack(spacing: Space.xs) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(Typo.caption)
+                .foregroundStyle(Signal.critical)
+            Text(err)
+                .font(Typo.row)
+                .foregroundStyle(Signal.critical)
+            Spacer(minLength: Space.sm)
+            Button("重试") { app.scanRisks() }
+                .pressable()
+                .font(Typo.rowStrong)
+                .foregroundStyle(Accent.tint)
+        }
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Signal.critical.opacity(0.08))
     }
 
     // MARK: - 状态视图
 
     private var scanningView: some View {
-        VStack(spacing: Theme.spaceMd) {
+        VStack(spacing: Space.sm) {
             ProgressView()
                 .controlSize(.large)
-                .tint(Theme.textWarning)
             Text("正在检查风险项…")
-                .font(Theme.bodyFont(14))
-                .foregroundColor(Theme.inkMuted48)
+                .font(Typo.row)
+                .foregroundStyle(Ink.secondary)
             Text("只读检测：SSH 权限 / 明文密钥 / 防火墙 / FileVault / 启动项等")
-                .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.inkMuted48.opacity(0.8))
+                .font(Typo.caption)
+                .foregroundStyle(Ink.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// 说明部分交给 `EmptyState` 原语；动作按钮单独放在下面——`riskStartButton`
+    /// 这个 accessibilityIdentifier 必须留在 `Button` 上，无法挂到 `EmptyState` 内部的按钮。
     private var introView: some View {
-        VStack(spacing: Theme.spaceMd) {
-            Image(systemName: "exclamationmark.shield")
-                .font(.system(size: 42, weight: .light))
-                .foregroundColor(Theme.inkMuted48.opacity(0.6))
-            Text("电脑风险提醒")
-                .font(Theme.displayFont(24, weight: .semibold))
-                .foregroundColor(Theme.ink)
-            Text("检查可能泄露敏感数据的风险项：SSH 私钥权限、明文密钥环境变量、\n防火墙与磁盘加密状态、可疑启动项等。全程只读，不删除任何文件。")
-                .font(Theme.bodyFont(13))
-                .foregroundColor(Theme.inkMuted48)
-                .multilineTextAlignment(.center)
+        VStack(spacing: 0) {
+            EmptyState(
+                icon: "exclamationmark.shield",
+                title: "电脑风险提醒",
+                message: "检查可能泄露敏感数据的风险项：SSH 私钥权限、明文密钥环境变量、防火墙与磁盘加密状态、可疑启动项等。全程只读，不删除任何文件。"
+            )
+
             Button {
                 app.scanRisks()
             } label: {
@@ -132,25 +137,17 @@ struct RiskView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(Theme.textWarning)
-            .padding(.top, Theme.spaceXs)
             .accessibilityIdentifier("riskStartButton")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var allClearView: some View {
-        VStack(spacing: Theme.spaceSm) {
-            Image(systemName: "checkmark.shield")
-                .font(.system(size: 40, weight: .light))
-                .foregroundColor(Theme.actionBlue.opacity(0.8))
-            Text("未发现风险项")
-                .font(Theme.displayFont(24, weight: .semibold))
-                .foregroundColor(Theme.ink)
-            Text("敏感数据、网络暴露、系统安全与启动项检查全部通过")
-                .font(Theme.bodyFont(13))
-                .foregroundColor(Theme.inkMuted48)
-        }
+        EmptyState(
+            icon: "checkmark.shield",
+            title: "未发现风险项",
+            message: "敏感数据、网络暴露、系统安全与启动项检查全部通过"
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -158,50 +155,25 @@ struct RiskView: View {
 
     private var riskList: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: Theme.spaceLg) {
+            LazyVStack(alignment: .leading, spacing: Space.lg) {
                 ForEach([RiskSeverity.high, .medium, .low], id: \.self) { severity in
                     let group = app.riskItems.filter { $0.severity == severity }
                     if !group.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            // 分组标题
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(severityColor(severity))
-                                    .frame(width: 7, height: 7)
-                                Text("\(severity.label)（\(group.count) 项）")
-                                    .font(Theme.bodyFont(12, weight: .semibold))
-                                    .foregroundColor(Theme.labelSecondary)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 4)
-
-                            // 原生分组卡片容器
-                            VStack(spacing: 0) {
-                                ForEach(Array(group.enumerated()), id: \.element.id) { index, item in
-                                    if index > 0 {
-                                        Divider()
-                                            .overlay(Theme.separator.opacity(0.35))
-                                            .padding(.leading, 38)
-                                    }
+                        // 严重度含义写在分组标题文字里，不再额外点一颗彩色圆点
+                        GroupBox(title: "\(severity.label)（\(group.count) 项）") {
+                            ForEach(Array(group.enumerated()), id: \.element.id) { index, item in
+                                GroupedRow(isLast: index == group.count - 1) {
                                     RiskRow(item: item)
                                 }
                             }
-                            .macCard(cornerRadius: Theme.radiusMd)
                         }
                     }
                 }
             }
-            .padding(Theme.spaceMd)
+            .padding(.horizontal, Space.gutter)
+            .padding(.vertical, Space.md)
         }
-        .background(Theme.windowBackground)
-    }
-
-    private func severityColor(_ severity: RiskSeverity) -> Color {
-        switch severity {
-        case .high: return Theme.dangerRed
-        case .medium: return Theme.warningOrange
-        case .low: return Theme.hairline
-        }
+        .background(Surface.window)
     }
 }
 
@@ -213,96 +185,70 @@ struct RiskRow: View {
 
     private var color: Color {
         switch item.severity {
-        case .high: return Theme.textDanger
-        case .medium: return Theme.textWarning
-        case .low: return Theme.labelSecondary
-        }
-    }
-
-    private var bg: Color {
-        switch item.severity {
-        case .high: return Theme.dangerRed
-        case .medium: return Theme.warningOrange
-        case .low: return Color.primary.opacity(0.06)
+        case .high: return Signal.critical
+        case .medium: return Signal.caution
+        case .low: return Ink.secondary
         }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: iconName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(color)
-                    .frame(width: 24, height: 24)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                            .fill(bg.opacity(0.12))
-                    )
+        HStack(spacing: Space.sm) {
+            IconSlot(systemName: iconName, size: 13, color: color, width: 18)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(item.title)
-                            .font(Theme.bodyFont(13, weight: .medium))
-                            .foregroundColor(Theme.labelPrimary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: Space.xs) {
+                    Text(item.title)
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
+                        .lineLimit(1)
+                    Text(item.severity.label)
+                        .font(Typo.caption)
+                        .foregroundStyle(color)
+                }
+                Text(item.category.label)
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                if isExpanded {
+                    Text(item.detail)
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.secondary)
+                        .padding(.top, Space.xxs)
+                        .textSelection(.enabled)
+                    // 修复建议
+                    HStack(alignment: .top, spacing: Space.xxs) {
+                        IconSlot(systemName: "lightbulb", size: 11, color: Signal.caution, width: 14)
+                        Text(item.suggestion)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                    }
+                    .padding(.top, Space.xxs)
+                    if let path = item.path {
+                        Text(path)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
                             .lineLimit(1)
-                        Text(item.severity.label)
-                            .font(Theme.bodyFont(11, weight: .medium))
-                            .foregroundColor(color)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1)
-                            .background(
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(bg.opacity(0.12))
-                            )
-                    }
-                    Text(item.category.label)
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelTertiary)
-                    if isExpanded {
-                        Text(item.detail)
-                            .font(Theme.bodyFont(12))
-                            .foregroundColor(Theme.labelSecondary)
-                            .padding(.top, 4)
+                            .truncationMode(.middle)
                             .textSelection(.enabled)
-                        // 修复建议
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "lightbulb")
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.textWarning)
-                            Text(item.suggestion)
-                                .font(Theme.bodyFont(12, weight: .medium))
-                                .foregroundColor(Theme.labelSecondary)
-                        }
-                        .padding(.top, 4)
-                        if let path = item.path {
-                            Text(path)
-                                .font(Theme.monoFont(11))
-                                .foregroundColor(Theme.labelTertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                                .padding(.top, 2)
-                        }
+                            .padding(.top, 2)
                     }
                 }
-                Spacer()
-
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(Theme.labelTertiary)
-                        .frame(width: 20, height: 20)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isExpanded ? "收起详情" : "查看详情与建议")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-            .macRowHover(cornerRadius: 0)
+            Spacer(minLength: Space.sm)
+
+            Button {
+                withAnimation(Motion.micro) { isExpanded.toggle() }
+            } label: {
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.tertiary)
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .pressable()
+            .accessibilityLabel(isExpanded ? "收起详情" : "查看详情与建议")
         }
+        .padding(.horizontal, Space.xxs)
+        .rowHover()
     }
 
     private var iconName: String {

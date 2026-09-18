@@ -82,27 +82,65 @@ struct MemoryStats: Equatable {
 }
 
 /// 系统运行状态与内存监控器
+///
+/// **轮询策略是这里最要紧的事**。原实现是"永远每 3 秒在主线程上刷新一次"：
+/// 菜单栏常驻意味着这个定时器从 App 启动跑到退出，一秒不停。后果有两个：
+///  1. 每 3 秒把 CPU 从空闲唤醒一次 —— 笔记本上实打实地费电；
+///  2. `@Published` 触发 SwiftUI 重绘，**哪怕当前是"仅图标"模式、标签上根本没有动态内容**。
+///
+/// 现在按"用户看不看"分档：
+///  - `.foreground`：菜单栏浮窗打开着，用户在盯着看 → 3 秒（与原行为一致）；
+///  - `.background`：浮窗关着，但标签上显示磁盘/内存数值 → 15 秒；
+///  - `.dormant`：浮窗关着且标签只有图标 → 根本不轮询（图标不会变）。
 final class SystemMonitor: ObservableObject {
     static let shared = SystemMonitor()
+
+    /// 轮询档位
+    enum PollingMode {
+        case foreground   // 浮窗开着，用户正在看
+        case background   // 浮窗关着，但标签要显示数值
+        case dormant      // 浮窗关着且标签无动态内容 —— 不需要轮询
+
+        var interval: TimeInterval? {
+            switch self {
+            case .foreground: return 3
+            case .background: return 15
+            case .dormant: return nil
+            }
+        }
+    }
+
+    /// 各档位的轮询间隔（自检直接读取，避免测试里硬编码数字）
+    static let foregroundInterval: TimeInterval = 3
+    static let backgroundInterval: TimeInterval = 15
 
     @Published var memory: MemoryStats = MemoryStats.current()
 
     private var timer: AnyCancellable?
+    private(set) var mode: PollingMode = .dormant
 
     init() {
         refresh()
-        setupTimer()
+        apply(mode: .dormant)
     }
 
     func refresh() {
         memory = MemoryStats.current()
     }
 
-    private func setupTimer() {
-        timer = Timer.publish(every: 3.0, on: .main, in: .common)
+    /// 切换轮询档位。重复设置同一档位是幂等的，不会重建定时器。
+    func apply(mode newMode: PollingMode) {
+        guard newMode != mode || timer == nil else { return }
+        mode = newMode
+        timer?.cancel()
+        timer = nil
+        guard let interval = newMode.interval else { return }   // dormant：不轮询
+        timer = Timer.publish(every: interval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
                 self?.refresh()
             }
     }
 }
+
+extension SystemMonitor.PollingMode: Equatable {}

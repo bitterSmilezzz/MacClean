@@ -1,7 +1,18 @@
 import SwiftUI
 import QuickLook
 
-/// 重复文件查找与去重视图（macOS HIG 原生设计）
+/// 重复文件查找与去重视图。
+///
+/// 重写要点：
+///  - 顶栏的"图标 + 两行文案"压成一行标题。那句「基于 SHA-256 分块哈希、感知哈希 (dHash)
+///    与智能词干识别」是自我介绍，不携带任何可操作信息，删掉。
+///  - 匹配类型的三种彩色胶囊（蓝 / 紫 / 橙）换成同一套中性的「图标 + 文字」。匹配类型是
+///    分类，不是信号，不该占用语义色；全 App 只留一个强调色。
+///  - 每组一张描边 + 投影的浮空卡片 → `GroupBox` inset 分组：中性底 + 发丝分隔线，
+///    组内的建议说明降级为分组 footer。
+///  - 行右侧的"紫底对比按钮 + 灰底预览按钮"砍掉：对比是组级动作，留在组头；预览收进
+///    右键菜单与空格快捷键。行内只保留复选框，密度回到数据本身。
+///  - 组头改成表格式对齐：匹配类型、文件名、份数、可节省体积各占一列，右侧留给实时数据。
 struct DuplicateView: View {
     @EnvironmentObject private var app: AppState
     @State private var showConfirmSheet = false
@@ -18,11 +29,11 @@ struct DuplicateView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             if !dup.groups.isEmpty && !dup.isScanning {
                 filterBar
-                Divider().overlay(Theme.hairline)
+                Hairline()
             }
 
             if dup.isScanning {
@@ -38,13 +49,13 @@ struct DuplicateView: View {
             Spacer(minLength: 0)
 
             if !dup.groups.isEmpty {
-                Divider().overlay(Theme.hairline)
+                Hairline()
                 footer
             }
         }
-        .background(Theme.canvas)
+        .background(Surface.window)
         .quickLookPreview($quickLookURL)
-        .hudToast(isPresented: $showHud, text: hudMessage)
+        .toast(isPresented: $showHud, text: hudMessage)
         .sheet(isPresented: $showConfirmSheet) {
             confirmCleanSheet
         }
@@ -72,87 +83,124 @@ struct DuplicateView: View {
     }
 
     // MARK: - 顶栏
+    //
+    // 一个主动作（扫描/重扫）+ 三个无边框次要动作。等权描边按钮排成一行是仪表盘的做法，
+    // macOS 工具条只让一个动作变重。
     private var header: some View {
-        HStack(spacing: Theme.spaceSm) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(Theme.actionBlue)
-                    Text("重复与相似大文件")
-                        .font(Theme.displayFont(16, weight: .semibold))
-                        .foregroundColor(Theme.ink)
-                }
-                Text("基于 SHA-256 分块哈希、感知哈希 (dHash) 与智能词干识别，精确去重并排查相似图片与衍生副本。")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
-            }
+        HStack(spacing: Space.xs) {
+            Text("重复与相似文件")
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
+                .lineLimit(1)
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
             if !dup.groups.isEmpty && !dup.isScanning {
-                Menu {
-                    Button {
-                        exportDuplicatesCSV()
-                    } label: {
-                        Label("导出为 CSV 表格…", systemImage: "tablecells")
-                    }
-                    Button {
-                        exportDuplicatesReport()
-                    } label: {
-                        Label("导出为文本报告…", systemImage: "doc.text")
-                    }
-                } label: {
-                    Label("导出清单", systemImage: "square.and.arrow.up")
-                }
-                .menuStyle(.borderedButton)
-                .controlSize(.regular)
-                .tint(Theme.actionBlue)
-                .accessibilityIdentifier("exportDuplicatesButton")
-                .help("导出重复/相似大文件排查清单为 CSV 或 Markdown 格式")
-
-                Button("智能勾选副本") {
-                    dup.autoSelectDuplicates()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .help("每组自动保留最早或主副本，仅勾选其余多余副本")
-
-                Button("取消勾选") {
-                    dup.deselectAll()
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-
-                Button {
-                    showDirectoryTreeSheet = true
-                } label: {
-                    Label(
-                        dup.activeDirectoryFilter != nil ? "目录树 (已筛选)" : "目录树筛选",
-                        systemImage: dup.activeDirectoryFilter != nil ? "folder.fill.badge.gearshape" : "folder.badge.gearshape"
-                    )
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .tint(dup.activeDirectoryFilter != nil ? Theme.warningOrange : Theme.actionBlue)
-                .accessibilityIdentifier("duplicateDirectoryTreeButton")
-                .help("按磁盘目录树逐层展开、批量勾选副本或分支筛选")
+                exportMenu
+                batchSelectMenu
+                directoryTreeButton
             }
 
-            Button {
-                dup.startScan()
-            } label: {
-                Label(dup.groups.isEmpty ? "开始扫描" : "重新扫描", systemImage: "arrow.clockwise")
+            if dup.isScanning {
+                stopScanButton
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-            .tint(Theme.actionBlue)
-            .disabled(dup.isScanning)
-            .accessibilityIdentifier("duplicateScanButton")
+
+            scanButton
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceSm)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(Surface.window)
+    }
+
+    /// 导出清单菜单：CSV 表格与文本报告两个动作。
+    private var exportMenu: some View {
+        Menu {
+            Button {
+                exportDuplicatesCSV()
+            } label: {
+                Label("导出为 CSV 表格…", systemImage: "tablecells")
+            }
+            Button {
+                exportDuplicatesReport()
+            } label: {
+                Label("导出为文本报告…", systemImage: "doc.text")
+            }
+        } label: {
+            Label("导出清单", systemImage: "square.and.arrow.up")
+                .font(Typo.row)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+        .fixedSize()
+        .accessibilityIdentifier("exportDuplicatesButton")
+        .help("导出重复/相似大文件排查清单为 CSV 或 Markdown 格式")
+    }
+
+    /// 批量选择菜单：智能勾选副本 / 取消勾选。
+    private var batchSelectMenu: some View {
+        Menu {
+            Button("智能勾选副本") {
+                dup.autoSelectDuplicates()
+            }
+            Button("取消勾选") {
+                dup.deselectAll()
+            }
+        } label: {
+            Label("批量选择", systemImage: "checklist")
+                .font(Typo.row)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+        .fixedSize()
+        .help("智能勾选：每组自动保留最早或主副本，仅勾选其余多余副本")
+    }
+
+    /// 目录树入口；已应用目录筛选时改用警示色提示。
+    private var directoryTreeButton: some View {
+        Button {
+            showDirectoryTreeSheet = true
+        } label: {
+            Label(
+                dup.activeDirectoryFilter != nil ? "目录树 · 已筛选" : "目录树",
+                systemImage: dup.activeDirectoryFilter != nil ? "folder.fill.badge.gearshape" : "folder.badge.gearshape"
+            )
+            .font(Typo.row)
+        }
+        .buttonStyle(.borderless)
+        .pressable()
+        .foregroundStyle(dup.activeDirectoryFilter != nil ? Signal.caution : Ink.secondary)
+        .accessibilityIdentifier("duplicateDirectoryTreeButton")
+        .help("按磁盘目录树逐层展开、批量勾选副本或分支筛选")
+    }
+
+    /// 扫描进行中时，主按钮变成「停止」。
+    /// 重复扫描要对每个候选文件做全量 SHA-256，大盘上动辄几分钟；
+    /// 此前没有任何中断途径，用户只能干等，而且再次点扫描会被静默丢弃。
+    private var stopScanButton: some View {
+        Button {
+            dup.cancelScan()
+        } label: {
+            Label("停止", systemImage: "stop.fill")
+                .font(Typo.rowStrong)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
+        .accessibilityIdentifier("duplicateCancelButton")
+        .help("停止当前扫描；已扫描出的上一次结果会保留")
+    }
+
+    /// 扫描主按钮：无结果时启动，有结果时重扫。
+    private var scanButton: some View {
+        Button {
+            dup.startScan()
+        } label: {
+            Label(dup.groups.isEmpty ? "开始扫描" : "重新扫描", systemImage: "arrow.clockwise")
+                .font(Typo.rowStrong)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.regular)
+        .disabled(dup.isScanning)
+        .accessibilityIdentifier("duplicateScanButton")
     }
 
     private func exportDuplicatesCSV() {
@@ -179,7 +227,7 @@ struct DuplicateView: View {
 
     // MARK: - 分类过滤栏
     private var filterBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Space.sm) {
             Picker("查看分类", selection: Binding(
                 get: { dup.filterKind },
                 set: { dup.filterKind = $0 }
@@ -198,32 +246,29 @@ struct DuplicateView: View {
                 }
             }
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
-            Text("浪费总计：\(dup.totalWastedBytes.byteStringCN)")
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.labelSecondary)
+            Text("浪费总计 \(dup.totalWastedBytes.byteStringCN)")
+                .font(.mcNumeric(11, weight: .medium))
+                .foregroundStyle(Ink.secondary)
+                .motionSafeNumericTransition()
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, 6)
-        .background(Theme.parchment.opacity(0.6))
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .background(Surface.window)
     }
 
     // MARK: - 分类过滤空态
     private var emptyFilterView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 0) {
             Spacer()
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .font(.system(size: 36, weight: .light))
-                .foregroundColor(Theme.labelTertiary)
-            Text("当前分类暂无文件")
-                .font(Theme.bodyFont(13, weight: .medium))
-                .foregroundColor(Theme.labelSecondary)
-            Button("查看全部") {
-                dup.filterKind = .all
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            EmptyState(
+                icon: "line.3.horizontal.decrease.circle",
+                title: "当前分类暂无文件",
+                message: nil,
+                actionTitle: "查看全部",
+                action: { dup.filterKind = .all }
+            )
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -231,16 +276,18 @@ struct DuplicateView: View {
 
     // MARK: - 扫描中视图
     private var scanningView: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: Space.md) {
             Spacer()
             ProgressView(value: dup.progressFraction)
                 .progressViewStyle(.linear)
                 .frame(width: 320)
-                .tint(Theme.actionBlue)
+                .tint(Accent.tint)
 
             Text(dup.scanProgressMessage)
-                .font(Theme.bodyFont(13))
-                .foregroundColor(Theme.inkMuted80)
+                .font(Typo.body)
+                .foregroundStyle(Ink.secondary)
+                .monospacedDigit()
+                .motionSafeNumericTransition()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -248,20 +295,13 @@ struct DuplicateView: View {
 
     // MARK: - 空态视图
     private var emptyView: some View {
-        VStack(spacing: Theme.spaceMd) {
+        VStack(spacing: 0) {
             Spacer()
-            Image(systemName: "doc.on.doc.circle")
-                .font(.system(size: 48, weight: .light))
-                .foregroundColor(Theme.actionBlue.opacity(0.7))
-
-            Text("未发现重复文件")
-                .font(Theme.displayFont(18, weight: .semibold))
-                .foregroundColor(Theme.ink)
-
-            Text("扫描范围：\(dup.searchPaths.joined(separator: " · "))\n点击上方「开始扫描」检测重复占用")
-                .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.inkMuted48)
-                .multilineTextAlignment(.center)
+            EmptyState(
+                icon: "doc.on.doc",
+                title: "未发现重复文件",
+                message: "扫描范围：\(dup.searchPaths.joined(separator: " · "))\n点击上方「开始扫描」检测重复占用。"
+            )
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -270,7 +310,7 @@ struct DuplicateView: View {
     // MARK: - 重复列表
     private var duplicateListView: some View {
         ScrollView {
-            LazyVStack(spacing: Theme.spaceSm) {
+            LazyVStack(spacing: Space.sm) {
                 ForEach(dup.filteredGroups) { group in
                     DuplicateGroupCard(
                         group: group,
@@ -283,49 +323,51 @@ struct DuplicateView: View {
                     )
                 }
             }
-            .padding(Theme.spaceMd)
+            .padding(.horizontal, Space.gutter)
+            .padding(.vertical, Space.md)
         }
     }
 
     // MARK: - 底栏统计与清理
     private var footer: some View {
-        HStack(spacing: Theme.spaceMd) {
+        HStack(spacing: Space.md) {
             if let summary = dup.lastSummary {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(Theme.actionBlue)
+                HStack(spacing: Space.xxs) {
+                    IconSlot(systemName: "checkmark.circle", size: 12, color: Signal.positive, width: 14)
                     Text(summary)
-                        .font(Theme.bodyFont(12, weight: .medium))
-                        .foregroundColor(Theme.inkMuted80)
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.secondary)
+                        .lineLimit(1)
                 }
             }
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("已选 \(dup.selectedCount) 个副本（共可释放）")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelTertiary)
-                Text(dup.selectedBytes.byteStringCN)
-                    .font(Theme.displayFont(18, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
+            VStack(alignment: .trailing, spacing: 0) {
+                Text("已选 \(dup.selectedCount) 个副本 · 可释放")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
                     .monospacedDigit()
+                Text(dup.selectedBytes.byteStringCN)
+                    .font(.mcNumeric(17, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
             }
 
             Button {
                 showConfirmSheet = true
             } label: {
                 Label("清理已选副本", systemImage: "trash")
+                    .font(Typo.rowStrong)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(Theme.actionBlue)
             .disabled(dup.selectedCount == 0 || dup.isScanning)
             .accessibilityIdentifier("duplicateCleanButton")
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceSm)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(Surface.window)
     }
 
     private var confirmCleanSheet: some View {
@@ -365,7 +407,7 @@ struct DuplicateView: View {
     }
 }
 
-/// 单组重复文件卡片
+/// 单组重复文件。一个 inset 分组：组头（表格式对齐的元数据）+ 若干文件行 + 可选说明 footer。
 struct DuplicateGroupCard: View {
     @EnvironmentObject private var app: AppState
     let group: DuplicateGroup
@@ -378,111 +420,91 @@ struct DuplicateGroupCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // 组头部：匹配类型徽标 / 文件名 / 副本数量 / 浪费大小
-            HStack(spacing: 8) {
-                // 匹配模式胶囊徽标
-                if group.matchKind == .exact {
-                    Text("完全一致")
-                        .font(Theme.bodyFont(10, weight: .semibold))
-                        .foregroundColor(Theme.actionBlue)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Theme.actionBlue.opacity(0.12)))
-                } else if group.matchKind == .similarImage {
-                    HStack(spacing: 3) {
-                        Image(systemName: "photo.on.rectangle.angled")
-                            .font(.system(size: 9))
-                        Text("相似图片")
-                    }
-                    .font(Theme.bodyFont(10, weight: .semibold))
-                    .foregroundColor(Color.purple)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.purple.opacity(0.12)))
-                } else {
-                    Text("相似衍生")
-                        .font(Theme.bodyFont(10, weight: .semibold))
-                        .foregroundColor(Theme.warningOrange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Theme.warningOrange.opacity(0.12)))
-                }
-
-                Text(group.items.first?.name ?? "未知文件")
-                    .font(Theme.bodyFont(13, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
-                    .lineLimit(1)
-
-                Spacer()
-
-                if isImageGroup && group.items.count >= 2 {
-                    Button {
-                        onCompare?(group)
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "square.split.2x1")
-                                .font(.system(size: 9, weight: .semibold))
-                            Text("对比照片与EXIF")
-                        }
-                        .font(Theme.bodyFont(10, weight: .semibold))
-                        .foregroundColor(Color.purple)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.purple.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .help("双栏对比组内照片视觉细节与 EXIF 快门曝光参数")
-                }
-
-                if group.matchKind == .exact {
-                    Text("每份 \(group.fileSize.byteStringCN) · 共 \(group.items.count) 份")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelSecondary)
-                } else if group.matchKind == .similarImage {
-                    Text("共 \(group.items.count) 张相似图片")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelSecondary)
-                } else {
-                    Text("共 \(group.items.count) 个相似副本")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelSecondary)
-                }
-
-                Text("可节省 \(group.wastedBytes.byteStringCN)")
-                    .font(Theme.monoFont(11, weight: .medium))
-                    .foregroundColor(Theme.dangerRed)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: Theme.radiusSm).fill(Theme.dangerRed.opacity(0.08)))
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.primary.opacity(0.025))
-
-            if !group.suggestionNote.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 10))
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(group.suggestionNote)
-                        .font(Theme.bodyFont(10))
-                        .foregroundColor(Theme.labelTertiary)
-                }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 4)
+        GroupBox(footer: group.suggestionNote.isEmpty ? nil : group.suggestionNote) {
+            GroupedRow(isLast: group.items.isEmpty, padding: Space.xs) {
+                groupHeader
             }
 
-            Divider().overlay(Theme.separator.opacity(0.3))
-
-            // 副本文件行
-            VStack(spacing: 0) {
-                ForEach(group.items) { item in
+            ForEach(Array(group.items.enumerated()), id: \.element.id) { idx, item in
+                GroupedRow(isLast: idx == group.items.count - 1, padding: 5) {
                     DuplicateFileRow(group: group, item: item, onPreview: onPreview, onCompare: onCompare)
                 }
             }
         }
-        .macCard(cornerRadius: Theme.radiusMd)
+    }
+
+    /// 组头。匹配类型 / 文件名 / 份数 / 可节省体积各自成列，纵向可比较。
+    private var groupHeader: some View {
+        HStack(spacing: Space.xs) {
+            IconSlot(systemName: matchIcon, size: 12, color: Ink.tertiary, width: 15)
+
+            Text(group.matchKind.rawValue)
+                .font(Typo.micro)
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 56, alignment: .leading)
+
+            Text(group.items.first?.name ?? "未知文件")
+                .font(Typo.rowStrong)
+                .foregroundStyle(Ink.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: Space.xs)
+
+            if isImageGroup && group.items.count >= 2 {
+                Button {
+                    onCompare?(group)
+                } label: {
+                    Label("对比照片与 EXIF", systemImage: "square.split.2x1")
+                        .font(Typo.caption)
+                        .foregroundStyle(Accent.tint)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pressable()
+                .help("双栏对比组内照片视觉细节与 EXIF 快门曝光参数")
+            }
+
+            Text(countText)
+                .font(Typo.caption)
+                .foregroundStyle(Ink.tertiary)
+                .monospacedDigit()
+                .lineLimit(1)
+
+            VStack(alignment: .trailing, spacing: 0) {
+                Text("可节省 \(group.wastedBytes.byteStringCN)")
+                    .font(.mcNumeric(12, weight: .medium))
+                    .foregroundStyle(Ink.primary)
+                    .frame(minWidth: 108, alignment: .trailing)
+                    .motionSafeNumericTransition()
+                // 组内含硬链接时如实说明：这些路径删掉不释放空间，所以没有计入"可节省"。
+                // 不解释的话，用户会疑惑"为什么三份文件只算一份的空间"。
+                if group.hardLinkCount > 0 {
+                    Text("\(group.hardLinkCount) 条为硬链接，未计入")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
+                }
+            }
+        }
+    }
+
+    private var matchIcon: String {
+        switch group.matchKind {
+        case .exact: return "equal.square"
+        case .similar: return "doc.on.doc"
+        case .similarImage: return "photo.on.rectangle.angled"
+        }
+    }
+
+    private var countText: String {
+        switch group.matchKind {
+        case .exact:
+            return "每份 \(group.fileSize.byteStringCN) · 共 \(group.items.count) 份"
+        case .similar:
+            return "共 \(group.items.count) 个相似副本"
+        case .similarImage:
+            return "共 \(group.items.count) 张相似图片"
+        }
     }
 }
 
@@ -503,10 +525,10 @@ struct DuplicateThumbnailView: View {
             }
         }
         .frame(width: 26, height: 26)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .stroke(Theme.hairline, lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                .strokeBorder(Surface.hairline.opacity(0.6), lineWidth: 0.5)
         )
     }
 
@@ -525,7 +547,8 @@ struct DuplicateThumbnailView: View {
     }
 }
 
-/// 单个副本行
+/// 单个副本行。密集数据行：复选框 + 缩略图 + 名称/原因 + 路径/体积/时间。
+/// 右侧不再挂两个带底色的图标按钮——对比与预览都在右键菜单里，预览另有空格快捷键。
 struct DuplicateFileRow: View {
     @EnvironmentObject private var app: AppState
     let group: DuplicateGroup
@@ -534,160 +557,177 @@ struct DuplicateFileRow: View {
     var onCompare: ((DuplicateGroup) -> Void)? = nil
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button {
-                app.duplicateState.toggleItem(groupID: group.id, itemID: item.id)
-            } label: {
-                Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 14))
-                    .foregroundColor(item.isSelected ? Theme.actionBlue : Theme.labelTertiary)
-            }
-            .buttonStyle(.plain)
+        HStack(spacing: Space.xs) {
+            selectionToggle
 
             DuplicateThumbnailView(path: item.path, isImage: ImageHash.isImageFile(path: item.path))
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(item.name)
-                        .font(Theme.bodyFont(12, weight: .medium))
-                        .foregroundColor(Theme.labelPrimary)
-                        .lineLimit(1)
+            fileIdentityColumn
 
-                    if item.isOriginal {
-                        Text(item.recommendationReason ?? "推荐保留")
-                            .font(Theme.bodyFont(10, weight: .medium))
-                            .foregroundColor(Theme.actionBlue)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(Theme.actionBlue.opacity(0.1)))
-                    } else if let reason = item.recommendationReason {
-                        let isPurple = reason.contains("相似度") || group.matchKind == .similarImage
-                        Text(reason)
-                            .font(Theme.bodyFont(10, weight: isPurple ? .medium : .regular))
-                            .foregroundColor(isPurple ? Color.purple : Theme.labelTertiary)
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(RoundedRectangle(cornerRadius: 3).fill(isPurple ? Color.purple.opacity(0.1) : Color.primary.opacity(0.04)))
-                    }
-                }
+            Spacer(minLength: Space.xs)
 
-                HStack(spacing: 8) {
-                    Text(item.path)
-                        .font(Theme.monoFont(10))
-                        .foregroundColor(Theme.labelTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Text("·")
-                        .foregroundColor(Theme.labelTertiary)
-
-                    Text(item.size.byteStringCN)
-                        .font(Theme.monoFont(10))
-                        .foregroundColor(Theme.labelSecondary)
-
-                    if let mtime = item.modificationDate {
-                        Text("·")
-                            .foregroundColor(Theme.labelTertiary)
-                        Text(Date.usageFormatter.string(from: mtime))
-                            .font(Theme.bodyFont(10))
-                            .foregroundColor(Theme.labelTertiary)
-                    }
-                }
-            }
-
-            Spacer()
-
-            if ImageHash.isImageFile(path: item.path) && group.items.count >= 2 {
-                Button {
-                    onCompare?(group)
-                } label: {
-                    Image(systemName: "square.split.2x1")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color.purple)
-                        .frame(width: 24, height: 24)
-                        .background(Color.purple.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .help("在双栏对比弹窗中查看照片细节与 EXIF 快门参数")
-            }
-
-            Button {
-                let url = URL(fileURLWithPath: item.path)
-                onPreview?(url)
-            } label: {
-                Image(systemName: "eye")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.labelTertiary)
-                    .frame(width: 24, height: 24)
-                    .background(Color.primary.opacity(0.04))
-                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .help("按快速查看 (Quick Look) 预览文件内容")
+            previewButton
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .macRowHover(cornerRadius: 0)
-        .overlay(
-            // 空格键快速预览快捷键
-            Button("") {
-                let url = URL(fileURLWithPath: item.path)
-                onPreview?(url)
-            }
-            .keyboardShortcut(.space, modifiers: [])
-            .opacity(0)
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
-        )
+        .rowHover()
+        .overlay(spaceKeyPreviewShortcut)
         .contextMenu {
-            if ImageHash.isImageFile(path: item.path) && group.items.count >= 2 {
-                Button {
-                    onCompare?(group)
-                } label: {
-                    Label("双栏对比照片与 EXIF 参数", systemImage: "square.split.2x1")
-                }
+            rowContextMenu
+        }
+    }
 
-                Divider()
+    /// 行首复选框：勾选此副本等待清理。
+    private var selectionToggle: some View {
+        Button {
+            app.duplicateState.toggleItem(groupID: group.id, itemID: item.id)
+        } label: {
+            Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
+                .font(.system(size: 13))
+                .foregroundStyle(item.isSelected ? Accent.tint : Ink.tertiary)
+                .frame(width: 18, height: 18, alignment: .center)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pressable()
+        .help(item.isSelected ? "取消勾选此副本" : "勾选此副本等待清理")
+        .accessibilityLabel(item.isSelected ? "取消勾选此副本" : "勾选此副本等待清理")
+    }
+
+    /// 名称 / 推荐理由 + 路径 / 体积 / 修改时间两行。
+    private var fileIdentityColumn: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            nameLine
+            pathMetadataLine
+        }
+    }
+
+    private var nameLine: some View {
+        HStack(spacing: Space.xs) {
+            Text(item.name)
+                .font(Typo.rowStrong)
+                .foregroundStyle(Ink.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            if item.isOriginal {
+                Text(item.recommendationReason ?? "推荐保留")
+                    .font(Typo.micro)
+                    .foregroundStyle(Signal.positive)
+                    .lineLimit(1)
+            } else if let reason = item.recommendationReason {
+                Text(reason)
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.tertiary)
+                    .lineLimit(1)
             }
+        }
+    }
 
+    private var pathMetadataLine: some View {
+        HStack(spacing: 5) {
+            Text(item.path)
+                .font(.mcNumeric(11))
+                .foregroundStyle(Ink.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Text("·")
+                .font(Typo.caption)
+                .foregroundStyle(Ink.quaternary)
+
+            Text(item.size.byteStringCN)
+                .font(.mcNumeric(11))
+                .foregroundStyle(Ink.secondary)
+
+            if let mtime = item.modificationDate {
+                Text("·")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.quaternary)
+                Text(Date.usageFormatter.string(from: mtime))
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    /// 行尾预览按钮：与右键菜单、空格快捷键走同一条预览路径。
+    private var previewButton: some View {
+        Button {
+            let url = URL(fileURLWithPath: item.path)
+            onPreview?(url)
+        } label: {
+            Image(systemName: "eye")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Ink.tertiary)
+                .frame(width: 20, height: 20, alignment: .center)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pressable()
+        .help("按快速查看 (Quick Look) 预览文件内容")
+        .accessibilityLabel("按快速查看 (Quick Look) 预览文件内容")
+    }
+
+    /// 空格键快速预览快捷键（零尺寸透明按钮，挂在行上）。
+    private var spaceKeyPreviewShortcut: some View {
+        Button("") {
+            let url = URL(fileURLWithPath: item.path)
+            onPreview?(url)
+        }
+        .keyboardShortcut(.space, modifiers: [])
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var rowContextMenu: some View {
+        if ImageHash.isImageFile(path: item.path) && group.items.count >= 2 {
             Button {
-                let url = URL(fileURLWithPath: item.path)
-                onPreview?(url)
+                onCompare?(group)
             } label: {
-                Label("快速查看 (Quick Look)", systemImage: "eye")
+                Label("双栏对比照片与 EXIF 参数", systemImage: "square.split.2x1")
             }
 
             Divider()
+        }
 
+        Button {
+            let url = URL(fileURLWithPath: item.path)
+            onPreview?(url)
+        } label: {
+            Label("快速查看 (Quick Look)", systemImage: "eye")
+        }
+
+        Divider()
+
+        Button {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+        } label: {
+            Label("在访达中显示", systemImage: "folder")
+        }
+
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(item.path, forType: .string)
+        } label: {
+            Label("拷贝路径", systemImage: "doc.on.doc")
+        }
+
+        Divider()
+
+        Button {
+            app.addPathToWhitelist(item.path, comment: item.name)
+        } label: {
+            Label("加入白名单排除", systemImage: "shield.slash")
+        }
+
+        let ext = (item.path as NSString).pathExtension.lowercased()
+        if !ext.isEmpty {
             Button {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: item.path)])
+                app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件")
             } label: {
-                Label("在访达中显示", systemImage: "folder")
-            }
-
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(item.path, forType: .string)
-            } label: {
-                Label("拷贝路径", systemImage: "doc.on.doc")
-            }
-
-            Divider()
-
-            Button {
-                app.addPathToWhitelist(item.path, comment: item.name)
-            } label: {
-                Label("加入白名单排除", systemImage: "shield.slash")
-            }
-
-            let ext = (item.path as NSString).pathExtension.lowercased()
-            if !ext.isEmpty {
-                Button {
-                    app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件")
-                } label: {
-                    Label("排除所有 .\(ext) 格式（不再扫描）", systemImage: "doc.badge.gearshape")
-                }
+                Label("排除所有 .\(ext) 格式（不再扫描）", systemImage: "doc.badge.gearshape")
             }
         }
     }

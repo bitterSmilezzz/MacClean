@@ -258,7 +258,7 @@ enum RiskScanner {
     static func checkRemoteServices() -> [RiskItem] {
         var items: [RiskItem] = []
         // 远程登录（SSH）
-        if let list = try? Process().launchAndCapture("/bin/launchctl", ["list"]),
+        if let list = runCommand("/bin/launchctl", ["list"]),
            list.contains("com.openssh.sshd") {
             items.append(RiskItem(
                 title: "远程登录（SSH）已开启",
@@ -269,7 +269,7 @@ enum RiskScanner {
         // 文件共享 / 屏幕共享
         let sharing = ["com.apple.smbd": "文件共享", "com.apple.ARDAgent": "屏幕共享", "com.apple.screensharing": "屏幕共享"]
         for (service, label) in sharing {
-            if let list = try? Process().launchAndCapture("/bin/launchctl", ["list"]),
+            if let list = runCommand("/bin/launchctl", ["list"]),
                list.contains(service) {
                 items.append(RiskItem(
                     title: "\(label)已开启",
@@ -352,38 +352,54 @@ enum RiskScanner {
         return String(format: "%04o", p)
     }
 
-    /// 运行命令并捕获 stdout（只读）
-    static func runCommand(_ launchPath: String, _ args: [String]) -> String? {
+    /// 运行命令并捕获 stdout + stderr（只读）。**带超时，绝不无限等待。**
+    ///
+    /// 两个坑，都是这个函数此前踩着的：
+    ///
+    /// ① **管道死锁**。macOS 管道缓冲区只有约 64 KB。若先 `waitUntilExit()` 再读管道，
+    ///    子进程写满缓冲区后会阻塞在 `write`，父进程阻塞在 `wait` —— 双向死锁，永不返回。
+    ///    `launchctl list` 在多服务（CI runner、装了 LaunchAgent 的开发机）的机器上轻易超过 64 KB，
+    ///    本机现测 18 KB 只是"暂时没到"。修法：**读端先开工排空**，再等进程退出。
+    /// ② 没有超时。子进程卡死时整个风险扫描会一起卡住。
+    static func runCommand(_ launchPath: String, _ args: [String],
+                           timeout: TimeInterval = 10) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: launchPath)
         p.arguments = args
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
+
+        // 先把读端挂到后台开始排空，再启动进程
+        var captured = Data()
+        let readDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            captured = pipe.fileHandleForReading.readDataToEndOfFile()
+            readDone.signal()
+        }
+
         do {
             try p.run()
-            p.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
         } catch {
+            pipe.fileHandleForWriting.closeFile()
+            _ = readDone.wait(timeout: .now() + 1)
             return nil
         }
-    }
-}
+        pipe.fileHandleForWriting.closeFile()   // 父进程不写，尽早关掉写端
 
-// MARK: - Process 辅助（launchctl list 捕获）
-
-extension Process {
-    /// 运行并返回 stdout（供风险扫描只读检测使用）
-    func launchAndCapture(_ launchPath: String, _ args: [String]) throws -> String {
-        executableURL = URL(fileURLWithPath: launchPath)
-        arguments = args
-        let pipe = Pipe()
-        standardOutput = pipe
-        standardError = pipe
-        try run()
-        waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        // 超时兜底：先 TERM 再 KILL，绝不让一个卡住的子进程拖死扫描
+        let deadline = Date().addingTimeInterval(timeout)
+        while p.isRunning && Date() < deadline {
+            usleep(20_000)
+        }
+        if p.isRunning {
+            p.terminate()
+            usleep(200_000)
+            if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+        }
+        p.waitUntilExit()
+        // 读端必须收尾，否则 captured 可能只读到一半
+        _ = readDone.wait(timeout: .now() + 2)
+        return String(data: captured, encoding: .utf8)
     }
 }

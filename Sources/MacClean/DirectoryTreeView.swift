@@ -1,7 +1,16 @@
 import SwiftUI
 import AppKit
 
-/// 交互式目录树状勾选与分支筛选面板
+/// 交互式目录树状勾选与分支筛选面板。
+///
+/// 重写要点：
+///  - 顶栏的"圆形色块 + 图标"标头和那句自我介绍式副标题一起去掉：标题就是标题，
+///    装饰性说明不携带任何可操作信息。
+///  - 手搓的 `TextField` + 背景 + 描边换成 `SearchField` 原语；四个等权描边按钮降级为
+///    无边框工具动作，减少工具栏的视觉重量。
+///  - "当前筛选 / 排除扫描"的胶囊徽标改成着色小字：行内不再堆色块，颜色只用来标记
+///    真正需要注意的状态。
+///  - 三态勾选仍用方框图标（已选 / 半选 / 未选），语义不变。
 struct DirectoryTreeSheet: View {
     let title: String
     let entries: [DirectoryTreeBuilder.FileEntry]
@@ -49,10 +58,10 @@ struct DirectoryTreeSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             toolbar
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             if treeNodes.isEmpty {
                 emptyView
@@ -60,11 +69,11 @@ struct DirectoryTreeSheet: View {
                 treeListView
             }
 
-            Divider().overlay(Theme.hairline)
+            Hairline()
             footer
         }
         .frame(width: 680, height: 560)
-        .background(Theme.canvas)
+        .background(Surface.window)
         .onAppear {
             selectedFilterPath = activeFilterPath
             reloadTree()
@@ -73,26 +82,16 @@ struct DirectoryTreeSheet: View {
 
     // MARK: - 顶栏
     private var header: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Theme.actionBlue.opacity(0.12))
-                    .frame(width: 36, height: 36)
-                Image(systemName: "folder.badge.gearshape")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(Theme.actionBlue)
-            }
+        HStack(spacing: Space.xs) {
+            IconSlot(systemName: "folder.badge.gearshape", size: 15, weight: .medium,
+                     color: Ink.secondary, width: 18)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Theme.displayFont(15, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
-                Text("按磁盘目录层级查看文件分布，支持分支独立筛选、批量勾选清理与扫描范围定制。")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelSecondary)
-            }
+            Text(title)
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
+                .lineLimit(1)
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
             Button("完成") {
                 onApplyFilter(selectedFilterPath)
@@ -100,100 +99,77 @@ struct DirectoryTreeSheet: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
-            .tint(Theme.actionBlue)
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("directoryTreeDoneButton")
         }
-        .padding(.horizontal, Theme.spaceLg)
-        .padding(.vertical, Theme.spaceSm)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(Surface.window)
     }
 
     // MARK: - 工具栏
     private var toolbar: some View {
-        HStack(spacing: 10) {
-            // 搜索过滤
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.labelTertiary)
-                TextField("按目录名或路径检索…", text: $searchQuery)
-                    .textFieldStyle(.plain)
-                    .font(Theme.bodyFont(12))
-                if !searchQuery.isEmpty {
-                    Button {
-                        searchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(Theme.labelTertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Theme.controlBackground)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Theme.hairline, lineWidth: 0.5)
-            )
-            .frame(maxWidth: 240)
+        HStack(spacing: Space.xs) {
+            SearchField(placeholder: "按目录名或路径检索…", text: $searchQuery, width: 240)
 
-            Spacer()
+            Spacer(minLength: Space.xs)
 
             if selectedFilterPath != nil {
                 Button {
                     selectedFilterPath = nil
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle")
-                        Text("清除分支筛选")
-                    }
+                    Label("清除分支筛选", systemImage: "xmark.circle")
+                        .font(Typo.row)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(Theme.warningOrange)
+                .buttonStyle(.borderless)
+                .pressable()
+                .foregroundStyle(Signal.caution)
+                .help("取消当前目录分支筛选，恢复显示全部目录")
             }
 
             Button {
                 expandAll()
             } label: {
                 Label("全部展开", systemImage: "arrow.down.right.and.arrow.up.left")
+                    .font(Typo.row)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .pressable()
+            .foregroundStyle(Ink.secondary)
+            .help("展开全部目录分支")
 
             Button {
                 collapseAll()
             } label: {
                 Label("全部收起", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(Typo.row)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .pressable()
+            .foregroundStyle(Ink.secondary)
+            .help("收起全部目录分支")
 
             Button {
                 addCustomFolder()
             } label: {
                 Label("添加扫描目录…", systemImage: "plus")
+                    .font(Typo.row)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .pressable()
+            .foregroundStyle(Accent.tint)
             .accessibilityIdentifier("addCustomScanFolderButton")
             .help("选择 macOS 本机文件夹加入扫描监控")
         }
-        .padding(.horizontal, Theme.spaceLg)
-        .padding(.vertical, 8)
-        .background(Theme.parchment.opacity(0.6))
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .background(Surface.window)
     }
 
     // MARK: - 目录树列表
     private var treeListView: some View {
         ScrollView {
-            LazyVStack(spacing: 2) {
+            LazyVStack(spacing: 1) {
                 ForEach(visibleNodes(from: treeNodes, depth: 0)) { item in
                     DirectoryTreeNodeRow(
                         node: item.node,
@@ -225,24 +201,20 @@ struct DirectoryTreeSheet: View {
                     )
                 }
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, Theme.spaceSm)
+            .padding(.vertical, Space.xxs)
+            .padding(.horizontal, Space.xs)
         }
     }
 
     // MARK: - 空态
     private var emptyView: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 0) {
             Spacer()
-            Image(systemName: "folder.badge.minus")
-                .font(.system(size: 38, weight: .light))
-                .foregroundColor(Theme.labelTertiary)
-            Text("暂无目录数据")
-                .font(Theme.bodyFont(13, weight: .medium))
-                .foregroundColor(Theme.labelSecondary)
-            Text("扫描完成后将自动解析出包含大文件或重复副本的各级目录。")
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.labelTertiary)
+            EmptyState(
+                icon: "folder.badge.minus",
+                title: "暂无目录数据",
+                message: "扫描完成后将自动解析出包含大文件或重复副本的各级目录。"
+            )
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -254,35 +226,35 @@ struct DirectoryTreeSheet: View {
         let totalBytes = entries.reduce(Int64(0)) { $0 + $1.size }
         let selectedBytes = entries.filter(\.isSelected).reduce(Int64(0)) { $0 + $1.size }
 
-        return HStack(spacing: 16) {
-            HStack(spacing: 6) {
-                Image(systemName: "folder")
-                    .foregroundColor(Theme.labelTertiary)
-                Text("共 \(countAllNodes(treeNodes)) 个目录 · \(totalFiles) 个文件 (\(totalBytes.byteStringCN))")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelSecondary)
-            }
+        return HStack(spacing: Space.md) {
+            Text("共 \(countAllNodes(treeNodes)) 个目录 · \(totalFiles) 个文件（\(totalBytes.byteStringCN)）")
+                .font(Typo.caption)
+                .foregroundStyle(Ink.secondary)
+                .monospacedDigit()
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
-            Text("已勾选清理：\(selectedBytes.byteStringCN)")
-                .font(Theme.monoFont(11, weight: .medium))
-                .foregroundColor(selectedBytes > 0 ? Theme.actionBlue : Theme.labelTertiary)
+            Text("已勾选清理 \(selectedBytes.byteStringCN)")
+                .font(.mcNumeric(11, weight: .medium))
+                .foregroundStyle(selectedBytes > 0 ? Accent.tint : Ink.tertiary)
+                .motionSafeNumericTransition()
 
             if let filter = selectedFilterPath {
-                HStack(spacing: 4) {
-                    Text("当前筛选：")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelSecondary)
+                HStack(spacing: Space.xxs) {
+                    Text("当前筛选")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
                     Text(displayShortPath(filter))
-                        .font(Theme.monoFont(11, weight: .semibold))
-                        .foregroundColor(Theme.warningOrange)
+                        .font(.mcNumeric(11, weight: .medium))
+                        .foregroundStyle(Signal.caution)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
         }
-        .padding(.horizontal, Theme.spaceLg)
-        .padding(.vertical, 10)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .background(Surface.window)
     }
 
     // MARK: - 数据处理与辅助
@@ -384,7 +356,7 @@ struct DirectoryTreeSheet: View {
     }
 }
 
-/// 目录树单行视图
+/// 目录树单行视图。密集数据行：缩进 + 展开箭头 + 三态勾选框 + 名称 + 右对齐统计。
 struct DirectoryTreeNodeRow: View {
     let node: DirectoryTreeNode
     let depth: Int
@@ -399,136 +371,165 @@ struct DirectoryTreeNodeRow: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Space.xs) {
             // 缩进与展开箭头
-            HStack(spacing: 0) {
-                Spacer().frame(width: CGFloat(depth * 20))
+            disclosureControl
 
-                if !node.children.isEmpty {
-                    Button {
-                        onToggleExpand()
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(Theme.labelSecondary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: 16, height: 16)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Spacer().frame(width: 16)
-                }
-            }
-
-            // 三态 Checkbox
-            Button {
-                onToggleCheck()
-            } label: {
-                checkIcon
-                    .font(.system(size: 14))
-            }
-            .buttonStyle(.plain)
-            .help("批量勾选或取消此目录下全部文件")
+            // 三态 Checkbox：已选 / 半选 / 未选
+            checkToggle
 
             // 文件夹图标与名称
-            HStack(spacing: 6) {
-                Image(systemName: isExpanded ? "folder.fill" : "folder")
-                    .font(.system(size: 13))
-                    .foregroundColor(isCurrentFilterTarget ? Theme.warningOrange : Theme.actionBlue)
+            nameColumn
 
-                Text(node.displayName)
-                    .font(Theme.bodyFont(12, weight: depth == 0 ? .semibold : .medium))
-                    .foregroundColor(isCurrentFilterTarget ? Theme.warningOrange : Theme.labelPrimary)
-                    .lineLimit(1)
+            Spacer(minLength: Space.xs)
 
-                if isCurrentFilterTarget {
-                    Text("当前筛选")
-                        .font(Theme.bodyFont(9, weight: .semibold))
-                        .foregroundColor(Theme.warningOrange)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Theme.warningOrange.opacity(0.12)))
-                }
+            // 统计列：条目数 / 体积，右对齐便于纵向比较
+            statColumns
 
-                if isExcludedFromScan {
-                    Text("排除扫描")
-                        .font(Theme.bodyFont(9, weight: .medium))
-                        .foregroundColor(Theme.labelTertiary)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.primary.opacity(0.05)))
-                }
-            }
-
-            Spacer()
-
-            // 统计指标胶囊
-            HStack(spacing: 8) {
-                Text("\(node.fileCount) 项")
-                    .font(Theme.bodyFont(10))
-                    .foregroundColor(Theme.labelTertiary)
-
-                Text(node.totalBytes.byteStringCN)
-                    .font(Theme.monoFont(11, weight: .medium))
-                    .foregroundColor(Theme.labelSecondary)
-                    .frame(minWidth: 60, alignment: .trailing)
-            }
-
-            // 悬停/常驻快捷过滤按钮
-            Button {
-                onSelectFilter()
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: isCurrentFilterTarget ? "checkmark.circle.fill" : "arrow.right.circle")
-                    Text(isCurrentFilterTarget ? "取消筛选" : "仅看此目录")
-                }
-                .font(Theme.bodyFont(10, weight: .medium))
-                .foregroundColor(isCurrentFilterTarget ? Theme.warningOrange : Theme.actionBlue)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill((isCurrentFilterTarget ? Theme.warningOrange : Theme.actionBlue).opacity(0.1))
-                )
-            }
-            .buttonStyle(.plain)
-            .opacity(isHovering || isCurrentFilterTarget ? 1.0 : 0.0)
-            .animation(.easeInOut(duration: 0.15), value: isHovering)
+            // 悬停/常驻快捷过滤按钮：仅一个动作，不带底色
+            filterActionButton
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, Space.xs)
+        .padding(.vertical, 4)
         .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isCurrentFilterTarget ? Theme.warningOrange.opacity(0.08) : (isHovering ? Color.primary.opacity(0.035) : Color.clear))
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(isCurrentFilterTarget ? Signal.caution.opacity(0.10) : Color.clear)
         )
+        .rowHover()
         .onHover { isHovering = $0 }
         .contextMenu {
-            Button {
-                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: node.path)])
-            } label: {
-                Label("在访达中显示", systemImage: "folder")
+            rowContextMenu
+        }
+    }
+
+    /// 缩进占位 + 展开/收起箭头；叶子节点只留占位。
+    private var disclosureControl: some View {
+        HStack(spacing: 0) {
+            Spacer().frame(width: CGFloat(depth * 20))
+
+            if !node.children.isEmpty {
+                Button {
+                    onToggleExpand()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Ink.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .motionSafe(Motion.micro, value: isExpanded)
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pressable()
+                .help(isExpanded ? "收起此目录" : "展开此目录")
+                .accessibilityLabel(isExpanded ? "收起此目录" : "展开此目录")
+            } else {
+                Spacer().frame(width: 16)
+            }
+        }
+    }
+
+    /// 三态勾选框：批量勾选或取消此目录下全部文件。
+    private var checkToggle: some View {
+        Button {
+            onToggleCheck()
+        } label: {
+            checkIcon
+                .font(.system(size: 14))
+                .frame(width: 18, height: 18, alignment: .center)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pressable()
+        .help("批量勾选或取消此目录下全部文件")
+    }
+
+    /// 文件夹图标 + 名称 + 「当前筛选 / 排除扫描」标记。
+    private var nameColumn: some View {
+        HStack(spacing: 6) {
+            Image(systemName: isExpanded ? "folder.fill" : "folder")
+                .font(.system(size: 12))
+                .foregroundStyle(isCurrentFilterTarget ? Signal.caution : Ink.secondary)
+
+            Text(node.displayName)
+                .font(depth == 0 ? Typo.rowStrong : Typo.row)
+                .foregroundStyle(isCurrentFilterTarget ? Signal.caution : Ink.primary)
+                .lineLimit(1)
+
+            if isCurrentFilterTarget {
+                Text("当前筛选")
+                    .font(Typo.micro)
+                    .foregroundStyle(Signal.caution)
             }
 
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(node.path, forType: .string)
-            } label: {
-                Label("拷贝绝对路径", systemImage: "doc.on.doc")
+            if isExcludedFromScan {
+                Text("排除扫描")
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.tertiary)
             }
+        }
+    }
 
-            Divider()
+    /// 统计列：条目数 / 体积，右对齐便于纵向比较。
+    @ViewBuilder
+    private var statColumns: some View {
+        Text("\(node.fileCount) 项")
+            .font(.mcNumeric(11))
+            .foregroundStyle(Ink.tertiary)
+            .frame(width: 56, alignment: .trailing)
 
-            Button {
-                onSelectFilter()
-            } label: {
-                Label(isCurrentFilterTarget ? "取消此目录筛选" : "在主列表中仅查看此目录", systemImage: "line.3.horizontal.decrease.circle")
+        Text(node.totalBytes.byteStringCN)
+            .font(.mcNumeric(11, weight: .medium))
+            .foregroundStyle(Ink.secondary)
+            .frame(minWidth: 64, alignment: .trailing)
+    }
+
+    /// 悬停/常驻的快捷过滤按钮：仅一个动作，不带底色。
+    private var filterActionButton: some View {
+        Button {
+            onSelectFilter()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: isCurrentFilterTarget ? "checkmark.circle.fill" : "arrow.right.circle")
+                Text(isCurrentFilterTarget ? "取消筛选" : "仅看此目录")
             }
+            .font(Typo.caption)
+            .foregroundStyle(isCurrentFilterTarget ? Signal.caution : Accent.tint)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pressable()
+        .opacity(isHovering || isCurrentFilterTarget ? 1.0 : 0.0)
+        .motionSafe(Motion.micro, value: isHovering)
+    }
 
-            Button {
-                onToggleScanExclude()
-            } label: {
-                Label(isExcludedFromScan ? "重新纳入扫描范围" : "从后续扫描中排除此目录", systemImage: isExcludedFromScan ? "checkmark.circle" : "nosign")
-            }
+    @ViewBuilder
+    private var rowContextMenu: some View {
+        Button {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: node.path)])
+        } label: {
+            Label("在访达中显示", systemImage: "folder")
+        }
+
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(node.path, forType: .string)
+        } label: {
+            Label("拷贝绝对路径", systemImage: "doc.on.doc")
+        }
+
+        Divider()
+
+        Button {
+            onSelectFilter()
+        } label: {
+            Label(isCurrentFilterTarget ? "取消此目录筛选" : "在主列表中仅查看此目录", systemImage: "line.3.horizontal.decrease.circle")
+        }
+
+        Button {
+            onToggleScanExclude()
+        } label: {
+            Label(isExcludedFromScan ? "重新纳入扫描范围" : "从后续扫描中排除此目录", systemImage: isExcludedFromScan ? "checkmark.circle" : "nosign")
         }
     }
 
@@ -537,13 +538,13 @@ struct DirectoryTreeNodeRow: View {
         switch node.checkState {
         case .all:
             Image(systemName: "checkmark.square.fill")
-                .foregroundColor(Theme.actionBlue)
+                .foregroundStyle(Accent.tint)
         case .none:
             Image(systemName: "square")
-                .foregroundColor(Theme.labelTertiary)
+                .foregroundStyle(Ink.tertiary)
         case .mixed:
             Image(systemName: "minus.square.fill")
-                .foregroundColor(Theme.actionBlue.opacity(0.8))
+                .foregroundStyle(Accent.tint)
         }
     }
 }
@@ -554,14 +555,14 @@ struct DirectoryFilterBadge: View {
     var onClear: () -> Void
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: Space.xxs) {
             Image(systemName: "folder.fill")
                 .font(.system(size: 10))
-                .foregroundColor(Theme.warningOrange)
+                .foregroundStyle(Signal.caution)
 
             Text(shorten(path))
-                .font(Theme.monoFont(11, weight: .medium))
-                .foregroundColor(Theme.labelPrimary)
+                .font(.mcNumeric(11, weight: .medium))
+                .foregroundStyle(Ink.primary)
                 .lineLimit(1)
 
             Button {
@@ -569,20 +570,23 @@ struct DirectoryFilterBadge: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 11))
-                    .foregroundColor(Theme.labelSecondary)
+                    .foregroundStyle(Ink.tertiary)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .pressable()
             .help("清除目录筛选，查看全部")
+            .accessibilityLabel("清除目录筛选，查看全部")
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, Space.xs)
         .padding(.vertical, 3)
         .background(
             Capsule()
-                .fill(Theme.warningOrange.opacity(0.12))
+                .fill(Signal.caution.opacity(0.12))
         )
         .overlay(
             Capsule()
-                .stroke(Theme.warningOrange.opacity(0.25), lineWidth: 0.5)
+                .strokeBorder(Signal.caution.opacity(0.25), lineWidth: 0.5)
         )
     }
 

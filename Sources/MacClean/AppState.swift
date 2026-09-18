@@ -118,15 +118,30 @@ final class AppState: ObservableObject {
     var totalSelectedCount: Int { categories.reduce(0) { $0 + $1.selectedCount } }
 
     /// 各风险级汇总（Dashboard 风险分布）
-    var riskTotals: [RiskLevel: Int64] {
-        var totals: [RiskLevel: Int64] = [:]
+    /// 全部分类累计的扫描问题。非空即代表"当前结果不完整"，界面要如实说明。
+    var allScanIssues: [ScanIssue] { categories.flatMap(\.issues) }
+
+    /// 结论构成：各结论档位的可清理体积。
+    ///
+    /// 取代了历史上的 `riskTotals`（按"风险等级"汇总）。注意与 `riskCounts` / `riskItems`
+    /// 区分：后者是"电脑风险提醒"模块的安全检查结果，与本处的清理结论是两回事。
+    var verdictTotals: [Recommendation.Kind: Int64] {
+        var totals: [Recommendation.Kind: Int64] = [:]
         for item in searchableItems {
-            totals[item.risk, default: 0] += item.size
+            totals[item.recommendation.kind, default: 0] += item.size
         }
         return totals
     }
 
     func scan(_ cat: CleanCategory) {
+        scan(cat, resetMeasurementSession: true)
+    }
+
+    /// - Parameter resetMeasurementSession: 是否顺带开启新的测量会话。
+    ///   **批量扫描时必须为 false**：`scanAll` 会把 6 个分类并发丢进全局队列，
+    ///   若每个分类开工都清一次共享的测量缓存，它们会互相把对方正在用的缓存清掉，
+    ///   缓存复用彻底失效（实测让整轮扫描慢一倍）。会话边界由 `scanAll` 统一划定一次。
+    private func scan(_ cat: CleanCategory, resetMeasurementSession: Bool) {
         let st = state(for: cat)
         guard !st.isScanning else { return }
         st.isScanning = true
@@ -135,31 +150,31 @@ final class AppState: ObservableObject {
         let oldIDs = Set(st.items.map(\.id))
         aiReview.removeReviews(for: oldIDs)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            do {
-                let items = try Scanner.scan(cat)
-                DispatchQueue.main.async {
-                    st.items = items
-                    st.isScanned = true
-                    st.isScanning = false
-                    self?.refreshDisk()
-                    NotificationManager.shared.notifyScanCompleted(
-                        categoryName: cat.title,
-                        itemCount: items.count,
-                        totalBytes: items.reduce(Int64(0)) { $0 + $1.size }
-                    )
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    st.isScanning = false
-                    st.lastError = "扫描失败：\(error.localizedDescription)"
-                }
+            if resetMeasurementSession { FileSystem.beginMeasurementSession() }
+            // 走 scanDetailed：除了结果项，还要拿回"哪些根目录这次读不到"。
+            // 少了这一步，缺「完全磁盘访问权限」时整类会安静地返回 0 项，
+            // 用户读成"这里很干净"——而废纸篓里可能躺着几十 GB。
+            let outcome = Scanner.scanDetailed(cat)
+            DispatchQueue.main.async {
+                st.items = outcome.items
+                st.issues = outcome.issues
+                st.isScanned = true
+                st.isScanning = false
+                self?.refreshDisk()
+                NotificationManager.shared.notifyScanCompleted(
+                    categoryName: cat.title,
+                    itemCount: outcome.items.count,
+                    totalBytes: outcome.items.reduce(Int64(0)) { $0 + $1.size }
+                )
             }
         }
     }
 
     /// 扫描全部分类（侧边栏「全部扫描」）
     func scanAll() {
-        for cat in CleanCategory.allCases { scan(cat) }
+        // 会话边界：整轮只划一次，6 个分类共享同一份测量缓存
+        FileSystem.beginMeasurementSession()
+        for cat in CleanCategory.allCases { scan(cat, resetMeasurementSession: false) }
     }
 
     /// 将指定路径加入白名单并立刻从当前已扫描项目中移除
@@ -353,84 +368,119 @@ final class AppState: ObservableObject {
             let result = Cleaner.clean(items, permanently: permanently) { _ in }
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                let done = result.succeededItemIDs
-                var breakdown: [CleanCategory: Int64] = [:]
-                // #7（二轮）：按成功项逐分类记账，而非全记到第一个贡献分类
-                for st in contributingCategories {
-                    // LOW-4：用 Cleaner 逐 item 实际释放字节记账（与全局 releasedBytes 口径一致），
-                    // 避免"全部路径已不存在仍按 item.size 计"的偏差
-                    let originalItems = st.items
-                    let releasedHere = originalItems
-                        .filter { cleaningIDs.contains($0.id) && done.contains($0.id) }
-                        .reduce(Int64(0)) { $0 + (result.releasedBytesByItem[$1.id] ?? 0) }
-                    if releasedHere > 0 {
-                        breakdown[st.category] = releasedHere
-                    }
-                    // #1（二轮）：filter 保留快照外新勾选项
-                    st.items = originalItems.map { item in
-                        guard item.isSelected, cleaningIDs.contains(item.id) else { return item }
-                        if !done.contains(item.id) {
-                            var copy = item
-                            copy.isSelected = false
-                            return copy
-                        }
-                        return item
-                    }.filter { !$0.isSelected || !cleaningIDs.contains($0.id) }
-                    // LOW-1：运行态被跳项取消勾选（避免"还勾着却删不掉"困惑）
-                    if !runningBlocked.isEmpty {
-                        st.items = st.items.map { item in
-                            guard runningBlocked.contains(where: { $0.id == item.id }) else { return item }
-                            var copy = item
-                            copy.isSelected = false
-                            return copy
-                        }
-                    }
-                    st.releasedBytes += releasedHere
-                }
+                let breakdown = self.applyCleanBookkeeping(for: contributingCategories,
+                                                           result: result,
+                                                           cleaningIDs: cleaningIDs,
+                                                           runningBlocked: runningBlocked)
                 self.isCleaning = false
                 self.refreshDisk()
-                self.recordClean(categoryName: "多分类",
-                                 itemCount: result.succeeded,
-                                 bytes: result.releasedBytes,   // N8：实际释放量
-                                 mode: permanently ? "彻底删除" : "废纸篓",
-                                 failures: result.failures.count)
-                var parts = ["已释放 \(result.releasedBytes.byteStringCN)"]
-                if !result.failures.isEmpty {
-                    parts.append("\(result.failures.count) 项失败")
-                }
-                if !runningBlocked.isEmpty {
-                    parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
-                }
-                self.lastCleanSummary = parts.joined(separator: "，")
-                if result.releasedBytes > 0 || result.succeeded > 0 {
-                    self.lastCleanResult = CleanResultSnapshot(
-                        title: "聚合清理完成",
-                        releasedBytes: result.releasedBytes,
-                        itemCount: result.succeeded,
-                        failureCount: result.failures.count,
-                        mode: permanently ? "彻底删除" : "废纸篓",
-                        beforeAvailable: beforeAvailable,
-                        afterAvailable: self.diskAvailable,
-                        breakdown: breakdown,
-                        timestamp: Date()
-                    )
-                    self.showCleanResultSheet = true
-                }
-                NotificationManager.shared.notifyCleanCompleted(
-                    releasedBytes: result.releasedBytes,
-                    failureCount: result.failures.count
-                )
+                self.reportAggregateCleanOutcome(result: result,
+                                                 breakdown: breakdown,
+                                                 runningBlocked: runningBlocked,
+                                                 beforeAvailable: beforeAvailable,
+                                                 permanently: permanently)
             }
         }
     }
 
-    /// 菜单栏助手一键快速安全清理：自动勾选所有 safe 级别、未在用且未加入白名单的缓存与日志项并移入废纸篓
+    /// 聚合清理的逐分类记账：按成功项累计实际释放量、移除已清理项、取消被跳过项勾选。
+    /// - Returns: 各贡献分类实际释放的字节数（结果弹窗的分类明细）
+    private func applyCleanBookkeeping(for contributingCategories: [CategoryState],
+                                       result: Cleaner.Result,
+                                       cleaningIDs: Set<UUID>,
+                                       runningBlocked: [CleanItem]) -> [CleanCategory: Int64] {
+        let done = result.succeededItemIDs
+        var breakdown: [CleanCategory: Int64] = [:]
+        // #7（二轮）：按成功项逐分类记账，而非全记到第一个贡献分类
+        for st in contributingCategories {
+            // LOW-4：用 Cleaner 逐 item 实际释放字节记账（与全局 releasedBytes 口径一致），
+            // 避免"全部路径已不存在仍按 item.size 计"的偏差
+            let originalItems = st.items
+            let releasedHere = originalItems
+                .filter { cleaningIDs.contains($0.id) && done.contains($0.id) }
+                .reduce(Int64(0)) { $0 + (result.releasedBytesByItem[$1.id] ?? 0) }
+            if releasedHere > 0 {
+                breakdown[st.category] = releasedHere
+            }
+            // #1（二轮）：filter 保留快照外新勾选项
+            st.items = originalItems.map { item in
+                guard item.isSelected, cleaningIDs.contains(item.id) else { return item }
+                if !done.contains(item.id) {
+                    var copy = item
+                    copy.isSelected = false
+                    return copy
+                }
+                return item
+            }.filter { !$0.isSelected || !cleaningIDs.contains($0.id) }
+            // LOW-1：运行态被跳项取消勾选（避免"还勾着却删不掉"困惑）
+            if !runningBlocked.isEmpty {
+                st.items = st.items.map { item in
+                    guard runningBlocked.contains(where: { $0.id == item.id }) else { return item }
+                    var copy = item
+                    copy.isSelected = false
+                    return copy
+                }
+            }
+            st.releasedBytes += releasedHere
+        }
+        return breakdown
+    }
+
+    /// 聚合清理的收尾播报：写清理历史、状态栏摘要、结果弹窗快照与系统通知
+    private func reportAggregateCleanOutcome(result: Cleaner.Result,
+                                             breakdown: [CleanCategory: Int64],
+                                             runningBlocked: [CleanItem],
+                                             beforeAvailable: Int64,
+                                             permanently: Bool) {
+        recordClean(categoryName: "多分类",
+                    itemCount: result.succeeded,
+                    bytes: result.releasedBytes,   // N8：实际释放量
+                    mode: permanently ? "彻底删除" : "废纸篓",
+                    failures: result.failures.count)
+        var parts = ["已释放 \(result.releasedBytes.byteStringCN)"]
+        if !result.failures.isEmpty {
+            parts.append("\(result.failures.count) 项失败")
+        }
+        if !runningBlocked.isEmpty {
+            parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
+        }
+        lastCleanSummary = parts.joined(separator: "，")
+        if result.releasedBytes > 0 || result.succeeded > 0 {
+            lastCleanResult = CleanResultSnapshot(
+                title: "聚合清理完成",
+                releasedBytes: result.releasedBytes,
+                itemCount: result.succeeded,
+                failureCount: result.failures.count,
+                mode: permanently ? "彻底删除" : "废纸篓",
+                beforeAvailable: beforeAvailable,
+                afterAvailable: diskAvailable,
+                breakdown: breakdown,
+                timestamp: Date()
+            )
+            showCleanResultSheet = true
+        }
+        NotificationManager.shared.notifyCleanCompleted(
+            releasedBytes: result.releasedBytes,
+            failureCount: result.failures.count
+        )
+    }
+
+    /// 菜单栏助手一键快速安全清理：自动勾选所有结论为「可清理」且未加入白名单的项并移入废纸篓。
+    ///
+    /// 两道门槛，职责不同：
+    ///  1. `recommendation.isSafe` —— 唯一结论轴。它**本身已经蕴含**
+    ///     "所属应用未在运行、且不是靠推断判定的"；
+    ///  2. `!usage.isRecentlyUsed` —— 额外保险。它不产出任何标签，因此不会造成第二条轴，
+    ///     只是把"工具替你自动动手"的范围再收窄一档。与 `DiskMonitor` 的无人值守清理保持一致。
+    ///
+    /// 用户仍可手动勾选并清理近期写过的缓存——那是有意识的决定，不是一键代劳。
     func quickCleanSafeItems() {
         guard !isCleaning else { return }
         for st in categories {
             for i in 0..<st.items.count {
                 let item = st.items[i]
-                if item.risk == .safe && !item.usage.isRecentlyUsed && !whitelist.isWhitelisted(path: item.path) {
+                if item.recommendation.isSafe && !item.usage.isRecentlyUsed
+                    && !whitelist.isWhitelisted(path: item.path) {
                     st.items[i].isSelected = true
                 }
             }

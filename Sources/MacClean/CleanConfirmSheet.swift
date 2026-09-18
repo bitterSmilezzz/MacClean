@@ -2,6 +2,14 @@ import SwiftUI
 
 /// 清理确认弹窗（G2 二次确认 + G3 废纸篓/彻底删除选择）
 /// permanent 用 @Binding 注入：状态归属调用方（也便于 ViewInspector 稳定测试）
+///
+/// 重写要点：
+///  - 标题回到语义字号阶梯（`Typo.title`），不再逐处硬编码 22pt。
+///  - 两个方式选项去掉"自绘描边卡片"，改为 `GroupBox` 分组内的可选行：
+///    选中态用 `mcSelection`（强调色轻填充）+ 单选图标表达。
+///  - 警示文案去掉 emoji，图标交给 SF Symbol；强调色只有 `Accent.tint` 一个，
+///    `Signal.*` 只出现在风险提示与彻底删除按钮上。
+///  - 操作区收成一个主按钮 + 一个文字动作，不再并排两个等权按钮。
 struct CleanConfirmSheet: View {
     @Environment(\.dismiss) private var dismiss
     let count: Int
@@ -29,106 +37,73 @@ struct CleanConfirmSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            // 标题
-            VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Space.md) {
+            // 标题与概要
+            VStack(alignment: .leading, spacing: Space.xxs) {
                 Text("确认清理")
-                    .font(Theme.displayFont(22, weight: .semibold))
-                    .tracking(-0.3)
-                    .foregroundColor(Theme.ink)
+                    .font(Typo.title)
+                    .foregroundStyle(Ink.primary)
+
                 Text("将清理 \(count) 项，共 \(size.byteStringCN)" + (hint.map { "（\($0)）" } ?? ""))
-                    .font(Theme.bodyFont(13))
-                    .foregroundColor(Theme.inkMuted48)
-                // 近期使用警告（用户诉求：最近在用/频繁使用的项先提醒）
-                if recentlyUsedCount > 0 {
-                    Text("⚠️ 其中 \(recentlyUsedCount) 项近期或频繁使用中，确认删除前请留意")
-                        .font(Theme.bodyFont(13, weight: .semibold))
-                        .foregroundColor(Theme.textWarning)
-                        .padding(.top, 2)
-                }
+                    .font(Typo.body)
+                    .foregroundStyle(Ink.secondary)
+            }
+
+            // 近期使用警告（用户诉求：最近在用/频繁使用的项先提醒）
+            if recentlyUsedCount > 0 {
+                noticeRow(icon: "clock.badge.exclamationmark",
+                          text: "其中 \(recentlyUsedCount) 项近期或频繁使用中，确认删除前请留意",
+                          color: Signal.caution)
             }
 
             // 方式选择（G3）
-            VStack(alignment: .leading, spacing: 10) {
-                Text("清理方式")
-                    .font(Theme.bodyFont(12, weight: .semibold))
-                    .foregroundColor(Theme.inkMuted80)
-
-                Button(action: { permanent = false }) {
-                    HStack(spacing: 10) {
-                        Image(systemName: permanent ? "circle" : "largecircle.fill.circle")
-                            .foregroundColor(permanent ? Theme.inkMuted48 : Theme.actionBlue)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("移入废纸篓（推荐）")
-                                .font(Theme.bodyFont(13, weight: .medium))
-                                .foregroundColor(Theme.ink)
-                            Text("可随时恢复，最安全")
-                                .font(Theme.bodyFont(11))
-                                .foregroundColor(Theme.inkMuted48)
-                        }
-                        Spacer()
-                    }
-                    .padding(Theme.spaceSm)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.radiusMd)
-                            .fill(permanent ? Theme.parchment : Theme.actionBlue.opacity(0.06))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Theme.radiusMd)
-                                    .stroke(permanent ? Theme.hairline : Theme.actionBlue.opacity(0.5), lineWidth: 1)
-                            )
-                    )
+            GroupBox(title: "清理方式") {
+                optionRow(title: "移入废纸篓（推荐）",
+                          detail: "可随时恢复，最安全",
+                          isSelected: !permanent,
+                          identifier: "trashOption") {
+                    permanent = false
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("trashOption")
 
-                Button(action: { permanent = true }) {
-                    HStack(spacing: 10) {
-                        Image(systemName: permanent ? "largecircle.fill.circle" : "circle")
-                            .foregroundColor(permanent ? Theme.dangerRed : Theme.inkMuted48)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("彻底删除")
-                                .font(Theme.bodyFont(13, weight: .medium))
-                                .foregroundColor(Theme.ink)
-                            Text("不可恢复，请谨慎")
-                                .font(Theme.bodyFont(11))
-                                .foregroundColor(Theme.inkMuted48)
-                        }
-                        Spacer()
-                    }
-                    .padding(Theme.spaceSm)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.radiusMd)
-                            .fill(permanent ? Theme.dangerRed.opacity(0.06) : Theme.parchment)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: Theme.radiusMd)
-                                    .stroke(permanent ? Theme.dangerRed.opacity(0.5) : Theme.hairline, lineWidth: 1)
-                            )
-                    )
+                optionRow(title: "彻底删除",
+                          detail: "不可恢复，请谨慎",
+                          isSelected: permanent,
+                          identifier: "permanentOption",
+                          isLast: true) {
+                    permanent = true
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("permanentOption")
             }
 
             // 警告区
             if hasPermanent {
-                warningRow(icon: "trash",
-                           text: "包含废纸篓内容，将直接彻底删除",
-                           color: Theme.warningOrange)
+                noticeRow(icon: "trash",
+                          text: "包含废纸篓内容，将直接彻底删除",
+                          color: Signal.caution)
             }
             if hasDanger {
-                warningRow(icon: "exclamationmark.triangle.fill",
-                           text: "包含高风险项，建议仅移入废纸篓并逐一确认",
-                           color: Theme.dangerRed)
+                noticeRow(icon: "exclamationmark.triangle.fill",
+                          text: "包含高风险项，建议仅移入废纸篓并逐一确认",
+                          color: Signal.critical)
             }
 
-            // 操作
-            HStack(spacing: Theme.spaceSm) {
-                Spacer()
-                Button("取消") { dismiss() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("cancelButton")
+            // 操作：一个主按钮 + 一个文字动作
+            HStack(spacing: Space.sm) {
+                Spacer(minLength: Space.sm)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Text("取消")
+                        .font(Typo.row)
+                        .foregroundStyle(Ink.secondary)
+                        .padding(.horizontal, Space.sm)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .pressable()
+                .rowHover()
+                .keyboardShortcut(.cancelAction)
+                .accessibilityIdentifier("cancelButton")
 
                 Button {
                     onConfirm(permanent)
@@ -139,29 +114,63 @@ struct CleanConfirmSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .tint(permanent ? Theme.textDanger : Theme.actionBlue)
+                .tint(permanent ? Signal.critical : Accent.tint)
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("confirmButton")
             }
         }
-        .padding(Theme.spaceXl)
+        .padding(Space.xl)
         .frame(width: 420)
     }
 
-    private func warningRow(icon: String, text: String, color: Color) -> some View {
-        // 三巡：警示文字用深色变体（亮色 2.2:1/3.5:1 不达标），图标保留亮色
-        let textColor: Color = color == Theme.dangerRed ? Theme.textDanger : Theme.textWarning
-        return HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 12))
-                .foregroundColor(color)
-            Text(text)
-                .font(Theme.bodyFont(12, weight: .medium))
-                .foregroundColor(textColor)
+    // MARK: - 方式选项（分组内的可选行）
+
+    private func optionRow(title: String, detail: String, isSelected: Bool,
+                           identifier: String, isLast: Bool = false,
+                           action: @escaping () -> Void) -> some View {
+        GroupedRow(isLast: isLast) {
+            Button(action: action) {
+                HStack(spacing: Space.xs) {
+                    Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(isSelected ? Accent.tint : Ink.tertiary)
+                        .frame(width: 16)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(title)
+                            .font(Typo.rowStrong)
+                            .foregroundStyle(Ink.primary)
+                        Text(detail)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                    }
+
+                    Spacer(minLength: Space.xs)
+                }
+                .contentShape(Rectangle())
+            }
+            .pressable()
+            .rowHover()
+            .selectionHighlight(isSelected)
+            .accessibilityIdentifier(identifier)
         }
-        .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, 8)
+    }
+
+    // MARK: - 提示行（近期使用 / 风险）
+
+    private func noticeRow(icon: String, text: String, color: Color) -> some View {
+        HStack(spacing: Space.xs) {
+            IconSlot(systemName: icon, size: 12, weight: .medium, color: color, width: 16)
+            Text(text)
+                .font(Typo.row)
+                .foregroundStyle(Ink.primary)
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, Space.xs)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(color.opacity(0.08)))
+        .background(
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(color.opacity(0.08))
+        )
     }
 }

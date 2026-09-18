@@ -10,6 +10,16 @@ enum HistoryTimeRange: String, CaseIterable, Identifiable {
 }
 
 /// 清理历史（融合 Mole `mo history`）
+///
+/// 重写要点：
+///  - 表头删掉「图标彩色底板 + 大标题 + 装饰性副标题」三件套。左对齐一个 `Typo.title` 标题，
+///    右侧留给真正要用的控件（时间跨度、导出）。真数据（清理次数、累计释放）留在底部状态条。
+///  - 三张浮空描边卡片（趋势图 / 分布图 / 流水列表）统一降级为 `GroupBox` inset group，
+///    行分隔交给 `GroupedRow` 的发丝线。
+///  - `HistoryRow` 从"圆角标签堆叠"改成表格式对齐：图标｜分类｜方式｜时间｜条目｜体积，
+///    每列固定宽度，方式不再画成彩色胶囊——密集列表里胶囊只会制造噪声。
+///  - 趋势柱状图去掉渐变与投影，改用单一 `Accent.tint` 填充（唯一强调色）；悬停只做透明度与
+///    轻微缩放，不改变布局尺寸。
 struct HistoryView: View {
     @EnvironmentObject private var app: AppState
     @State private var confirmClear = false
@@ -36,79 +46,58 @@ struct HistoryView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             Group {
                 if app.history.isEmpty {
-                    VStack(spacing: Theme.spaceSm) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 36, weight: .light))
-                            .foregroundColor(Theme.labelTertiary.opacity(0.6))
-                        Text("暂无清理记录")
-                            .font(Theme.displayFont(22, weight: .semibold))
-                            .foregroundColor(Theme.labelPrimary)
-                        Text("完成一次清理后，记录会显示在这里")
-                            .font(Theme.bodyFont(13))
-                            .foregroundColor(Theme.labelSecondary)
-                    }
+                    EmptyState(
+                        icon: "clock.arrow.circlepath",
+                        title: "暂无清理记录",
+                        message: "完成一次清理后，记录会显示在这里"
+                    )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
-                        VStack(spacing: Theme.spaceMd) {
+                        VStack(alignment: .leading, spacing: Space.lg) {
                             if filteredRecords.isEmpty {
-                                VStack(spacing: Theme.spaceSm) {
-                                    Image(systemName: "calendar.badge.exclamationmark")
-                                        .font(.system(size: 32))
-                                        .foregroundColor(Theme.labelTertiary)
-                                    Text("所选时间段（\(selectedRange.rawValue)）内暂无清理记录")
-                                        .font(Theme.bodyFont(13, weight: .medium))
-                                        .foregroundColor(Theme.labelSecondary)
-                                    Button("查看全部历史") {
-                                        withAnimation(Theme.smoothTransition) {
-                                            selectedRange = .all
-                                        }
+                                EmptyState(
+                                    icon: "calendar.badge.exclamationmark",
+                                    title: "所选时间段（\(selectedRange.rawValue)）内暂无清理记录",
+                                    actionTitle: "查看全部历史"
+                                ) {
+                                    withAnimation(Motion.standard) {
+                                        selectedRange = .all
                                     }
-                                    .buttonStyle(.link)
                                 }
-                                .frame(maxWidth: .infinity, minHeight: 180)
-                                .macCard(cornerRadius: Theme.radiusMd)
                             } else {
                                 // 趋势图表：当记录 >= 2 时展示释放趋势
                                 if filteredRecords.count >= 2 {
                                     HistoryTrendChart(records: filteredRecords, range: selectedRange)
                                 }
 
-                                // 各分类累计释放分布大卡
+                                // 各分类累计释放分布
                                 HistoryCategoryDistributionCard(records: filteredRecords)
 
                                 // 详细流水记录列表
-                                VStack(spacing: 0) {
-                                    ForEach(Array(filteredRecords.enumerated()), id: \.element.id) { index, record in
-                                        if index > 0 {
-                                            Divider()
-                                                .overlay(Theme.separator.opacity(0.35))
-                                                .padding(.leading, 38)
-                                        }
-                                        HistoryRow(record: record)
-                                    }
-                                }
-                                .macCard(cornerRadius: Theme.radiusMd)
+                                historyList
                             }
                         }
-                        .padding(Theme.spaceMd)
+                        .padding(.horizontal, Space.gutter)
+                        .padding(.vertical, Space.md)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
-            .transition(.opacity)
-            .animation(Theme.smoothTransition, value: app.history.isEmpty)
+            .motionSafeTransition(.opacity)
+            .motionSafe(Motion.micro, value: app.history.isEmpty)
 
             footer
         }
-        .background(Theme.windowBackground)
-        .hudToast(isPresented: $showHud, text: hudMessage)
+        .background(Surface.window)
+        .toast(isPresented: $showHud, text: hudMessage)
         .confirmationDialog("清空历史记录？", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("清空", role: .destructive) {
-                withAnimation(Theme.smoothTransition) {
+                withAnimation(Motion.standard) {
                     app.clearHistory()
                 }
             }
@@ -116,26 +105,25 @@ struct HistoryView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: Theme.spaceMd) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 20, weight: .medium))
-                .foregroundColor(Theme.actionBlue)
-                .frame(width: 40, height: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                        .fill(Theme.actionBlue.opacity(0.12))
-                )
+    // MARK: - 详细流水列表
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("清理历史")
-                    .font(Theme.displayFont(24, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
-                Text("记录每一次清理动作，可追溯 · 支持图表与数据导出")
-                    .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.labelSecondary)
+    private var historyList: some View {
+        GroupBox(title: "全部记录") {
+            ForEach(Array(filteredRecords.enumerated()), id: \.element.id) { index, record in
+                GroupedRow(isLast: index == filteredRecords.count - 1) {
+                    HistoryRow(record: record)
+                }
             }
-            Spacer()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Space.sm) {
+            Text("清理历史")
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
+
+            Spacer(minLength: Space.md)
 
             // 时间跨度筛选分段器
             Picker("", selection: $selectedRange) {
@@ -165,12 +153,14 @@ struct HistoryView: View {
             }
             .menuStyle(.borderedButton)
             .controlSize(.regular)
-            .tint(Theme.actionBlue)
+            // 不加 fixedSize 时 borderedButton 菜单会吃掉整条 Spacer 之外的剩余宽度，
+            // 变成一根横贯表头的空按钮
+            .fixedSize()
             .disabled(filteredRecords.isEmpty)
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceMd)
-        .frostedBar()
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .barSurface()
     }
 
     private func exportCSV() {
@@ -196,18 +186,32 @@ struct HistoryView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text("共 \(app.history.count) 次清理")
-                .font(Theme.bodyFont(12))
-                .foregroundColor(Theme.labelTertiary)
-                .monospacedDigit()
-                .contentTransition(.numericText())
-            Text("累计释放 \(totalBytes.byteStringCN)")
-                .font(Theme.bodyFont(13, weight: .semibold))
-                .foregroundColor(Theme.labelPrimary)
-                .monospacedDigit()
-                .contentTransition(.numericText())
-            Spacer()
+        HStack(spacing: Space.md) {
+            HStack(spacing: Space.xxs) {
+                Text("共")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                Text("\(app.history.count)")
+                    .font(.mcNumeric(11, weight: .medium))
+                    .foregroundStyle(Ink.secondary)
+                    .motionSafeNumericTransition()
+                Text("次清理")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+            }
+
+            HStack(spacing: Space.xxs) {
+                Text("累计释放")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                Text(totalBytes.byteStringCN)
+                    .font(.mcNumeric(12, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
+            }
+
+            Spacer(minLength: Space.sm)
+
             Button {
                 confirmClear = true
             } label: {
@@ -215,17 +219,21 @@ struct HistoryView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            .tint(Theme.dangerRed)
+            .tint(Signal.critical)
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, 10)
-        .frostedBar()
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .barSurface()
         .overlay(alignment: .top) {
-            Divider().overlay(Theme.separator)
+            Hairline()
         }
     }
 }
 
+/// 单条清理流水。表格式对齐：图标｜分类｜方式｜时间｜条目｜体积。
+///
+/// 原先"分类 + 彩色方式胶囊 / 灰色元数据行 / 右侧体积"的三行堆叠在列表里读起来是散的：
+/// 每行高度不一致、数字不对齐。拆成固定宽度的列之后，视线可以竖着扫下来比较体积。
 struct HistoryRow: View {
     let record: CleanRecord
 
@@ -236,46 +244,52 @@ struct HistoryRow: View {
     }()
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: record.failures > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .font(.system(size: 14))
-                .foregroundColor(record.failures > 0 ? Theme.warningOrange : Theme.actionBlue)
+        HStack(spacing: Space.sm) {
+            IconSlot(
+                systemName: record.failures > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle",
+                size: 12,
+                color: record.failures > 0 ? Signal.caution : Ink.tertiary,
+                width: 16
+            )
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(record.categoryName)
-                        .font(Theme.bodyFont(13, weight: .medium))
-                        .foregroundColor(Theme.labelPrimary)
-                    Text(record.mode)
-                        .font(Theme.bodyFont(11, weight: .medium))
-                        .foregroundColor(record.mode == "彻底删除" ? Theme.textDanger : Theme.actionBlue)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill((record.mode == "彻底删除" ? Theme.dangerRed : Theme.actionBlue).opacity(0.12))
-                        )
-                }
-                Text(Self.formatter.string(from: record.date) + " · \(record.itemCount) 项" +
-                     (record.failures > 0 ? " · \(record.failures) 项失败" : ""))
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelTertiary)
-                    .monospacedDigit()
-            }
-            Spacer()
+            Text(record.categoryName)
+                .font(Typo.rowStrong)
+                .foregroundStyle(Ink.primary)
+                .lineLimit(1)
+                .frame(width: 96, alignment: .leading)
+
+            Text(record.mode)
+                .font(Typo.caption)
+                .foregroundStyle(record.mode == "彻底删除" ? Signal.critical : Ink.tertiary)
+                .lineLimit(1)
+                .frame(width: 64, alignment: .leading)
+
+            Text(Self.formatter.string(from: record.date))
+                .font(.mcNumeric(11))
+                .foregroundStyle(Ink.tertiary)
+                .frame(width: 104, alignment: .leading)
+
+            Text(record.failures > 0 ? "\(record.itemCount) 项 · \(record.failures) 项失败" : "\(record.itemCount) 项")
+                .font(.mcNumeric(11))
+                .foregroundStyle(record.failures > 0 ? Signal.caution : Ink.tertiary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
             Text(record.bytes.byteStringCN)
-                .font(Theme.monoFont(12, weight: .semibold))
-                .foregroundColor(Theme.labelPrimary)
-                .monospacedDigit()
+                .font(.mcNumeric(12, weight: .semibold))
+                .foregroundStyle(Ink.primary)
+                .frame(width: 84, alignment: .trailing)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Space.xxs)
         .contentShape(Rectangle())
-        .macRowHover(cornerRadius: 0)
+        .rowHover()
     }
 }
 
-/// 各分类累计释放分布卡片
+/// 各分类累计释放分布。
+///
+/// 分段比例条是数据可视化，继续用分类图表色（`ChartPalette`）；图例换成 `LegendItem`——
+/// 色点 + 分类 + 右对齐等宽数值，比原来"色点 + 名称 + 括号百分比"的流式排布更容易竖着比较。
 struct HistoryCategoryDistributionCard: View {
     let records: [CleanRecord]
 
@@ -290,13 +304,13 @@ struct HistoryCategoryDistributionCard: View {
         return sorted.map { name, bytes in
             let color: Color
             if let cat = CleanCategory.allCases.first(where: { $0.title == name }) {
-                color = cat.accentColor
+                color = cat.chartColor
             } else if name.contains("重复") {
-                color = Theme.actionBlue
+                color = ChartPalette.color(at: 0)
             } else if name.contains("卸载") {
-                color = .purple
+                color = ChartPalette.color(at: 5)
             } else {
-                color = Theme.warningOrange
+                color = ChartPalette.color(at: 3)
             }
             return (name: name, bytes: bytes, count: countMap[name, default: 0], color: color)
         }
@@ -304,52 +318,35 @@ struct HistoryCategoryDistributionCard: View {
 
     var body: some View {
         let total = max(1, records.reduce(0) { $0 + $1.bytes })
-        VStack(alignment: .leading, spacing: Theme.spaceSm) {
-            HStack {
-                Label("各分类累计释放占比", systemImage: "chart.pie.fill")
-                    .font(Theme.bodyFont(13, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
+        return GroupBox(title: "各分类累计释放", footer: "共 \(categoryTotals.count) 个分类贡献") {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                // 多色水平堆叠比例条
+                GeometryReader { geo in
+                    HStack(spacing: 2) {
+                        ForEach(categoryTotals, id: \.name) { item in
+                            let ratio = CGFloat(item.bytes) / CGFloat(total)
+                            RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                                .fill(item.color)
+                                .frame(width: max(3, geo.size.width * ratio - 2))
+                        }
+                    }
+                }
+                .frame(height: 8)
 
-                Spacer()
-
-                Text("共 \(categoryTotals.count) 个分类贡献")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelTertiary)
-            }
-
-            // 多色水平堆叠比例条
-            GeometryReader { geo in
-                HStack(spacing: 2) {
+                // 图例与详情指标
+                VStack(spacing: 6) {
                     ForEach(categoryTotals, id: \.name) { item in
-                        let ratio = CGFloat(item.bytes) / CGFloat(total)
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(item.color)
-                            .frame(width: max(3, geo.size.width * ratio - 2))
+                        let pct = Int(Double(item.bytes) / Double(total) * 100)
+                        LegendItem(
+                            color: item.color,
+                            label: item.count > 1 ? "\(item.name) · \(item.count) 次" : item.name,
+                            value: "\(item.bytes.byteStringCN) (\(pct)%)"
+                        )
                     }
                 }
             }
-            .frame(height: 8)
-
-            // 图例与详情指标
-            FlowLayout(spacing: 10) {
-                ForEach(categoryTotals, id: \.name) { item in
-                    let pct = Int(Double(item.bytes) / Double(total) * 100)
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(item.color)
-                            .frame(width: 7, height: 7)
-                        Text(item.name)
-                            .font(Theme.bodyFont(11, weight: .regular))
-                            .foregroundColor(Theme.labelSecondary)
-                        Text("\(item.bytes.byteStringCN) (\(pct)%)")
-                            .font(Theme.monoFont(11, weight: .medium))
-                            .foregroundColor(Theme.labelPrimary)
-                    }
-                }
-            }
+            .padding(Space.sm)
         }
-        .padding(Theme.spaceMd)
-        .macCard(cornerRadius: Theme.radiusMd)
     }
 }
 
@@ -378,91 +375,81 @@ struct HistoryTrendChart: View {
         records.reduce(0) { $0 + $1.bytes }
     }
 
+    private var footerText: String {
+        let shown = "最近 \(chartRecords.count) 次清理流水"
+        return range == .all ? shown : "\(range.rawValue) · \(shown)"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceSm) {
-            // 图表标题及关键度量
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("清理释放趋势")
-                        .font(Theme.bodyFont(13, weight: .semibold))
-                        .foregroundColor(Theme.labelPrimary)
-                    Text(range == .all ? "最近 \(chartRecords.count) 次清理流水分布" : "\(range.rawValue) \(chartRecords.count) 次清理流水分布")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelTertiary)
-                }
-
-                Spacer()
-
-                HStack(spacing: Theme.spaceMd) {
+        GroupBox(title: "清理释放趋势", footer: footerText) {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                // 关键度量：右对齐，`Typo.micro` 标签 + 等宽数字
+                HStack(alignment: .firstTextBaseline, spacing: Space.lg) {
+                    Spacer(minLength: 0)
                     metricItem(label: "平均单次", value: avgBytes.byteStringCN)
                     metricItem(label: "单次最高", value: maxBytes.byteStringCN)
                     metricItem(label: "历史总计", value: totalBytes.byteStringCN)
                 }
-            }
 
-            Divider().overlay(Theme.hairline)
+                Hairline()
 
-            // 柱状图主体
-            VStack(spacing: 6) {
-                HStack(alignment: .bottom, spacing: 8) {
-                    ForEach(chartRecords) { record in
-                        HistoryBarItem(
-                            record: record,
-                            maxBytes: maxBytes,
-                            isHovered: hoveredRecord?.id == record.id
-                        ) { isHovering in
-                            withAnimation(Theme.spring) {
-                                hoveredRecord = isHovering ? record : nil
+                // 柱状图主体
+                VStack(spacing: 6) {
+                    HStack(alignment: .bottom, spacing: Space.xs) {
+                        ForEach(chartRecords) { record in
+                            HistoryBarItem(
+                                record: record,
+                                maxBytes: maxBytes,
+                                isHovered: hoveredRecord?.id == record.id
+                            ) { isHovering in
+                                withAnimation(Motion.micro) {
+                                    hoveredRecord = isHovering ? record : nil
+                                }
                             }
                         }
                     }
-                }
-                .frame(height: 80)
+                    .frame(height: 80)
 
-                // 悬停提示或基准线信息
-                HStack {
-                    if let hovered = hoveredRecord {
-                        HStack(spacing: 6) {
+                    // 悬停读出或提示
+                    HStack(spacing: Space.xxs) {
+                        if let hovered = hoveredRecord {
                             Text(hovered.categoryName)
-                                .font(Theme.bodyFont(11, weight: .medium))
-                                .foregroundColor(Theme.actionBlue)
+                                .font(Typo.caption)
+                                .fontWeight(.medium)
+                                .foregroundStyle(Ink.primary)
                             Text("·")
-                                .foregroundColor(Theme.labelTertiary)
+                                .foregroundStyle(Ink.quaternary)
                             Text(hovered.bytes.byteStringCN)
-                                .font(Theme.monoFont(11, weight: .semibold))
-                                .foregroundColor(Theme.labelPrimary)
+                                .font(.mcNumeric(11, weight: .semibold))
+                                .foregroundStyle(Ink.primary)
                             Text("·")
-                                .foregroundColor(Theme.labelTertiary)
+                                .foregroundStyle(Ink.quaternary)
                             Text(formatDate(hovered.date))
-                                .font(Theme.bodyFont(11))
-                                .foregroundColor(Theme.labelTertiary)
+                                .font(.mcNumeric(11))
+                                .foregroundStyle(Ink.tertiary)
+                        } else {
+                            Text("将光标悬停在柱条上可查看单次清理详情")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.tertiary)
                         }
-                        .transition(.opacity)
-                    } else {
-                        Text("将光标悬停在柱条上可查看单次清理详情")
-                            .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.labelTertiary.opacity(0.8))
-                            .transition(.opacity)
+                        Spacer(minLength: 0)
                     }
-                    Spacer()
+                    .frame(height: 16)
+                    .motionSafe(Motion.micro, value: hoveredRecord?.id)
                 }
-                .frame(height: 16)
-                .animation(Theme.smoothTransition, value: hoveredRecord?.id)
             }
+            .padding(Space.sm)
         }
-        .padding(Theme.spaceMd)
-        .macCard(cornerRadius: Theme.radiusMd)
     }
 
     private func metricItem(label: String, value: String) -> some View {
         VStack(alignment: .trailing, spacing: 1) {
             Text(label)
-                .font(Theme.bodyFont(10))
-                .foregroundColor(Theme.labelTertiary)
+                .font(Typo.micro)
+                .foregroundStyle(Ink.tertiary)
             Text(value)
-                .font(Theme.monoFont(11, weight: .semibold))
-                .foregroundColor(Theme.labelSecondary)
-                .monospacedDigit()
+                .font(.mcNumeric(11, weight: .semibold))
+                .foregroundStyle(Ink.secondary)
         }
     }
 
@@ -486,36 +473,21 @@ struct HistoryBarItem: View {
     }
 
     var body: some View {
-        VStack(spacing: 4) {
-            Spacer()
+        VStack(spacing: Space.xxs) {
+            Spacer(minLength: 0)
 
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: isHovered
-                            ? [Theme.actionBlue.opacity(0.85), Theme.actionBlue]
-                            : [Theme.actionBlue.opacity(0.35), Theme.actionBlue.opacity(0.7)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+            RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                .fill(Accent.tint.opacity(isHovered ? 1.0 : 0.55))
                 .frame(height: barHeight)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .stroke(isHovered ? Theme.actionBlue : Color.clear, lineWidth: 1)
-                )
-                .shadow(
-                    color: isHovered ? Theme.actionBlue.opacity(0.3) : Color.clear,
-                    radius: 4,
-                    x: 0,
-                    y: 2
+                    RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                        .stroke(isHovered ? Accent.tint : Color.clear, lineWidth: 1)
                 )
                 .scaleEffect(isHovered ? 1.05 : 1.0, anchor: .bottom)
-                .animation(Theme.spring, value: isHovered)
+                .motionSafe(Motion.micro, value: isHovered)
         }
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .onHover(perform: onHover)
     }
 }
-

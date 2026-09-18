@@ -1,285 +1,292 @@
 import SwiftUI
 import AppKit
 
-/// 菜单栏常驻助手浮窗视图
+/// 菜单栏常驻助手浮窗。
+///
+/// 重写要点：
+///  - 删掉品牌图标底下的渐变圆角方块，图标就是图标；"菜单栏助手"这类装饰性副标题一并删除。
+///  - 磁盘、内存两张"描边 + 阴影"浮空卡片换成 `GroupBox` 内嵌分组：中性底色 + 发丝分隔线，
+///    组内用 `GroupedRow` 分行。
+///  - 进度条统一改用 `CapacityBar`，不再各画一条渐变条。
+///  - 六个分类的彩虹图标色全部去掉——分类身份由 SF Symbol + 文字表达，唯一强调色是
+///    `Accent.tint`；语义色只留给内存压力这种真实信号。
+///  - 快捷操作从"两个等权按钮"收成一个主按钮（清理）+ 一个文字动作（扫描）。
+///  - 所有可点元素补上 hover / 按压反馈与 `contentShape` 命中范围。
 struct MenuBarView: View {
     @EnvironmentObject private var app: AppState
     @StateObject private var sysMonitor = SystemMonitor.shared
     @Environment(\.openWindow) private var openWindow
-
-    @State private var isHoveredScan = false
-    @State private var isHoveredClean = false
 
     var body: some View {
         VStack(spacing: 0) {
             // 顶栏品牌与主操作
             headerView
 
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: Theme.spaceSm) {
-                    // 1. 磁盘用量卡片
-                    diskCard
+                VStack(spacing: Space.sm) {
+                    // 1. 磁盘用量
+                    diskGroup
 
-                    // 2. 内存用量与压力监控卡片
-                    memoryCard
+                    // 2. 内存用量与压力监控
+                    memoryGroup
 
-                    // 3. 快捷操作栏
+                    // 3. 快捷操作
                     quickActions
 
                     // 4. 各分类快捷概览与直达
-                    categoriesOverview
+                    categoriesGroup
                 }
-                .padding(Theme.spaceSm)
+                .padding(Space.sm)
             }
 
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
-            // 底栏状态与版本
+            // 底栏
             footerView
         }
         .frame(width: 320, height: 490)
-        .background(Theme.canvas)
+        .background(Surface.window)
         .onAppear {
             app.refreshDisk()
             sysMonitor.refresh()
+            // 用户在盯着看 → 用最快档位
+            sysMonitor.apply(mode: .foreground)
+        }
+        .onDisappear {
+            // 浮窗关掉 → 回到"标签需要什么就给什么"的最低档位
+            sysMonitor.apply(mode: MenuBarLabelView.requiredPollingMode(
+                displayMode: app.diskMonitor.config.menuBarDisplayMode))
         }
     }
 
     // MARK: - 顶栏
     private var headerView: some View {
-        HStack(spacing: 8) {
-            // 品牌图标底板
-            ZStack {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(LinearGradient(
-                        colors: [Theme.actionBlue, Theme.actionBlue.opacity(0.8)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ))
-                    .frame(width: 22, height: 22)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
-            }
+        HStack(spacing: Space.xs) {
+            Image(systemName: "internaldrive")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Accent.tint)
 
-            VStack(alignment: .leading, spacing: 0) {
-                Text("MacClean")
-                    .font(Theme.bodyFont(12, weight: .bold))
-                    .foregroundColor(Theme.ink)
-                Text("菜单栏助手")
-                    .font(Theme.bodyFont(10, weight: .regular))
-                    .foregroundColor(Theme.bodyMuted)
-            }
+            Text("MacClean")
+                .font(Typo.rowStrong)
+                .foregroundStyle(Ink.primary)
 
-            Spacer()
+            Spacer(minLength: Space.xs)
 
             // 打开主界面
-            Button {
+            iconButton("macwindow.on.rectangle", help: "打开 MacClean 主窗口", label: "打开主窗口") {
                 openMainWindow()
-            } label: {
-                Image(systemName: "macwindow.on.rectangle")
-                    .font(.system(size: 12))
             }
-            .buttonStyle(.borderless)
-            .foregroundColor(Theme.bodyMuted)
-            .help("打开 MacClean 主窗口")
-            .accessibilityLabel("打开主窗口")
 
             // 偏好设置
-            Button {
+            iconButton("gearshape", help: "偏好设置", label: "偏好设置") {
                 app.ai.showSettings = true
                 openMainWindow()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12))
             }
-            .buttonStyle(.borderless)
-            .foregroundColor(Theme.bodyMuted)
-            .help("偏好设置")
-            .accessibilityLabel("偏好设置")
 
             // 退出应用
-            Button {
+            iconButton("power", help: "退出 MacClean", label: "退出应用") {
                 NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 12))
-            }
-            .buttonStyle(.borderless)
-            .foregroundColor(Theme.dangerRed.opacity(0.8))
-            .help("退出 MacClean")
-            .accessibilityLabel("退出应用")
-        }
-        .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, 8)
-    }
-
-    // MARK: - 磁盘用量卡片
-    private var diskCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("Macintosh HD", systemImage: "internaldrive")
-                    .font(Theme.bodyFont(11, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-                Spacer()
-                Button {
-                    withAnimation {
-                        app.refreshDisk()
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.borderless)
-                .foregroundColor(Theme.bodyMuted)
-                .help("刷新磁盘用量")
-            }
-
-            HStack {
-                Text("已用 \(app.diskUsed.byteStringCN)")
-                    .font(Theme.bodyFont(11, weight: .medium))
-                    .foregroundColor(Theme.ink)
-                Spacer()
-                Text("可用 \(app.diskAvailable.byteStringCN)")
-                    .font(Theme.bodyFont(11, weight: .regular))
-                    .foregroundColor(Theme.bodyMuted)
-            }
-
-            // 进度条
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Theme.pearl.opacity(0.8))
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(LinearGradient(
-                            colors: [Theme.actionBlue, Theme.skyLinkBlue],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ))
-                        .frame(width: max(0, geo.size.width * CGFloat(app.usedRatio)))
-                }
-            }
-            .frame(height: 6)
-
-            HStack {
-                if app.totalCleanable > 0 {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Theme.warningOrange)
-                            .frame(width: 6, height: 6)
-                        Text("可清理 \(app.totalCleanable.byteStringCN)")
-                            .font(Theme.bodyFont(10, weight: .semibold))
-                            .foregroundColor(Theme.warningOrange)
-                    }
-                } else {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(Theme.successGreen)
-                            .frame(width: 6, height: 6)
-                        Text("磁盘健康良好")
-                            .font(Theme.bodyFont(10, weight: .regular))
-                            .foregroundColor(Theme.bodyMuted)
-                    }
-                }
-                Spacer()
-                Text("\(Int(app.usedRatio * 100))% 已用")
-                    .font(Theme.monoFont(10, weight: .regular))
-                    .foregroundColor(Theme.bodyMuted)
             }
         }
-        .padding(Theme.spaceSm)
-        .macCard(cornerRadius: Theme.radiusSm)
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, Space.xs)
     }
 
-    // MARK: - 物理内存监控卡片
-    private var memoryCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Label("物理内存", systemImage: "memorychip")
-                    .font(Theme.bodyFont(11, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-                Spacer()
-                // 压力指示灯
-                HStack(spacing: 4) {
+    private func iconButton(_ systemName: String, help: String, label: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12))
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 22, height: 20)
+                .contentShape(Rectangle())
+        }
+        .pressable()
+        .rowHover()
+        .help(help)
+        .accessibilityLabel(label)
+    }
+
+    // MARK: - 磁盘用量
+    private var diskGroup: some View {
+        GroupBox {
+            GroupedRow {
+                HStack(spacing: Space.xs) {
+                    IconSlot(systemName: "internaldrive", size: 12, color: Ink.tertiary, width: 16)
+
+                    Text("Macintosh HD")
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
+
+                    Spacer(minLength: Space.xs)
+
+                    Button {
+                        withAnimation {
+                            app.refreshDisk()
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Ink.secondary)
+                            .frame(width: 18, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .pressable()
+                    .rowHover()
+                    .help("刷新磁盘用量")
+                    .accessibilityLabel("刷新磁盘用量")
+                }
+            }
+
+            GroupedRow(isLast: true) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("已用 \(app.diskUsed.byteStringCN)")
+                            .font(Typo.row)
+                            .monospacedDigit()
+                            .foregroundStyle(Ink.primary)
+                        Spacer(minLength: Space.xs)
+                        Text("可用 \(app.diskAvailable.byteStringCN)")
+                            .font(Typo.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(Ink.tertiary)
+                    }
+
+                    CapacityBar(
+                        used: app.usedRatio,
+                        reclaimable: app.diskTotal > 0 ? Double(app.totalCleanable) / Double(app.diskTotal) : 0,
+                        height: 6,
+                        isCritical: app.usedRatio > 0.88
+                    )
+
+                    HStack(spacing: Space.xs) {
+                        if app.totalCleanable > 0 {
+                            Text("可清理")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.secondary)
+                            Text(app.totalCleanable.byteStringCN)
+                                .font(.mcNumeric(11, weight: .medium))
+                                .foregroundStyle(Accent.tint)
+                                .motionSafeNumericTransition()
+                        } else {
+                            IconSlot(systemName: "checkmark.circle", size: 11, color: Ink.tertiary, width: 14)
+                            Text("无待清理项")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.tertiary)
+                        }
+
+                        Spacer(minLength: Space.xs)
+
+                        Text("\(Int(app.usedRatio * 100))% 已用")
+                            .font(.mcNumeric(11))
+                            .foregroundStyle(Ink.tertiary)
+                            .motionSafeNumericTransition()
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 物理内存监控
+    private var memoryGroup: some View {
+        GroupBox {
+            GroupedRow {
+                HStack(spacing: Space.xs) {
+                    IconSlot(systemName: "memorychip", size: 12, color: Ink.tertiary, width: 16)
+
+                    Text("物理内存")
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
+
+                    Spacer(minLength: Space.xs)
+
+                    // 压力指示灯
                     Circle()
-                        .fill(sysMonitor.memory.pressure.color)
+                        .fill(pressureSignal)
                         .frame(width: 6, height: 6)
                     Text(sysMonitor.memory.pressure.rawValue)
-                        .font(Theme.bodyFont(10, weight: .semibold))
-                        .foregroundColor(sysMonitor.memory.pressure.color)
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(sysMonitor.memory.pressure.color.opacity(0.12))
-                .cornerRadius(4)
-            }
-
-            HStack {
-                Text("已用 \(sysMonitor.memory.usedString)")
-                    .font(Theme.bodyFont(11, weight: .medium))
-                    .foregroundColor(Theme.ink)
-                Spacer()
-                Text("总量 \(sysMonitor.memory.totalString)")
-                    .font(Theme.bodyFont(11, weight: .regular))
-                    .foregroundColor(Theme.bodyMuted)
-            }
-
-            // 内存进度条
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Theme.pearl.opacity(0.8))
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(sysMonitor.memory.pressure.color)
-                        .frame(width: max(0, geo.size.width * CGFloat(sysMonitor.memory.usageRatio)))
+                        .font(Typo.micro)
+                        .foregroundStyle(pressureSignal)
                 }
             }
-            .frame(height: 6)
 
-            // 细分指标（活动监视器标准）
-            HStack(spacing: 6) {
-                Text("App: \(sysMonitor.memory.appString)")
-                Text("·")
-                Text("联动: \(sysMonitor.memory.wiredString)")
-                Text("·")
-                Text("压缩: \(sysMonitor.memory.compressedString)")
+            GroupedRow(isLast: true) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("已用 \(sysMonitor.memory.usedString)")
+                            .font(Typo.row)
+                            .monospacedDigit()
+                            .foregroundStyle(Ink.primary)
+                        Spacer(minLength: Space.xs)
+                        Text("总量 \(sysMonitor.memory.totalString)")
+                            .font(Typo.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(Ink.tertiary)
+                    }
+
+                    CapacityBar(
+                        used: sysMonitor.memory.usageRatio,
+                        height: 6,
+                        isCritical: sysMonitor.memory.pressure == .high
+                    )
+
+                    // 细分指标（活动监视器标准）
+                    HStack(spacing: Space.xs) {
+                        Text("App \(sysMonitor.memory.appString)")
+                        Text("·").foregroundStyle(Ink.quaternary)
+                        Text("联动 \(sysMonitor.memory.wiredString)")
+                        Text("·").foregroundStyle(Ink.quaternary)
+                        Text("压缩 \(sysMonitor.memory.compressedString)")
+                    }
+                    .font(Typo.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(Ink.tertiary)
+                }
             }
-            .font(Theme.monoFont(9, weight: .regular))
-            .foregroundColor(Theme.bodyMuted)
         }
-        .padding(Theme.spaceSm)
-        .macCard(cornerRadius: Theme.radiusSm)
     }
 
-    // MARK: - 快捷操作栏
+    /// 内存压力是真实语义信号：正常/适中/紧张。
+    private var pressureSignal: Color {
+        switch sysMonitor.memory.pressure {
+        case .normal: return Signal.positive
+        case .moderate: return Signal.caution
+        case .high: return Signal.critical
+        }
+    }
+
+    // MARK: - 快捷操作
     private var quickActions: some View {
-        HStack(spacing: 8) {
-            // 全盘智能扫描按钮
-            let isScanning = app.categories.contains(where: { $0.isScanning })
+        let isScanning = app.categories.contains(where: { $0.isScanning })
+
+        return HStack(spacing: Space.xs) {
+            // 全盘智能扫描：次要动作，bordered
             Button {
                 app.scanAll()
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     if isScanning {
                         ProgressView()
-                            .scaleEffect(0.6)
+                            .controlSize(.mini)
+                            .scaleEffect(0.7)
                             .frame(width: 12, height: 12)
                     } else {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.system(size: 11, weight: .medium))
                     }
                     Text(isScanning ? "扫描中…" : "全盘扫描")
-                        .font(Theme.bodyFont(11, weight: .medium))
+                        .font(Typo.row)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 28)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.bordered)
             .disabled(isScanning)
 
-            // 一键清理或安全清理
+            // 一键清理或安全清理：唯一主操作
             Button {
                 if app.totalSelected > 0 {
                     app.cleanSelectedAcrossCategories(permanently: false)
@@ -287,111 +294,95 @@ struct MenuBarView: View {
                     app.quickCleanSafeItems()
                 }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: "trash")
                         .font(.system(size: 11, weight: .medium))
                     Text(app.totalSelected > 0 ? "清理选中 (\(app.totalSelected.byteStringCN))" : "安全速清")
-                        .font(Theme.bodyFont(11, weight: .medium))
+                        .font(Typo.rowStrong)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 28)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.borderedProminent)
-            .tint(Theme.actionBlue)
             .disabled(app.isCleaning || (app.totalSelected == 0 && app.totalCleanable == 0))
         }
     }
 
     // MARK: - 各分类快捷概览与直达
-    private var categoriesOverview: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("清理与优化直达")
-                .font(Theme.bodyFont(10, weight: .medium))
-                .foregroundColor(Theme.bodyMuted)
-                .padding(.horizontal, 2)
-                .padding(.top, 2)
-
+    private var categoriesGroup: some View {
+        GroupBox(title: "快速访问") {
             ForEach(CleanCategory.allCases) { cat in
-                MenuBarCategoryRow(category: cat, state: app.state(for: cat)) {
-                    openMainWindow(destination: .category(cat))
+                GroupedRow {
+                    MenuBarCategoryRow(category: cat, state: app.state(for: cat)) {
+                        openMainWindow(destination: .category(cat))
+                    }
                 }
             }
 
             // 重复文件入口
-            Button {
-                openMainWindow(destination: .duplicates)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.on.doc")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.actionBlue)
-                        .frame(width: 14)
-                    Text("重复与相似大文件")
-                        .font(Theme.bodyFont(11, weight: .regular))
-                        .foregroundColor(Theme.ink)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9))
-                        .foregroundColor(Theme.bodyMuted.opacity(0.6))
+            GroupedRow {
+                navRow(icon: "doc.on.doc", title: "重复与相似大文件") {
+                    openMainWindow(destination: .duplicates)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .macRowHover(cornerRadius: 4)
 
             // App 卸载器入口
-            Button {
-                openMainWindow(destination: .uninstaller)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "trash.circle")
-                        .font(.system(size: 11))
-                        .foregroundColor(.purple)
-                        .frame(width: 14)
-                    Text("App 卸载器")
-                        .font(Theme.bodyFont(11, weight: .regular))
-                        .foregroundColor(Theme.ink)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9))
-                        .foregroundColor(Theme.bodyMuted.opacity(0.6))
+            GroupedRow(isLast: true) {
+                navRow(icon: "app.dashed", title: "App 卸载器") {
+                    openMainWindow(destination: .uninstaller)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .macRowHover(cornerRadius: 4)
         }
-        .padding(6)
-        .macCard(cornerRadius: Theme.radiusSm)
+    }
+
+    private func navRow(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Space.xs) {
+                IconSlot(systemName: icon, size: 12, color: Ink.secondary, width: 16)
+
+                Text(title)
+                    .font(Typo.row)
+                    .foregroundStyle(Ink.primary)
+
+                Spacer(minLength: Space.xs)
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Ink.quaternary)
+            }
+            .contentShape(Rectangle())
+        }
+        .pressable()
+        .rowHover()
     }
 
     // MARK: - 底栏
     private var footerView: some View {
-        HStack {
-            Text("MacClean 后台常驻守护")
-                .font(Theme.bodyFont(10, weight: .regular))
-                .foregroundColor(Theme.bodyMuted)
-
-            Spacer()
-
-            Button("打开主窗口") {
-                openMainWindow()
+        Button {
+            openMainWindow()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 11))
+                Text("打开主窗口")
+                    .font(Typo.caption)
             }
-            .buttonStyle(.link)
-            .font(Theme.bodyFont(10, weight: .semibold))
+            .foregroundStyle(Ink.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, Theme.spaceSm)
-        .padding(.vertical, 6)
+        .pressable()
+        .rowHover()
+        .padding(.horizontal, Space.xs)
+        .padding(.vertical, Space.xxs)
     }
 
     // MARK: - 激活并调出主窗口
     private func openMainWindow(destination: Destination? = nil) {
         if let destination {
-            withAnimation(.easeOut(duration: 0.15)) {
+            withAnimation(Motion.micro) {
                 app.destination = destination
             }
         }
@@ -411,9 +402,25 @@ struct MenuBarLabelView: View {
     @EnvironmentObject private var app: AppState
     @StateObject private var sysMonitor = SystemMonitor.shared
 
+    /// 标签在后台需要多快的轮询。
+    ///
+    /// 关键在于**只有"图标 + 内存"这一档才真的需要内存轮询**：
+    ///  - `iconOnly`：标签上没有任何动态内容 → 完全不需要轮询；
+    ///  - `iconAndDisk`：磁盘数值来自 `AppState.diskAvailable`（由 `refreshDisk()` 更新），
+    ///    跟这个内存定时器无关 → 同样不需要；
+    ///  - `iconAndMemory`：标签显示内存占用率 → 需要中等频率刷新。
+    ///
+    /// 原实现是无条件 3 秒一轮，等于让一个纯图标模式也在后台每 3 秒唤醒一次 CPU。
+    static func requiredPollingMode(displayMode: MenuBarDisplayMode) -> SystemMonitor.PollingMode {
+        switch displayMode {
+        case .iconOnly, .iconAndDisk: return .dormant
+        case .iconAndMemory: return .background
+        }
+    }
+
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: "sparkles")
+            Image(systemName: "internaldrive")
                 .font(.system(size: 12, weight: .medium))
 
             switch app.diskMonitor.config.menuBarDisplayMode {
@@ -421,11 +428,19 @@ struct MenuBarLabelView: View {
                 EmptyView()
             case .iconAndDisk:
                 Text(app.diskAvailable.byteStringCN)
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .font(.mcNumeric(11))
             case .iconAndMemory:
                 Text("\(Int(sysMonitor.memory.usageRatio * 100))%")
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .font(.mcNumeric(11))
             }
+        }
+        // 显示模式改变时立刻调整档位（比如从"仅图标"切到"图标 + 内存"）
+        .onAppear {
+            sysMonitor.apply(mode: Self.requiredPollingMode(
+                displayMode: app.diskMonitor.config.menuBarDisplayMode))
+        }
+        .onChange(of: app.diskMonitor.config.menuBarDisplayMode) { newMode in
+            sysMonitor.apply(mode: Self.requiredPollingMode(displayMode: newMode))
         }
     }
 }
@@ -438,41 +453,39 @@ struct MenuBarCategoryRow: View {
 
     var body: some View {
         Button(action: onSelect) {
-            HStack(spacing: 8) {
-                Image(systemName: category.icon)
-                    .font(.system(size: 11))
-                    .foregroundColor(category.accentColor)
-                    .frame(width: 14)
+            HStack(spacing: Space.xs) {
+                IconSlot(systemName: category.icon, size: 12, color: Ink.secondary, width: 16)
 
                 Text(category.title)
-                    .font(Theme.bodyFont(11, weight: .regular))
-                    .foregroundColor(Theme.ink)
+                    .font(Typo.row)
+                    .foregroundStyle(Ink.primary)
+                    .lineLimit(1)
 
-                Spacer()
+                Spacer(minLength: Space.xs)
 
                 if state.isScanning {
                     ProgressView()
-                        .scaleEffect(0.5)
+                        .controlSize(.mini)
+                        .scaleEffect(0.7)
                         .frame(width: 12, height: 12)
                 } else if state.isScanned {
                     Text(state.totalSize > 0 ? state.totalSize.byteStringCN : "0 KB")
-                        .font(Theme.monoFont(10, weight: .medium))
-                        .foregroundColor(state.totalSize > 0 ? Theme.warningOrange : Theme.bodyMuted)
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(state.totalSize > 0 ? Ink.secondary : Ink.quaternary)
+                        .motionSafeNumericTransition()
                 } else {
                     Text("未扫描")
-                        .font(Theme.bodyFont(10, weight: .regular))
-                        .foregroundColor(Theme.bodyMuted)
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.quaternary)
                 }
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9))
-                    .foregroundColor(Theme.bodyMuted.opacity(0.6))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Ink.quaternary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .macRowHover(cornerRadius: 4)
+        .pressable()
+        .rowHover()
     }
 }

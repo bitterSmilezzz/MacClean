@@ -65,17 +65,9 @@ struct SpaceNode: Identifiable, Equatable {
 // MARK: - 空间层级构建引擎
 
 enum SpaceHierarchyBuilder {
-    /// 调色板定义（纯正 Apple 原生 HIG 质感）
-    static let palette: [Color] = [
-        Color(red: 0.18, green: 0.50, blue: 0.98), // Royal Blue
-        Color(red: 0.36, green: 0.32, blue: 0.86), // Indigo
-        Color(red: 0.12, green: 0.72, blue: 0.65), // Teal
-        Color(red: 0.20, green: 0.78, blue: 0.45), // Emerald
-        Color(red: 0.98, green: 0.62, blue: 0.15), // Amber
-        Color(red: 0.95, green: 0.35, blue: 0.32), // Coral
-        Color(red: 0.68, green: 0.35, blue: 0.92), // Purple
-        Color(red: 0.45, green: 0.55, blue: 0.65)  // Slate
-    ]
+    // 这里原本还有一份自成一套的 8 色硬编码调色板（Royal Blue / Indigo / Purple …），
+    // 与 ChartPalette 完全重复，而且没有任何调用点。节点颜色统一由
+    // `CleanCategory.chartColor`（即 ChartPalette）提供，重复定义已删除。
 
     /// 构建全盘存储空间概览树
     static func buildDiskOverview(app: AppState) -> SpaceNode {
@@ -93,7 +85,7 @@ enum SpaceHierarchyBuilder {
                     name: cat.title,
                     path: nil,
                     size: st.totalSize,
-                    color: cat.accentColor,
+                    color: cat.chartColor,
                     icon: cat.icon,
                     category: cat,
                     children: subNodes
@@ -112,7 +104,7 @@ enum SpaceHierarchyBuilder {
                         name: grp.items.first?.name ?? "重复组",
                         path: grp.items.first?.path,
                         size: grp.wastedBytes,
-                        color: Color.purple.opacity(0.8),
+                        color: TilePalette.duplicates.shade(1.18),
                         icon: "doc.on.doc"
                     ))
                 }
@@ -121,7 +113,7 @@ enum SpaceHierarchyBuilder {
                 name: "重复与相似文件",
                 path: nil,
                 size: dupWasted,
-                color: Color.purple,
+                color: TilePalette.duplicates,
                 icon: "doc.on.doc",
                 children: dupChildren
             ))
@@ -134,12 +126,12 @@ enum SpaceHierarchyBuilder {
                 name: "系统与应用在用数据",
                 path: "/System",
                 size: systemAndOther,
-                color: Color(nsColor: .systemGray).opacity(0.7),
+                color: TilePalette.system,
                 icon: "internaldrive.fill",
                 children: [
-                    SpaceNode(name: "macOS 系统组件与框架", path: "/System", size: systemAndOther * 4 / 10, color: Color(nsColor: .systemGray).opacity(0.55), icon: "apple.logo"),
-                    SpaceNode(name: "已安装应用程序本体", path: "/Applications", size: systemAndOther * 35 / 100, color: Color(nsColor: .systemGray).opacity(0.65), icon: "app.dashed"),
-                    SpaceNode(name: "用户个人文稿与媒体", path: NSHomeDirectory(), size: systemAndOther * 25 / 100, color: Color(nsColor: .systemGray).opacity(0.75), icon: "folder.fill")
+                    SpaceNode(name: "macOS 系统组件与框架", path: "/System", size: systemAndOther * 4 / 10, color: TilePalette.system.shade(0.85), icon: "apple.logo"),
+                    SpaceNode(name: "已安装应用程序本体", path: "/Applications", size: systemAndOther * 35 / 100, color: TilePalette.system.shade(1.0), icon: "app.dashed"),
+                    SpaceNode(name: "用户个人文稿与媒体", path: NSHomeDirectory(), size: systemAndOther * 25 / 100, color: TilePalette.system.shade(1.2), icon: "folder.fill")
                 ]
             ))
         }
@@ -150,7 +142,7 @@ enum SpaceHierarchyBuilder {
                 name: "可用空间",
                 path: nil,
                 size: app.diskAvailable,
-                color: Color(nsColor: .separatorColor).opacity(0.35),
+                color: Surface.emptyTile,
                 icon: "circle.dashed",
                 children: []
             ))
@@ -163,7 +155,7 @@ enum SpaceHierarchyBuilder {
             name: "Macintosh HD",
             path: "/",
             size: total,
-            color: Theme.actionBlue,
+            color: Accent.tint,
             icon: "internaldrive",
             children: children
         )
@@ -183,7 +175,7 @@ enum SpaceHierarchyBuilder {
                     name: cat.title,
                     path: nil,
                     size: st.totalSize,
-                    color: cat.accentColor,
+                    color: cat.chartColor,
                     icon: cat.icon,
                     category: cat,
                     children: subNodes
@@ -201,7 +193,7 @@ enum SpaceHierarchyBuilder {
                         name: grp.items.first?.name ?? "重复文件",
                         path: grp.items.first?.path,
                         size: grp.wastedBytes,
-                        color: Color.purple.opacity(0.8),
+                        color: TilePalette.duplicates.shade(1.18),
                         icon: "doc.on.doc"
                     ))
                 }
@@ -210,7 +202,7 @@ enum SpaceHierarchyBuilder {
                 name: "重复与相似文件",
                 path: nil,
                 size: dupWasted,
-                color: Color.purple,
+                color: TilePalette.duplicates,
                 icon: "doc.on.doc",
                 children: dupChildren
             ))
@@ -222,8 +214,8 @@ enum SpaceHierarchyBuilder {
             name: "已扫描可清理项",
             path: nil,
             size: max(1, total),
-            color: Theme.actionBlue,
-            icon: "sparkles",
+            color: Accent.tint,
+            icon: "checkmark.seal",
             children: children
         )
     }
@@ -241,12 +233,12 @@ enum SpaceHierarchyBuilder {
         for i in 0..<topCount {
             let it = sorted[i]
             topTotal += it.size
-            let colorIdx = i % palette.count
+            let colorIdx = i
             subNodes.append(SpaceNode(
                 name: it.name,
                 path: it.path,
                 size: it.size,
-                color: palette[colorIdx],
+                color: ChartPalette.color(at: colorIdx),
                 icon: category.icon,
                 category: category
             ))
@@ -258,7 +250,7 @@ enum SpaceHierarchyBuilder {
                 name: "其他 \(sorted.count - topCount) 个项目",
                 path: nil,
                 size: remaining,
-                color: Color(nsColor: .tertiaryLabelColor).opacity(0.5),
+                color: TilePalette.residual,
                 icon: "ellipsis.circle",
                 category: category
             ))

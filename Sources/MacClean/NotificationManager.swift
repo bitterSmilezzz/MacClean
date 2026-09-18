@@ -128,8 +128,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     /// 发送磁盘低空间警戒系统通知
     func notifyLowDiskSpace(availableBytes: Int64, thresholdGB: Int) {
-        let title = "⚠️ Mac 磁盘空间不足警戒"
-        let body = "当前可用空间仅剩 \(availableBytes.byteStringCN)，已低于预警阈值 \(thresholdGB) GB。建议立即启动系统清理！"
+        let title = "磁盘空间不足"
+        let body = "当前可用空间仅剩 \(availableBytes.byteStringCN)，已低于预警阈值 \(thresholdGB) GB。建议立即启动系统清理。"
 
         lastNotification = SentNotification(title: title, body: body)
 

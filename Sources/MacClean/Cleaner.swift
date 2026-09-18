@@ -31,17 +31,24 @@ final class Cleaner {
             var deletedAnyPath = false   // N4：至少实际删了一个路径才计字节
             var itemBytes: Int64 = 0     // LOW-4：逐 item 实际释放字节
             for path in item.paths {
-                // 双保险：执行前再校验一次安全护栏（G1/G6）
-                guard FileSystem.isSafeToClean(path) else {
+                // 先把路径解析到**真实位置**，之后校验与删除都作用于这一个字符串。
+                //
+                // 为什么必须共用同一个解析结果：若"校验时解析一次、删除时再解析一次"，
+                // 两次解析之间路径被换成软链就出现了 TOCTOU 缝隙。
+                // 统一到解析后的路径，至少保证"删的就是刚刚验过的那一个"。
+                let target = FileSystem.realPath(path)
+
+                // 双保险：执行前再校验一次安全护栏（G1/G6/G8，含软链防跳板）
+                guard FileSystem.isSafeToClean(target) else {
                     itemFailedPaths.append(path)
                     continue
                 }
                 // 二轮 #4/#6：路径已不存在（如整目录先被删、或上次部分删除残留）→ 跳过而非失败
-                guard FileManager.default.fileExists(atPath: path) else { continue }
+                guard FileManager.default.fileExists(atPath: target) else { continue }
                 do {
                     // 先取实际大小（删除后取不到），用于精确记账（LOW-4）
-                    let actual = FileSystem.size(at: path)
-                    let url = URL(fileURLWithPath: path)
+                    let actual = FileSystem.size(at: target)
+                    let url = URL(fileURLWithPath: target)
                     if forcePermanent {
                         try fm.removeItem(at: url)
                     } else {
@@ -50,6 +57,9 @@ final class Cleaner {
                     }
                     deletedAnyPath = true
                     itemBytes += actual
+                    // 让测量缓存失效：否则紧接着的重新扫描会命中旧值，
+                    // 给已经删掉的目录报出删除前的体积
+                    FileSystem.invalidateMeasurements(for: [target])
                 } catch {
                     itemFailedPaths.append(path)
                 }

@@ -1,272 +1,197 @@
 import SwiftUI
 
+/// 侧边栏。
+///
+/// 重写要点：
+///  - 用原生 `List(selection:)` + `.listStyle(.sidebar)`，拿回 macOS 真正的高亮态、
+///    键盘导航、滚动惯性与 vibrancy，而不是手搓一堆 `Button` 假装是列表。
+///  - 删掉每一行下面的装饰性副标题（"磁盘与清理总览"这种），它们不携带信息，只制造噪音。
+///    右侧位置留给真正的实时数据：已扫描体积、风险数、重复组数。
+///  - 删掉图标底下的彩色圆角方块。分类身份由 SF Symbol + 文字承担。
+///  - 大圆环仪表盘换成一条横向容量条：同样信息量，占用不到三分之一的高度。
 struct SidebarView: View {
     @EnvironmentObject private var app: AppState
 
+    /// `List` 需要 `Destination?`；侧边栏不允许"无选中"，所以 nil 时保持原值。
+    private var selection: Binding<Destination?> {
+        Binding(
+            get: { app.destination },
+            set: { if let next = $0 { app.destination = next } }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            // 顶部品牌区
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Theme.actionBlue)
-                Text("MacClean")
-                    .font(Theme.displayFont(20, weight: .semibold))
-                    .tracking(-0.3)
-                    .foregroundColor(Theme.ink)
-                Spacer()
-            }
-            .padding(.horizontal, Theme.contentPadding)
-            .padding(.top, Theme.contentPadding)
-            .padding(.bottom, Theme.spaceMd)
+            capacityHeader
 
-            // 磁盘仪表
-            DiskGaugeView()
-                .padding(.horizontal, Theme.contentPadding)
-                .padding(.bottom, Theme.spaceLg)
+            List(selection: selection) {
+                Section {
+                    navRow(.dashboard, title: "概览", icon: "square.grid.2x2")
+                    navRow(.search, title: "检索", icon: "magnifyingglass")
+                    navRow(.spaceTreemap, title: "空间透视", icon: "square.split.bottomrightquarter")
+                }
 
-            // 导航列表
-            ScrollView {
-                VStack(spacing: 6) {
-                    // 概览仪表页
-                    ToolRow(icon: "square.grid.2x2", title: "概览",
-                            subtitle: "磁盘与清理总览",
-                            isActive: app.destination == .dashboard) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .dashboard
-                        }
-                    }
-                    // 全局检索
-                    ToolRow(icon: "magnifyingglass", title: "检索",
-                            subtitle: "跨分类与历史搜索",
-                            isActive: app.destination == .search) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .search
-                        }
-                    }
-                    // 空间透视（Treemap 矩形树图与旭日图）
-                    ToolRow(icon: "square.split.bottomrightquarter", title: "空间透视",
-                            subtitle: "Treemap 与旭日图全景",
-                            isActive: app.destination == .spaceTreemap) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .spaceTreemap
-                        }
-                    }
-
-                    Divider().overlay(Theme.separator).padding(.vertical, 4)
-
+                Section("清理") {
                     ForEach(CleanCategory.allCases) { cat in
-                        let st = app.state(for: cat)
-                        Button {
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                app.destination = .category(cat)
-                            }
-                        } label: {
-                            CategoryRow(category: cat, state: st, isActive: app.destination == .category(cat))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("sidebarCategory_\(cat.rawValue)")
-                    }
-
-                    Divider().overlay(Theme.separator).padding(.vertical, 4)
-
-                    // 电脑风险提醒（独立于文件清理的风险检查模块）
-                    ToolRow(icon: "exclamationmark.shield", title: "风险提醒",
-                            subtitle: app.riskScanned
-                                ? (app.riskItems.isEmpty ? "检查通过，无风险项" : "\(app.totalRiskCount) 项风险")
-                                : "检查敏感数据与系统风险",
-                            isActive: app.destination == .riskCheck) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .riskCheck
-                        }
-                    }
-
-                    // App 卸载器（融合 Pearcleaner/PureMac）
-                    ToolRow(icon: "app.dashed", title: "App 卸载器",
-                            subtitle: "卸载 App 及其全部残留",
-                            isActive: app.destination == .uninstaller) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .uninstaller
-                        }
-                    }
-                    // 重复文件查找（SHA-256 去重）
-                    ToolRow(icon: "doc.on.doc", title: "重复文件",
-                            subtitle: app.duplicateState.groups.isEmpty ? "查找多余副本" : "\(app.duplicateState.groups.count) 组重复",
-                            isActive: app.destination == .duplicates) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .duplicates
-                        }
-                    }
-                    // 清理历史（融合 Mole history）
-                    ToolRow(icon: "clock.arrow.circlepath", title: "清理历史",
-                            subtitle: "\(app.history.count) 条记录",
-                            isActive: app.destination == .history) {
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            app.destination = .history
-                        }
+                        categoryRow(cat)
+                            .tag(Destination.category(cat))
+                            .accessibilityIdentifier("sidebarCategory_\(cat.rawValue)")
                     }
                 }
-                .padding(.horizontal, Theme.spaceSm)
+
+                Section("工具") {
+                    navRow(.riskCheck, title: "风险提醒", icon: "exclamationmark.shield",
+                           trailing: app.riskScanned && !app.riskItems.isEmpty ? "\(app.totalRiskCount)" : nil,
+                           trailingColor: Signal.caution)
+                        .accessibilityIdentifier("toolRow_风险提醒")
+
+                    navRow(.uninstaller, title: "App 卸载器", icon: "app.dashed")
+                        .accessibilityIdentifier("toolRow_App 卸载器")
+
+                    navRow(.duplicates, title: "重复文件", icon: "doc.on.doc",
+                           trailing: app.duplicateState.groups.isEmpty ? nil : "\(app.duplicateState.groups.count)")
+                        .accessibilityIdentifier("toolRow_重复文件")
+
+                    navRow(.history, title: "清理历史", icon: "clock.arrow.circlepath",
+                           trailing: app.history.isEmpty ? nil : "\(app.history.count)")
+                        .accessibilityIdentifier("toolRow_清理历史")
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+
+            scanFooter
+        }
+    }
+
+    // MARK: - 顶部容量区
+
+    private var capacityHeader: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack(spacing: Space.xs) {
+                Image(systemName: "internaldrive")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Ink.tertiary)
+                Text("Macintosh HD")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.secondary)
+                Spacer(minLength: Space.xs)
+                Text("\(Int(app.usedRatio * 100))%")
+                    .font(.mcNumeric(11, weight: .medium))
+                    .foregroundStyle(app.usedRatio > 0.88 ? Signal.caution : Ink.secondary)
             }
 
-            // 统计条（已扫描 X/6 · 可清理 Y）
-            statsLine
-                .padding(.horizontal, Theme.contentPadding)
-                .padding(.top, Theme.spaceXs)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(app.diskUsed.byteStringCN)
+                    .font(Typo.metric)
+                    .monospacedDigit()
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
+                Text("已用")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+            }
 
-            // 底部扫描全部
-            Button(action: { app.scanAll() }) {
-                Label("扫描全部分类", systemImage: "arrow.clockwise")
-                    .font(Theme.bodyFont(14, weight: .medium))
+            CapacityBar(
+                used: app.usedRatio,
+                reclaimable: app.diskTotal > 0 ? Double(app.totalCleanable) / Double(app.diskTotal) : 0,
+                height: 6,
+                isCritical: app.usedRatio > 0.88
+            )
+            .padding(.top, 1)
+
+            Text("共 \(app.diskTotal.byteStringCN) · 可用 \(app.diskAvailable.byteStringCN)")
+                .font(Typo.caption)
+                .foregroundStyle(Ink.tertiary)
+                .monospacedDigit()
+                .motionSafeNumericTransition()
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.top, Space.sm)
+        .padding(.bottom, Space.sm)
+    }
+
+    // MARK: - 底部动作区
+
+    private var scanFooter: some View {
+        VStack(spacing: Space.xs) {
+            Hairline()
+
+            HStack(spacing: Space.xs) {
+                Text("\(app.scannedCount)/\(CleanCategory.allCases.count) 已扫描")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                    .monospacedDigit()
+                    .motionSafeNumericTransition()
+                Spacer(minLength: Space.xs)
+                if app.totalCleanable > 0 {
+                    Text("可清理 \(app.totalCleanable.byteStringCN)")
+                        .font(.mcNumeric(11, weight: .medium))
+                        .foregroundStyle(Accent.tint)
+                        .motionSafeNumericTransition()
+                }
+            }
+
+            Button {
+                app.scanAll()
+            } label: {
+                Label(app.scannedCount > 0 ? "重新扫描" : "扫描全部分类", systemImage: "arrow.clockwise")
+                    .font(Typo.rowStrong)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(Theme.actionBlue)
-            .padding(.horizontal, Theme.contentPadding)
-            .padding(.top, Theme.spaceSm)
-            .padding(.bottom, Theme.contentPadding)
+            .disabled(app.categories.contains { $0.isScanning })
         }
+        .padding(.horizontal, Space.md)
+        .padding(.bottom, Space.md)
+        .padding(.top, Space.xs)
     }
 
-    /// 概览统计（Dashboard / 侧栏底部统计条共用）
-    var statsLine: some View {
-        HStack(spacing: 0) {
-            Text("\(app.scannedCount)/\(CleanCategory.allCases.count)")
-                .font(Theme.monoFont(11, weight: .medium))
-                .foregroundColor(Theme.labelSecondary)
-                .monospacedDigit()
-                .contentTransition(.numericText())
-            Text(" 已扫描")
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.labelTertiary)
-            Spacer()
-            Text(app.totalCleanable.byteStringCN)
-                .font(Theme.monoFont(11, weight: .semibold))
-                .foregroundColor(Theme.actionBlue)
-                .monospacedDigit()
-                .contentTransition(.numericText())
-            Text(" 可清理")
-                .font(Theme.bodyFont(11))
-                .foregroundColor(Theme.labelTertiary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(Color.primary.opacity(0.035))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                        .stroke(Theme.separator.opacity(0.4), lineWidth: 0.5)
-                )
-        )
-    }
-}
+    // MARK: - 行
 
-/// 侧边栏工具入口（卸载器 / 历史）
-struct ToolRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-    let isActive: Bool
-    let action: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(isActive ? Theme.actionBlue : Theme.labelSecondary)
-                    .frame(width: 24, height: 24)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(isActive ? Theme.actionBlue.opacity(0.12) : Color.primary.opacity(0.04))
-                    )
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(Theme.bodyFont(13, weight: isActive ? .semibold : .regular))
-                        .foregroundColor(isActive ? Theme.actionBlue : Theme.labelPrimary)
-                    Text(subtitle)
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelTertiary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                    .fill(isActive ? Theme.actionBlue.opacity(0.14) : (isHovered ? Color.primary.opacity(0.045) : Color.clear))
-            )
-            .onHover { hovering in
-                withAnimation(Theme.fastTransition) {
-                    isHovered = hovering
+    @ViewBuilder
+    private func navRow(_ dest: Destination, title: String, icon: String,
+                        trailing: String? = nil, trailingColor: Color = Ink.tertiary) -> some View {
+        Label {
+            HStack(spacing: Space.xs) {
+                Text(title)
+                if let trailing {
+                    Spacer(minLength: Space.xs)
+                    Text(trailing)
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(trailingColor)
                 }
             }
+        } icon: {
+            Image(systemName: icon)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("toolRow_\(title)")
+        .tag(dest)
+    }
+
+    @ViewBuilder
+    private func categoryRow(_ cat: CleanCategory) -> some View {
+        let st = app.state(for: cat)
+
+        Label {
+            HStack(spacing: Space.xs) {
+                Text(cat.title)
+
+                Spacer(minLength: Space.xs)
+
+                if st.isScanning {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.7)
+                } else if st.isScanned, st.totalSize > 0 {
+                    Text(st.totalSize.byteStringCN)
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(Ink.tertiary)
+                        .motionSafeNumericTransition()
+                }
+            }
+        } icon: {
+            Image(systemName: cat.icon)
+        }
     }
 }
-
-struct CategoryRow: View {
-    let category: CleanCategory
-    @ObservedObject var state: CategoryState
-    var isActive: Bool = false
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: category.icon)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(category.accentColor)
-                .frame(width: 24, height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(category.accentColor.opacity(0.14))
-                )
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(category.title)
-                    .font(Theme.bodyFont(13, weight: isActive ? .semibold : .regular))
-                    .foregroundColor(isActive ? Theme.actionBlue : Theme.labelPrimary)
-                Text(state.isScanned ? "已扫描 · \(state.items.count) 项" : "未扫描")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.labelTertiary)
-                    .monospacedDigit()
-            }
-            Spacer()
-            if state.isScanning {
-                ProgressView()
-                    .controlSize(.small)
-                    .transition(.opacity)
-            }
-            if state.isScanned && state.totalSize > 0 && !state.isScanning {
-                Text(state.totalSize.byteStringCN)
-                    .font(Theme.monoFont(11, weight: .medium))
-                    .foregroundColor(Theme.labelSecondary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
-                    .transition(.opacity)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(isActive ? Theme.actionBlue.opacity(0.14) : (isHovered ? Color.primary.opacity(0.045) : Color.clear))
-        )
-        .onHover { hovering in
-            withAnimation(Theme.fastTransition) {
-                isHovered = hovering
-            }
-        }
-        .animation(Theme.fastTransition, value: state.isScanning)
-    }
-}
-

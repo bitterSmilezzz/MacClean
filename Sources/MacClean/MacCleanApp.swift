@@ -113,18 +113,21 @@ struct MacCleanApp: App {
         }
         if CommandLine.arguments.contains("--scan") {
             print("MacClean headless scan")
-            let results = CleanCategory.allCases.map { cat -> (String, [CleanItem]) in
+            // 逐分类计时：扫描是这套工具最慢的一步，没有分段耗时就只能靠猜
+            let results = CleanCategory.allCases.map { cat -> (String, [CleanItem], Double) in
+                let t0 = Date()
                 let items = (try? Scanner.scan(cat)) ?? []
-                return (cat.title, items)
+                return (cat.title, items, Date().timeIntervalSince(t0))
             }
             var total: Int64 = 0
-            for (title, items) in results {
+            for (title, items, elapsed) in results {
                 let sum = items.reduce(Int64(0)) { $0 + $1.size }
                 total += sum
-                print("== \(title): \(items.count) 项, \(sum.byteString)")
+                print("== \(title): \(items.count) 项, \(sum.byteString)  [\(String(format: "%.2f", elapsed))s]")
                 for item in items.prefix(10) {
                     let usage = item.lastUsed.map { "\($0.relativeUsage) · \(item.usage.label)" } ?? item.usage.label
-                    print("   [\(item.risk.label)] \(item.name) — \(item.size.byteString) — \(item.path) — 使用:\(usage)")
+                    let recommendation = item.recommendation
+                    print("   [\(recommendation.label)] \(item.name) — \(item.size.byteString) — \(item.path) — 使用:\(usage) — 依据:\(recommendation.reason)")
                 }
             }
             print("== 总计可清理: \(total.byteString)")
@@ -142,87 +145,9 @@ struct MacCleanApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .commands {
-            CommandMenu("操作") {
-                Button("刷新与扫描") {
-                    app.refreshCurrentContext()
-                }
-                .keyboardShortcut("r", modifiers: .command)
-
-                Button("快速检索…") {
-                    app.focusSearch()
-                }
-                .keyboardShortcut("k", modifiers: .command)
-
-                Divider()
-
-                Button(app.ai.isDrawerOpen ? "收起 AI 助手" : "展开 AI 助手") {
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        app.ai.isDrawerOpen.toggle()
-                    }
-                }
-                .keyboardShortcut("i", modifiers: .command)
-            }
-
-            CommandMenu("导航") {
-                Button("概览") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .dashboard }
-                }
-                .keyboardShortcut("1", modifiers: .command)
-
-                Button("用户缓存") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.userCaches) }
-                }
-                .keyboardShortcut("2", modifiers: .command)
-
-                Button("日志与临时文件") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.logsAndTemp) }
-                }
-                .keyboardShortcut("3", modifiers: .command)
-
-                Button("开发残留") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.devResidue) }
-                }
-                .keyboardShortcut("4", modifiers: .command)
-
-                Button("App 残留") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.appResidue) }
-                }
-                .keyboardShortcut("5", modifiers: .command)
-
-                Button("大文件与垃圾箱") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.largeFiles) }
-                }
-                .keyboardShortcut("6", modifiers: .command)
-
-                Button("浏览器与系统数据") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.browserAndSystem) }
-                }
-                .keyboardShortcut("7", modifiers: .command)
-
-                Divider()
-
-                Button("重复文件查找") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .duplicates }
-                }
-                .keyboardShortcut("8", modifiers: .command)
-
-                Button("App 卸载器") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .uninstaller }
-                }
-                .keyboardShortcut("u", modifiers: .command)
-
-                Button("电脑风险提醒") {
-                    withAnimation(.easeOut(duration: 0.15)) { app.destination = .riskCheck }
-                }
-                .keyboardShortcut("0", modifiers: .command)
-            }
-
-            CommandGroup(replacing: .appSettings) {
-                Button("偏好设置…") {
-                    app.ai.showSettings = true
-                }
-                .keyboardShortcut(",", modifiers: .command)
-            }
+            operationMenu
+            navigationMenu
+            settingsCommand
         }
 
         MenuBarExtra {
@@ -233,6 +158,97 @@ struct MacCleanApp: App {
                 .environmentObject(app)
         }
         .menuBarExtraStyle(.window)
+    }
+
+    /// 「操作」菜单：刷新扫描 / 快速检索 / AI 助手抽屉（⌘R / ⌘K / ⌘I）
+    private var operationMenu: some Commands {
+        CommandMenu("操作") {
+            Button("刷新与扫描") {
+                app.refreshCurrentContext()
+            }
+            .keyboardShortcut("r", modifiers: .command)
+
+            Button("快速检索…") {
+                app.focusSearch()
+            }
+            .keyboardShortcut("k", modifiers: .command)
+
+            Divider()
+
+            Button(app.ai.isDrawerOpen ? "收起 AI 助手" : "展开 AI 助手") {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    app.ai.isDrawerOpen.toggle()
+                }
+            }
+            .keyboardShortcut("i", modifiers: .command)
+        }
+    }
+
+    /// 「导航」菜单：各功能页直达（⌘1–⌘7 / ⌘8 / ⌘U / ⌘0）
+    private var navigationMenu: some Commands {
+        CommandMenu("导航") {
+            Button("概览") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .dashboard }
+            }
+            .keyboardShortcut("1", modifiers: .command)
+
+            Button("用户缓存") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.userCaches) }
+            }
+            .keyboardShortcut("2", modifiers: .command)
+
+            Button("日志与临时文件") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.logsAndTemp) }
+            }
+            .keyboardShortcut("3", modifiers: .command)
+
+            Button("开发残留") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.devResidue) }
+            }
+            .keyboardShortcut("4", modifiers: .command)
+
+            Button("App 残留") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.appResidue) }
+            }
+            .keyboardShortcut("5", modifiers: .command)
+
+            Button("大文件与垃圾箱") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.largeFiles) }
+            }
+            .keyboardShortcut("6", modifiers: .command)
+
+            Button("浏览器与系统数据") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.browserAndSystem) }
+            }
+            .keyboardShortcut("7", modifiers: .command)
+
+            Divider()
+
+            Button("重复文件查找") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .duplicates }
+            }
+            .keyboardShortcut("8", modifiers: .command)
+
+            Button("App 卸载器") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .uninstaller }
+            }
+            .keyboardShortcut("u", modifiers: .command)
+
+            Button("电脑风险提醒") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .riskCheck }
+            }
+            .keyboardShortcut("0", modifiers: .command)
+        }
+    }
+
+    /// 「偏好设置…」入口（⌘,）
+    private var settingsCommand: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("偏好设置…") {
+                app.ai.showSettings = true
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
     }
 }
 
@@ -265,69 +281,25 @@ struct ContentView: View {
                 // AI 对话抽屉：覆盖在右侧，不挤占内容宽度（深度优化 d1）
                 // M8：抽屉展开时主内容加右侧留白，避免遮住右侧主操作（清理/搜索框）
                 if app.ai.isDrawerOpen {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        AIChatView()
-                            .overlay(
-                                Rectangle()
-                                    .fill(Theme.separator.opacity(0.5))
-                                    .frame(width: 0.8),
-                                alignment: .leading
-                            )
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                            .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
-                    }
-                    .zIndex(10)
+                    aiChatDrawer
                 }
 
                 // AI 再筛查抽屉：筛查时弹出，展示思考过程（进度/日志/结论流）
                 if app.aiReview.isDrawerOpen {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        AIReviewView()
-                            .overlay(
-                                Rectangle()
-                                    .fill(Theme.separator.opacity(0.5))
-                                    .frame(width: 0.8),
-                                alignment: .leading
-                            )
-                            .transition(.move(edge: .trailing).combined(with: .opacity))
-                            .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
-                    }
-                    .zIndex(11)
+                    aiReviewDrawer
                 }
 
                 // 抽屉展开时，⌘W 与 Esc 优先收起抽屉
-                if app.ai.isDrawerOpen || app.aiReview.isDrawerOpen {
-                    Button("") {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            app.ai.isDrawerOpen = false
-                            app.aiReview.isDrawerOpen = false
-                        }
-                    }
-                    .keyboardShortcut("w", modifiers: .command)
-                    .opacity(0)
-                    .frame(width: 0, height: 0)
-
-                    Button("") {
-                        withAnimation(.easeOut(duration: 0.25)) {
-                            app.ai.isDrawerOpen = false
-                            app.aiReview.isDrawerOpen = false
-                        }
-                    }
-                    .keyboardShortcut(.cancelAction)
-                    .opacity(0)
-                    .frame(width: 0, height: 0)
-                }
+                drawerDismissShortcuts
             }
-            .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
-            .animation(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
+            .motionSafe(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
+            .motionSafe(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
         }
         .onAppear {
             app.refreshDisk()
             NotificationManager.shared.requestAuthorization()
         }
-        .alert("⚠️ Mac 磁盘空间不足警戒", isPresented: $app.diskMonitor.showLowSpaceAlert) {
+        .alert("磁盘空间不足", isPresented: $app.diskMonitor.showLowSpaceAlert) {
             Button("立即扫描全部分类", role: .none) {
                 withAnimation(.easeOut(duration: 0.15)) {
                     app.destination = .dashboard
@@ -336,7 +308,7 @@ struct ContentView: View {
             }
             Button("稍后提醒", role: .cancel) {}
         } message: {
-            Text("当前可用空间仅剩 \(app.diskAvailable.byteStringCN)，已低于预设的警戒阈值 \(app.diskMonitor.config.lowSpaceThresholdGB) GB。建议立即执行系统深度清理释放空间！")
+            Text("当前可用空间仅剩 \(app.diskAvailable.byteStringCN)，已低于预设的警戒阈值 \(app.diskMonitor.config.lowSpaceThresholdGB) GB。建议立即执行系统深度清理释放空间。")
         }
         .sheet(isPresented: $app.showCleanResultSheet) {
             if let snapshot = app.lastCleanResult {
@@ -349,6 +321,66 @@ struct ContentView: View {
                     app.showCleanResultSheet = false
                 }
             }
+        }
+    }
+
+    /// AI 对话抽屉：贴右覆盖，左缘分隔线 + 投影
+    private var aiChatDrawer: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            AIChatView()
+                .overlay(
+                    Rectangle()
+                        .fill(Surface.hairline.opacity(0.5))
+                        .frame(width: 0.8),
+                    alignment: .leading
+                )
+                .motionSafeTransition(.move(edge: .trailing).combined(with: .opacity))
+                .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
+        }
+        .zIndex(10)
+    }
+
+    /// AI 再筛查抽屉：筛查时弹出，展示思考过程（进度/日志/结论流）
+    private var aiReviewDrawer: some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            AIReviewView()
+                .overlay(
+                    Rectangle()
+                        .fill(Surface.hairline.opacity(0.5))
+                        .frame(width: 0.8),
+                    alignment: .leading
+                )
+                .motionSafeTransition(.move(edge: .trailing).combined(with: .opacity))
+                .shadow(color: .black.opacity(0.15), radius: 18, x: -4, y: 0)
+        }
+        .zIndex(11)
+    }
+
+    /// 抽屉展开时，⌘W 与 Esc 优先收起抽屉（无可见外观的快捷键按钮）
+    @ViewBuilder
+    private var drawerDismissShortcuts: some View {
+        if app.ai.isDrawerOpen || app.aiReview.isDrawerOpen {
+            Button("") {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    app.ai.isDrawerOpen = false
+                    app.aiReview.isDrawerOpen = false
+                }
+            }
+            .keyboardShortcut("w", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+
+            Button("") {
+                withAnimation(.easeOut(duration: 0.25)) {
+                    app.ai.isDrawerOpen = false
+                    app.aiReview.isDrawerOpen = false
+                }
+            }
+            .keyboardShortcut(.cancelAction)
+            .opacity(0)
+            .frame(width: 0, height: 0)
         }
     }
 
@@ -374,11 +406,11 @@ struct ContentView: View {
                 SpaceVisualizerView()
             }
         }
-        .transition(.opacity)
-        .animation(Theme.smoothTransition, value: app.destination)
+        .motionSafeTransition(.opacity)
+        .motionSafe(Motion.micro, value: app.destination)
         // 任一抽屉展开都留白（AI 对话 / AI 再筛查）
         .padding(.trailing, (app.ai.isDrawerOpen || app.aiReview.isDrawerOpen) ? 344 : 0)
-        .animation(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
-        .animation(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
+        .motionSafe(.easeOut(duration: 0.25), value: app.ai.isDrawerOpen)
+        .motionSafe(.easeOut(duration: 0.25), value: app.aiReview.isDrawerOpen)
     }
 }

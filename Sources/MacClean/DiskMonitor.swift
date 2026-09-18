@@ -84,6 +84,20 @@ final class DiskMonitor: ObservableObject {
     private var timer: AnyCancellable?
     weak var app: AppState?
 
+    // MARK: - 低空间告警的节流状态
+    //
+    // 历史缺陷：`checkDiskSpaceAlert` 每次被调用都无条件发通知，而它挂在 `refreshDisk()` 上，
+    // `refreshDisk()` 又在每个分类扫描结束时被调用 —— 于是 `scanAll` 会在几秒内连发 6 条
+    // 低空间通知，之后每 3 小时再重复一轮，直到用户腾出空间为止。
+    // 现在改成**边沿触发 + 冷却期**：跌破阈值时提醒一次，之后最多每 `lowSpaceCooldown` 再提醒一次。
+    private var lastLowSpaceAlertAt: Date?
+    private var wasLowSpace = false
+    /// 告警冷却期：进入低空间状态后多久内不再重复提醒
+    static let lowSpaceCooldown: TimeInterval = 6 * 3600
+
+    /// 本轮静默清理最多等待扫描完成的轮数（每轮 1 秒）
+    static let maxScanWaitAttempts = 120
+
     init() {
         self.config = DiskMonitorConfig.load()
         setupTimer()
@@ -119,26 +133,53 @@ final class DiskMonitor: ObservableObject {
 
             // 3. 智能静默自动清理（若启用且处于设定允许时段）
             if config.autoCleanEnabled && config.isWithinAllowedWindow() {
-                // 等待各分类扫描就绪后择机安全清理
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
-                    self?.performSilentAutoClean()
-                }
+                waitForScanCompletion()
             }
         }
     }
 
-    /// 智能静默清理：安全移入废纸篓，仅处理 .safe 级别、不在使用中的指定分类项
+    /// 等待扫描真正结束再执行静默清理。
+    ///
+    /// 原实现是 `asyncAfter(deadline: .now() + 4.0)` 的**固定延时**：扫描在慢盘或大盘上
+    /// 远超 4 秒时，清理会跑在"只扫了一半"的数据上——这一轮少清一点、下一轮再清一点，
+    /// 行为不确定且难以复现。这里改成轮询等待 `isScanning` 全部落地，并设轮数上限兜底
+    /// （扫不完就放弃本轮，绝不带着半份数据动手）。
+    private func waitForScanCompletion(attempt: Int = 0) {
+        guard let app else { return }
+        if !app.categories.contains(where: { $0.isScanning }) {
+            // 至少要有分类真的扫完过，否则空表清理没有意义
+            if app.categories.contains(where: { $0.isScanned }) {
+                performSilentAutoClean()
+            }
+            return
+        }
+        guard attempt < Self.maxScanWaitAttempts else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.waitForScanCompletion(attempt: attempt + 1)
+        }
+    }
+
+    /// 智能静默清理：安全移入废纸篓，仅处理「可清理」结论、且长期未写入的指定分类项。
+    ///
+    /// 结论只认 `CleanItem.recommendation`（`.safe` 已蕴含"所属 App 未在运行"这一不变量），
+    /// 这里不再拿 nature / usage 自己拼判断。`!usage.isRecentlyUsed` 是无人值守静默删除
+    /// 额外加的保守门槛（与 `AppState.quickCleanSafeItems` 同一口径），它只会让清理更保守，
+    /// 不改变也不覆盖结论本身。
     func performSilentAutoClean() {
         guard let app, !app.isCleaning else { return }
         var safeCandidates: [CleanItem] = []
 
         if config.autoCleanUserCaches {
             let st = app.state(for: .userCaches)
-            safeCandidates.append(contentsOf: st.items.filter { $0.risk == .safe && !$0.usage.isRecentlyUsed })
+            safeCandidates.append(contentsOf: st.items.filter {
+                $0.recommendation.isSafe && !$0.usage.isRecentlyUsed
+            })
         }
         if config.autoCleanLogsAndTemp {
             let st = app.state(for: .logsAndTemp)
-            safeCandidates.append(contentsOf: st.items.filter { $0.risk == .safe && !$0.usage.isRecentlyUsed })
+            safeCandidates.append(contentsOf: st.items.filter {
+                $0.recommendation.isSafe && !$0.usage.isRecentlyUsed
+            })
         }
 
         // 白名单硬过滤
@@ -167,15 +208,36 @@ final class DiskMonitor: ObservableObject {
         }
     }
 
-    /// 检查磁盘可用空间是否触发阈值警戒
-    func checkDiskSpaceAlert(availableBytes: Int64) {
+    /// 检查磁盘可用空间是否触发阈值警戒。
+    ///
+    /// **边沿触发 + 冷却期**，不是"每次调用都报"：
+    /// - 空间恢复 → 重置状态，下次跌破时重新提醒；
+    /// - 刚跌破 → 提醒一次；
+    /// - 持续处于低空间 → 每个冷却期最多提醒一次，避免每 3 小时（以及每次扫描结束）骚扰用户。
+    ///
+    /// - Parameter now: 便于自检注入时间，正常调用不传。
+    func checkDiskSpaceAlert(availableBytes: Int64, now: Date = Date()) {
         guard config.lowSpaceAlertEnabled else { return }
         let availGB = Double(availableBytes) / 1_000_000_000.0
         currentAvailableGB = availGB
 
-        if availGB < Double(config.lowSpaceThresholdGB) {
-            showLowSpaceAlert = true
-            NotificationManager.shared.notifyLowDiskSpace(availableBytes: availableBytes, thresholdGB: config.lowSpaceThresholdGB)
+        let isLow = availGB < Double(config.lowSpaceThresholdGB)
+        guard isLow else {
+            // 空间恢复：清掉状态，下次跌破重新提醒
+            wasLowSpace = false
+            lastLowSpaceAlertAt = nil
+            return
         }
+
+        // 首次跌破，或已过冷却期 → 提醒；弹窗已经立着就不再重复置位
+        let isFirstEdge = !wasLowSpace
+        let cooldownElapsed = lastLowSpaceAlertAt.map { now.timeIntervalSince($0) >= Self.lowSpaceCooldown } ?? true
+        guard isFirstEdge || cooldownElapsed else { return }
+
+        wasLowSpace = true
+        lastLowSpaceAlertAt = now
+        showLowSpaceAlert = true
+        NotificationManager.shared.notifyLowDiskSpace(availableBytes: availableBytes,
+                                                      thresholdGB: config.lowSpaceThresholdGB)
     }
 }

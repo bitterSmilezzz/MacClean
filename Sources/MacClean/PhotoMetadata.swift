@@ -126,101 +126,127 @@ struct PhotoMetadata: Equatable {
         let path = url.path
         let filename = url.lastPathComponent
         let ext = url.pathExtension.uppercased()
-
-        var fileSize: Int64 = 0
-        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-           let size = attrs[.size] as? Int64 {
-            fileSize = size
-        }
+        let format = ext.isEmpty ? "IMAGE" : ext
+        let fileSize = readFileSize(atPath: path)
 
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return PhotoMetadata(
-                fileURL: url,
-                filePath: path,
-                fileName: filename,
-                fileSize: fileSize,
-                format: ext.isEmpty ? "IMAGE" : ext,
-                pixelWidth: 0,
-                pixelHeight: 0,
-                colorSpace: nil,
-                make: nil,
-                model: nil,
-                lensModel: nil,
-                focalLength: nil,
-                focalLengthIn35mm: nil,
-                apertureFNumber: nil,
-                exposureTimeSeconds: nil,
-                isoSpeed: nil,
-                captureDate: nil,
-                captureDateString: nil,
-                dHash: nil
-            )
+            return undecodableMetadata(url: url, path: path, fileName: filename,
+                                       format: format, fileSize: fileSize)
         }
 
         let properties = (CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]) ?? [:]
-
-        // 基础尺寸
-        let pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
-        let pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
-        let colorSpace = properties[kCGImagePropertyProfileName] as? String
-            ?? properties[kCGImagePropertyColorModel] as? String
-
-        // TIFF 字典 (相机品牌、型号、时间)
-        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
-        let make = (tiff?[kCGImagePropertyTIFFMake] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let model = (tiff?[kCGImagePropertyTIFFModel] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tiffDateTime = tiff?[kCGImagePropertyTIFFDateTime] as? String
-
-        // Exif 字典 (光圈、快门、ISO、焦距、镜头)
-        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
-
-        let apertureFNumber = exif?[kCGImagePropertyExifFNumber] as? Double
-        let exposureTime = exif?[kCGImagePropertyExifExposureTime] as? Double
-        let focalLength = exif?[kCGImagePropertyExifFocalLength] as? Double
-        let focalLength35mm = exif?[kCGImagePropertyExifFocalLenIn35mmFilm] as? Double
-        let lensModel = (exif?[kCGImagePropertyExifLensModel] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        var isoSpeed: Int? = nil
-        if let isoArray = exif?[kCGImagePropertyExifISOSpeedRatings] as? [Int], let first = isoArray.first {
-            isoSpeed = first
-        } else if let isoVal = exif?[kCGImagePropertyExifISOSpeedRatings] as? Int {
-            isoSpeed = isoVal
-        }
-
-        // 解析拍摄日期
-        let exifDateTime = exif?[kCGImagePropertyExifDateTimeOriginal] as? String
-            ?? exif?[kCGImagePropertyExifDateTimeDigitized] as? String
-            ?? tiffDateTime
-
-        var parsedDate: Date? = nil
-        if let dateStr = exifDateTime {
-            parsedDate = parseExifDate(dateStr)
-        }
-
-        // 异步或按需计算 dHash
-        let dHash = ImageHash.computeDHash(url: url)
+        let fields = ExifFields(properties: properties)
 
         return PhotoMetadata(
             fileURL: url,
             filePath: path,
             fileName: filename,
             fileSize: fileSize,
-            format: ext.isEmpty ? "IMAGE" : ext,
-            pixelWidth: pixelWidth,
-            pixelHeight: pixelHeight,
-            colorSpace: colorSpace,
-            make: make,
-            model: model,
-            lensModel: lensModel,
-            focalLength: focalLength,
-            focalLengthIn35mm: focalLength35mm,
-            apertureFNumber: apertureFNumber,
-            exposureTimeSeconds: exposureTime,
-            isoSpeed: isoSpeed,
-            captureDate: parsedDate,
-            captureDateString: exifDateTime,
-            dHash: dHash
+            format: format,
+            pixelWidth: fields.pixelWidth,
+            pixelHeight: fields.pixelHeight,
+            colorSpace: fields.colorSpace,
+            make: fields.make,
+            model: fields.model,
+            lensModel: fields.lensModel,
+            focalLength: fields.focalLength,
+            focalLengthIn35mm: fields.focalLengthIn35mm,
+            apertureFNumber: fields.apertureFNumber,
+            exposureTimeSeconds: fields.exposureTimeSeconds,
+            isoSpeed: fields.isoSpeed,
+            captureDate: fields.captureDate,
+            captureDateString: fields.captureDateString,
+            // 异步或按需计算 dHash
+            dHash: ImageHash.computeDHash(url: url)
         )
+    }
+
+    /// 读取文件字节数，读不到属性时按 0 处理
+    private static func readFileSize(atPath path: String) -> Int64 {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? Int64 {
+            return size
+        }
+        return 0
+    }
+
+    /// 图像无法解码时的占位元数据：保留文件自身信息，EXIF 字段全空
+    private static func undecodableMetadata(url: URL, path: String, fileName: String,
+                                            format: String, fileSize: Int64) -> PhotoMetadata {
+        PhotoMetadata(
+            fileURL: url,
+            filePath: path,
+            fileName: fileName,
+            fileSize: fileSize,
+            format: format,
+            pixelWidth: 0,
+            pixelHeight: 0,
+            colorSpace: nil,
+            make: nil,
+            model: nil,
+            lensModel: nil,
+            focalLength: nil,
+            focalLengthIn35mm: nil,
+            apertureFNumber: nil,
+            exposureTimeSeconds: nil,
+            isoSpeed: nil,
+            captureDate: nil,
+            captureDateString: nil,
+            dHash: nil
+        )
+    }
+
+    /// ImageIO 属性字典中解析出的相机 / 曝光 / 时间字段
+    private struct ExifFields {
+        var pixelWidth = 0
+        var pixelHeight = 0
+        var colorSpace: String?
+        var make: String?
+        var model: String?
+        var lensModel: String?
+        var focalLength: Double?
+        var focalLengthIn35mm: Double?
+        var apertureFNumber: Double?
+        var exposureTimeSeconds: Double?
+        var isoSpeed: Int?
+        var captureDate: Date?
+        var captureDateString: String?
+
+        init(properties: [CFString: Any]) {
+            // 基础尺寸
+            pixelWidth = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
+            pixelHeight = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+            colorSpace = properties[kCGImagePropertyProfileName] as? String
+                ?? properties[kCGImagePropertyColorModel] as? String
+
+            // TIFF 字典 (相机品牌、型号、时间)
+            let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+            make = (tiff?[kCGImagePropertyTIFFMake] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            model = (tiff?[kCGImagePropertyTIFFModel] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let tiffDateTime = tiff?[kCGImagePropertyTIFFDateTime] as? String
+
+            // Exif 字典 (光圈、快门、ISO、焦距、镜头)
+            let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any]
+            apertureFNumber = exif?[kCGImagePropertyExifFNumber] as? Double
+            exposureTimeSeconds = exif?[kCGImagePropertyExifExposureTime] as? Double
+            focalLength = exif?[kCGImagePropertyExifFocalLength] as? Double
+            focalLengthIn35mm = exif?[kCGImagePropertyExifFocalLenIn35mmFilm] as? Double
+            lensModel = (exif?[kCGImagePropertyExifLensModel] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if let isoArray = exif?[kCGImagePropertyExifISOSpeedRatings] as? [Int], let first = isoArray.first {
+                isoSpeed = first
+            } else if let isoVal = exif?[kCGImagePropertyExifISOSpeedRatings] as? Int {
+                isoSpeed = isoVal
+            }
+
+            // 解析拍摄日期：Exif 原始时间优先，退回数字化时间，再退回 TIFF 时间
+            captureDateString = exif?[kCGImagePropertyExifDateTimeOriginal] as? String
+                ?? exif?[kCGImagePropertyExifDateTimeDigitized] as? String
+                ?? tiffDateTime
+            if let dateStr = captureDateString {
+                captureDate = parseExifDate(dateStr)
+            }
+        }
     }
 
     private static func parseExifDate(_ string: String) -> Date? {
@@ -283,219 +309,278 @@ struct PhotoComparisonResult: Equatable {
 
     /// 计算两张照片的差异与智能分析
     static func compare(photoA: PhotoMetadata, photoB: PhotoMetadata) -> PhotoComparisonResult {
-        var rows: [PhotoDiffRow] = []
+        let pair = PhotoPair(a: photoA, b: photoB)
 
+        // 逐项判定：顺序即差异表行序，也是推荐理由的拼接顺序
+        let criteria: [CriterionVerdict] = [
+            resolutionVerdict(pair),
+            shutterVerdict(pair),
+            isoVerdict(pair),
+            apertureVerdict(pair),
+            fileSizeVerdict(pair),
+            captureTimeVerdict(pair),
+            cameraVerdict(pair)
+        ]
         var scoreA: Double = 50.0
         var scoreB: Double = 50.0
         var reasons: [String] = []
-
-        // 1. 分辨率对比
-        let pixelsA = photoA.pixelWidth * photoA.pixelHeight
-        let pixelsB = photoB.pixelWidth * photoB.pixelHeight
-        let resWinner: PhotoWinnerChoice
-        if pixelsA > 0 && pixelsB > 0 {
-            let ratio = Double(pixelsA) / Double(pixelsB)
-            if ratio >= 1.25 {
-                resWinner = .left
-                scoreA += 25.0
-                reasons.append("左图分辨率更高 (\(photoA.pixelWidth)×\(photoA.pixelHeight))，细节更丰富")
-            } else if ratio <= 0.8 {
-                resWinner = .right
-                scoreB += 25.0
-                reasons.append("右图分辨率更高 (\(photoB.pixelWidth)×\(photoB.pixelHeight))，细节更丰富")
-            } else {
-                resWinner = .tie
-            }
-        } else {
-            resWinner = .none
+        for criterion in criteria {
+            scoreA += criterion.scoreA
+            scoreB += criterion.scoreB
+            if let reason = criterion.reason { reasons.append(reason) }
         }
-        rows.append(PhotoDiffRow(
-            icon: "aspectratio",
-            label: "图像分辨率",
-            valA: photoA.resolutionString,
-            valB: photoB.resolutionString,
-            winner: resWinner,
-            hint: resWinner == .left ? "更高分辨率" : (resWinner == .right ? "更高分辨率" : nil)
-        ))
-
-        // 2. 快门速度对比 (越快越不容易手抖模糊，运动抓拍更清晰)
-        let shutterWinner: PhotoWinnerChoice
-        if let secA = photoA.exposureTimeSeconds, let secB = photoB.exposureTimeSeconds, secA > 0, secB > 0 {
-            if secA < secB * 0.75 && secB >= 0.02 { // 比如 1/250s (0.004) vs 1/30s (0.033)
-                shutterWinner = .left
-                scoreA += 15.0
-                reasons.append("左图快门更快 (\(photoA.shutterString))，防抖抓拍更清晰")
-            } else if secB < secA * 0.75 && secA >= 0.02 {
-                shutterWinner = .right
-                scoreB += 15.0
-                reasons.append("右图快门更快 (\(photoB.shutterString))，防抖抓拍更清晰")
-            } else {
-                shutterWinner = .tie
-            }
-        } else {
-            shutterWinner = .none
-        }
-        rows.append(PhotoDiffRow(
-            icon: "timer",
-            label: "快门速度",
-            valA: photoA.shutterString,
-            valB: photoB.shutterString,
-            winner: shutterWinner,
-            hint: shutterWinner == .left ? "更高速防抖" : (shutterWinner == .right ? "更高速防抖" : nil)
-        ))
-
-        // 3. 感光度 ISO 对比 (同等场景下 ISO 越低噪点越少画面越纯净)
-        let isoWinner: PhotoWinnerChoice
-        if let isoA = photoA.isoSpeed, let isoB = photoB.isoSpeed, isoA > 0, isoB > 0 {
-            if Double(isoA) <= Double(isoB) * 0.6 {
-                isoWinner = .left
-                scoreA += 15.0
-                reasons.append("左图 ISO 更低 (\(photoA.isoString))，暗部噪点更少更纯净")
-            } else if Double(isoB) <= Double(isoA) * 0.6 {
-                isoWinner = .right
-                scoreB += 15.0
-                reasons.append("右图 ISO 更低 (\(photoB.isoString))，暗部噪点更少更纯净")
-            } else {
-                isoWinner = .tie
-            }
-        } else {
-            isoWinner = .none
-        }
-        rows.append(PhotoDiffRow(
-            icon: "rays",
-            label: "感光度 ISO",
-            valA: photoA.isoString,
-            valB: photoB.isoString,
-            winner: isoWinner,
-            hint: isoWinner == .left ? "低噪点纯净" : (isoWinner == .right ? "低噪点纯净" : nil)
-        ))
-
-        // 4. 光圈值对比
-        let apertureWinner: PhotoWinnerChoice = .none
-        rows.append(PhotoDiffRow(
-            icon: "camera.aperture",
-            label: "光圈大小",
-            valA: photoA.apertureString,
-            valB: photoB.apertureString,
-            winner: apertureWinner,
-            hint: nil
-        ))
-
-        // 5. 文件体积与格式
-        let sizeWinner: PhotoWinnerChoice
-        if photoA.fileSize > 0 && photoB.fileSize > 0 {
-            if pixelsA == pixelsB {
-                let ratio = Double(photoA.fileSize) / Double(photoB.fileSize)
-                if ratio >= 1.5 {
-                    sizeWinner = .left
-                    scoreA += 5.0
-                } else if ratio <= 0.67 {
-                    sizeWinner = .right
-                    scoreB += 5.0
-                } else {
-                    sizeWinner = .tie
-                }
-            } else {
-                sizeWinner = (pixelsA > pixelsB) ? .left : .right
-            }
-        } else {
-            sizeWinner = .none
-        }
-        rows.append(PhotoDiffRow(
-            icon: "internaldrive",
-            label: "文件体积与格式",
-            valA: "\(photoA.fileSize.byteStringCN) (\(photoA.format))",
-            valB: "\(photoB.fileSize.byteStringCN) (\(photoB.format))",
-            winner: sizeWinner,
-            hint: nil
-        ))
-
-        // 6. 拍摄时间对比
-        let timeWinner: PhotoWinnerChoice
-        var timeHint: String? = nil
-        if let tA = photoA.captureDate, let tB = photoB.captureDate {
-            let diffSec = abs(tA.timeIntervalSince(tB))
-            if diffSec < 5.0 {
-                timeHint = String(format: "高速连拍 (相隔 %.1f 秒)", diffSec)
-            }
-            timeWinner = (tA >= tB) ? .left : .right
-        } else {
-            timeWinner = .none
-        }
-        rows.append(PhotoDiffRow(
-            icon: "calendar.badge.clock",
-            label: "拍摄时间",
-            valA: photoA.captureTimeString,
-            valB: photoB.captureTimeString,
-            winner: timeWinner,
-            hint: timeHint
-        ))
-
-        // 7. 相机设备
-        rows.append(PhotoDiffRow(
-            icon: "camera",
-            label: "相机设备",
-            valA: photoA.cameraSummary,
-            valB: photoB.cameraSummary,
-            winner: .none,
-            hint: nil
-        ))
+        var rows: [PhotoDiffRow] = criteria.map(\.row)
 
         // 8. 视觉相似度
-        let dHashA = photoA.dHash ?? ImageHash.computeDHash(url: photoA.fileURL)
-        let dHashB = photoB.dHash ?? ImageHash.computeDHash(url: photoB.fileURL)
-        let similarity: Double
-        let hammingDist: Int
-        if let hA = dHashA, let hB = dHashB {
-            similarity = ImageHash.similarity(hA, hB)
-            hammingDist = ImageHash.hammingDistance(hA, hB)
-        } else {
-            similarity = 1.0
-            hammingDist = 0
+        let hash = perceptualSimilarity(pair)
+        rows.append(similarityRow(similarity: hash.similarity, hammingDistance: hash.hammingDistance))
+
+        // 综合裁定
+        let verdict = recommendation(scoreA: scoreA, scoreB: scoreB, reasons: reasons)
+
+        return PhotoComparisonResult(
+            metaA: photoA,
+            metaB: photoB,
+            similarity: hash.similarity,
+            hammingDistance: hash.hammingDistance,
+            diffRows: rows,
+            recommendedChoice: verdict.choice,
+            recommendationReason: verdict.reason,
+            scoreA: scoreA,
+            scoreB: scoreB
+        )
+    }
+
+    // MARK: - 单项画质判定
+
+    /// 待比对的一对照片，附派生像素总量
+    private struct PhotoPair {
+        let a: PhotoMetadata
+        let b: PhotoMetadata
+
+        var pixelsA: Int { a.pixelWidth * a.pixelHeight }
+        var pixelsB: Int { b.pixelWidth * b.pixelHeight }
+    }
+
+    /// 单项判定结果：差异行 + 双方得分增量 + 可选推荐理由
+    private struct CriterionVerdict {
+        let row: PhotoDiffRow
+        var scoreA: Double = 0
+        var scoreB: Double = 0
+        var reason: String? = nil
+    }
+
+    /// 1. 分辨率对比：像素总量领先 25% 以上才算优势，得 25 分
+    private static func resolutionVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        func verdict(_ winner: PhotoWinnerChoice, scoreA: Double = 0, scoreB: Double = 0,
+                     reason: String? = nil) -> CriterionVerdict {
+            CriterionVerdict(
+                row: PhotoDiffRow(
+                    icon: "aspectratio",
+                    label: "图像分辨率",
+                    valA: pair.a.resolutionString,
+                    valB: pair.b.resolutionString,
+                    winner: winner,
+                    hint: winner == .left ? "更高分辨率" : (winner == .right ? "更高分辨率" : nil)
+                ),
+                scoreA: scoreA,
+                scoreB: scoreB,
+                reason: reason
+            )
         }
 
-        let simText = "\(String(format: "%.1f", similarity * 100))% (汉明距离: \(hammingDist))"
-        rows.append(PhotoDiffRow(
+        guard pair.pixelsA > 0, pair.pixelsB > 0 else { return verdict(.none) }
+        let ratio = Double(pair.pixelsA) / Double(pair.pixelsB)
+        if ratio >= 1.25 {
+            return verdict(.left, scoreA: 25.0,
+                           reason: "左图分辨率更高 (\(pair.a.pixelWidth)×\(pair.a.pixelHeight))，细节更丰富")
+        }
+        if ratio <= 0.8 {
+            return verdict(.right, scoreB: 25.0,
+                           reason: "右图分辨率更高 (\(pair.b.pixelWidth)×\(pair.b.pixelHeight))，细节更丰富")
+        }
+        return verdict(.tie)
+    }
+
+    /// 2. 快门速度对比：越快越不容易手抖模糊，需快 25% 且较慢一方不慢于 1/50s，得 15 分
+    private static func shutterVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        func verdict(_ winner: PhotoWinnerChoice, scoreA: Double = 0, scoreB: Double = 0,
+                     reason: String? = nil) -> CriterionVerdict {
+            CriterionVerdict(
+                row: PhotoDiffRow(
+                    icon: "timer",
+                    label: "快门速度",
+                    valA: pair.a.shutterString,
+                    valB: pair.b.shutterString,
+                    winner: winner,
+                    hint: winner == .left ? "更高速防抖" : (winner == .right ? "更高速防抖" : nil)
+                ),
+                scoreA: scoreA,
+                scoreB: scoreB,
+                reason: reason
+            )
+        }
+
+        guard let secA = pair.a.exposureTimeSeconds, let secB = pair.b.exposureTimeSeconds,
+              secA > 0, secB > 0 else { return verdict(.none) }
+        if secA < secB * 0.75 && secB >= 0.02 { // 比如 1/250s (0.004) vs 1/30s (0.033)
+            return verdict(.left, scoreA: 15.0,
+                           reason: "左图快门更快 (\(pair.a.shutterString))，防抖抓拍更清晰")
+        }
+        if secB < secA * 0.75 && secA >= 0.02 {
+            return verdict(.right, scoreB: 15.0,
+                           reason: "右图快门更快 (\(pair.b.shutterString))，防抖抓拍更清晰")
+        }
+        return verdict(.tie)
+    }
+
+    /// 3. 感光度 ISO 对比：同等场景下 ISO 越低噪点越少，低至对方 60% 以下得 15 分
+    private static func isoVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        func verdict(_ winner: PhotoWinnerChoice, scoreA: Double = 0, scoreB: Double = 0,
+                     reason: String? = nil) -> CriterionVerdict {
+            CriterionVerdict(
+                row: PhotoDiffRow(
+                    icon: "rays",
+                    label: "感光度 ISO",
+                    valA: pair.a.isoString,
+                    valB: pair.b.isoString,
+                    winner: winner,
+                    hint: winner == .left ? "低噪点纯净" : (winner == .right ? "低噪点纯净" : nil)
+                ),
+                scoreA: scoreA,
+                scoreB: scoreB,
+                reason: reason
+            )
+        }
+
+        guard let isoA = pair.a.isoSpeed, let isoB = pair.b.isoSpeed, isoA > 0, isoB > 0 else {
+            return verdict(.none)
+        }
+        if Double(isoA) <= Double(isoB) * 0.6 {
+            return verdict(.left, scoreA: 15.0,
+                           reason: "左图 ISO 更低 (\(pair.a.isoString))，暗部噪点更少更纯净")
+        }
+        if Double(isoB) <= Double(isoA) * 0.6 {
+            return verdict(.right, scoreB: 15.0,
+                           reason: "右图 ISO 更低 (\(pair.b.isoString))，暗部噪点更少更纯净")
+        }
+        return verdict(.tie)
+    }
+
+    /// 4. 光圈大小：只展示双方取值，不参与评分
+    private static func apertureVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        CriterionVerdict(
+            row: PhotoDiffRow(
+                icon: "camera.aperture",
+                label: "光圈大小",
+                valA: pair.a.apertureString,
+                valB: pair.b.apertureString,
+                winner: .none,
+                hint: nil
+            )
+        )
+    }
+
+    /// 5. 文件体积与格式：同分辨率下体积大 50% 以上得 5 分；分辨率不同则直接按像素总量定优劣
+    private static func fileSizeVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        func verdict(_ winner: PhotoWinnerChoice, scoreA: Double = 0, scoreB: Double = 0) -> CriterionVerdict {
+            CriterionVerdict(
+                row: PhotoDiffRow(
+                    icon: "internaldrive",
+                    label: "文件体积与格式",
+                    valA: "\(pair.a.fileSize.byteStringCN) (\(pair.a.format))",
+                    valB: "\(pair.b.fileSize.byteStringCN) (\(pair.b.format))",
+                    winner: winner,
+                    hint: nil
+                ),
+                scoreA: scoreA,
+                scoreB: scoreB
+            )
+        }
+
+        guard pair.a.fileSize > 0, pair.b.fileSize > 0 else { return verdict(.none) }
+        guard pair.pixelsA == pair.pixelsB else {
+            return verdict(pair.pixelsA > pair.pixelsB ? .left : .right)
+        }
+        let ratio = Double(pair.a.fileSize) / Double(pair.b.fileSize)
+        if ratio >= 1.5 { return verdict(.left, scoreA: 5.0) }
+        if ratio <= 0.67 { return verdict(.right, scoreB: 5.0) }
+        return verdict(.tie)
+    }
+
+    /// 6. 拍摄时间：只展示先后顺序与高速连拍提示，不参与评分
+    private static func captureTimeVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        var hint: String? = nil
+        let winner: PhotoWinnerChoice
+        if let tA = pair.a.captureDate, let tB = pair.b.captureDate {
+            let diffSec = abs(tA.timeIntervalSince(tB))
+            if diffSec < 5.0 {
+                hint = String(format: "高速连拍 (相隔 %.1f 秒)", diffSec)
+            }
+            winner = (tA >= tB) ? .left : .right
+        } else {
+            winner = .none
+        }
+        return CriterionVerdict(
+            row: PhotoDiffRow(
+                icon: "calendar.badge.clock",
+                label: "拍摄时间",
+                valA: pair.a.captureTimeString,
+                valB: pair.b.captureTimeString,
+                winner: winner,
+                hint: hint
+            )
+        )
+    }
+
+    /// 7. 相机设备：只展示双方机型，不参与评分
+    private static func cameraVerdict(_ pair: PhotoPair) -> CriterionVerdict {
+        CriterionVerdict(
+            row: PhotoDiffRow(
+                icon: "camera",
+                label: "相机设备",
+                valA: pair.a.cameraSummary,
+                valB: pair.b.cameraSummary,
+                winner: .none,
+                hint: nil
+            )
+        )
+    }
+
+    /// 8. 视觉相似度：dHash 缺失时按完全一致处理（沿用历史口径）
+    private static func perceptualSimilarity(_ pair: PhotoPair) -> (similarity: Double, hammingDistance: Int) {
+        let dHashA = pair.a.dHash ?? ImageHash.computeDHash(url: pair.a.fileURL)
+        let dHashB = pair.b.dHash ?? ImageHash.computeDHash(url: pair.b.fileURL)
+        guard let hA = dHashA, let hB = dHashB else { return (1.0, 0) }
+        return (ImageHash.similarity(hA, hB), ImageHash.hammingDistance(hA, hB))
+    }
+
+    /// 相似度差异行：左右同值，仅用提示语区分「构图高度一致」与「存在微变」
+    private static func similarityRow(similarity: Double, hammingDistance: Int) -> PhotoDiffRow {
+        let simText = "\(String(format: "%.1f", similarity * 100))% (汉明距离: \(hammingDistance))"
+        return PhotoDiffRow(
             icon: "waveform.path.ecg",
             label: "感知视觉相似度",
             valA: simText,
             valB: simText,
             winner: .tie,
             hint: similarity >= 0.95 ? "构图高度一致" : "存在构图或光线微变"
-        ))
-
-        // 综合裁定
-        let recommendedChoice: PhotoWinnerChoice
-        let reasonStr: String
-        if scoreA > scoreB + 5.0 {
-            recommendedChoice = .left
-            if reasons.isEmpty {
-                reasonStr = "综合画质评估推荐保留左侧照片，文件质量更佳。"
-            } else {
-                reasonStr = "推荐保留左侧：\(reasons.joined(separator: "；"))。"
-            }
-        } else if scoreB > scoreA + 5.0 {
-            recommendedChoice = .right
-            if reasons.isEmpty {
-                reasonStr = "综合画质评估推荐保留右侧照片，文件质量更佳。"
-            } else {
-                reasonStr = "推荐保留右侧：\(reasons.joined(separator: "；"))。"
-            }
-        } else {
-            recommendedChoice = .tie
-            reasonStr = "两张照片的曝光参数、分辨率与画质高度接近，建议按构图偏好选择保留。"
-        }
-
-        return PhotoComparisonResult(
-            metaA: photoA,
-            metaB: photoB,
-            similarity: similarity,
-            hammingDistance: hammingDist,
-            diffRows: rows,
-            recommendedChoice: recommendedChoice,
-            recommendationReason: reasonStr,
-            scoreA: scoreA,
-            scoreB: scoreB
         )
+    }
+
+    /// 综合裁定：总分领先超过 5 分才算胜出，否则视为相当
+    private static func recommendation(scoreA: Double, scoreB: Double,
+                                       reasons: [String]) -> (choice: PhotoWinnerChoice, reason: String) {
+        if scoreA > scoreB + 5.0 {
+            return (.left, reasons.isEmpty
+                    ? "综合画质评估推荐保留左侧照片，文件质量更佳。"
+                    : "推荐保留左侧：\(reasons.joined(separator: "；"))。")
+        }
+        if scoreB > scoreA + 5.0 {
+            return (.right, reasons.isEmpty
+                    ? "综合画质评估推荐保留右侧照片，文件质量更佳。"
+                    : "推荐保留右侧：\(reasons.joined(separator: "；"))。")
+        }
+        return (.tie, "两张照片的曝光参数、分辨率与画质高度接近，建议按构图偏好选择保留。")
     }
 }

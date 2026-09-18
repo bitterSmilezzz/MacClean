@@ -1,6 +1,13 @@
 import SwiftUI
 
 /// App 卸载器（融合 Pearcleaner / PureMac：选 App → 扫全部关联文件 → 移废纸篓）
+///
+/// 重写要点：
+///  - 44×44 的蓝色圆角图标底板、26pt 的巨大标题都删掉：图标就是图标，标题回到 `Typo.title`。
+///  - 装饰性副标题（"· 规则 A1–A4"）删掉，右侧位置改放真实数据：已列出的 App 数量。
+///  - 浮空卡片换成 inset group：所选 App 信息、关联文件列表都是 `GroupBox` + `GroupedRow`。
+///  - 空态统一走 `EmptyState`，搜索框走 `SearchField`，行悬停走 `.rowHover()`。
+///  - 全 App 只剩 `Accent.tint` 一个强调色；橙色只留给"App 正在运行"这个真实警告。
 struct UninstallerView: View {
     @EnvironmentObject private var app: AppState
     @State private var searchText = ""
@@ -17,19 +24,19 @@ struct UninstallerView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             if uninstaller.apps.isEmpty && !uninstaller.isScanning {
                 emptyView
             } else {
                 HStack(spacing: 0) {
                     appList
-                    Divider().overlay(Theme.separator)
+                    Divider()
                     relatedPanel
                 }
             }
         }
-        .background(Theme.windowBackground)
+        .background(Surface.window)
         .onAppear {
             if uninstaller.apps.isEmpty { uninstaller.loadApps() }
         }
@@ -46,24 +53,21 @@ struct UninstallerView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: Theme.spaceMd) {
-            Image(systemName: "app.dashed")
-                .font(.system(size: 20, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundColor(Theme.actionBlue)
-                .frame(width: 44, height: 44)
-                .background(RoundedRectangle(cornerRadius: Theme.radiusMd, style: .continuous).fill(Theme.actionBlue.opacity(0.12)))
+        HStack(spacing: Space.sm) {
+            IconSlot(systemName: "app.dashed", size: 14, weight: .medium,
+                     color: Ink.secondary, width: 18)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text("App 卸载器")
-                    .font(Theme.displayFont(26, weight: .semibold))
-                    .tracking(-0.3)
-                    .foregroundColor(Theme.labelPrimary)
-                Text("选择 App，扫描其全部关联文件后一键清理 · 规则 A1–A4")
-                    .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.labelSecondary)
-            }
+            Text("App 卸载器")
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
+
             Spacer()
+
+            if !uninstaller.apps.isEmpty {
+                Text("\(filteredApps.count) 个 App")
+                    .font(.mcNumeric(11))
+                    .foregroundStyle(Ink.tertiary)
+            }
 
             Button {
                 uninstaller.loadApps()
@@ -71,73 +75,50 @@ struct UninstallerView: View {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.bordered)
-            .controlSize(.large)
-            .tint(Theme.actionBlue)
+            .controlSize(.regular)
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceMd)
-        .frostedBar()
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(.bar)
     }
 
     // MARK: - 空态
 
+    @ViewBuilder
     private var emptyView: some View {
-        VStack(spacing: Theme.spaceMd) {
-            if uninstaller.isScanning {
-                ProgressView().controlSize(.large).tint(Theme.actionBlue)
-                Text("正在扫描已安装 App…").font(Theme.bodyFont(14)).foregroundColor(Theme.inkMuted48)
-            } else {
-                Image(systemName: "app.dashed")
-                    .font(.system(size: 42, weight: .light))
-                    .foregroundColor(Theme.inkMuted48.opacity(0.6))
-                Text("未发现可卸载的 App")
-                    .font(Theme.displayFont(24, weight: .semibold))
-                    .foregroundColor(Theme.ink)
-                Button {
-                    uninstaller.loadApps()
-                } label: {
-                    Label("重新扫描", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .tint(Theme.actionBlue)
+        if uninstaller.isScanning {
+            VStack(spacing: Space.sm) {
+                ProgressView().controlSize(.large)
+                Text("正在扫描已安装 App…")
+                    .font(Typo.body)
+                    .foregroundStyle(Ink.secondary)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            EmptyState(
+                icon: "app.dashed",
+                title: "未发现可卸载的 App",
+                message: "如果刚刚安装过 App，可以重新扫描一次。",
+                actionTitle: "重新扫描",
+                action: { uninstaller.loadApps() }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - App 列表
 
     private var appList: some View {
         VStack(spacing: 0) {
-            // 搜索
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.labelTertiary)
-                TextField("搜索 App", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(Theme.bodyFont(12))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                    .fill(Color.primary.opacity(0.04))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                            .stroke(Theme.separator.opacity(0.6), lineWidth: 0.8)
-                    )
-            )
-            .padding(.horizontal, Theme.spaceSm)
-            .padding(.top, Theme.spaceSm)
-            .padding(.bottom, Theme.spaceSm)
+            SearchField(placeholder: "搜索 App", text: $searchText)
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, Space.sm)
 
             ScrollView {
-                VStack(spacing: 4) {
+                VStack(spacing: 2) {
                     ForEach(filteredApps) { app in
                         Button {
-                            withAnimation(.easeOut(duration: 0.15)) {
+                            withAnimation(Motion.micro) {
                                 uninstaller.select(app)
                             }
                         } label: {
@@ -147,12 +128,12 @@ struct UninstallerView: View {
                         .accessibilityIdentifier("uninstallAppRow")
                     }
                 }
-                .padding(.horizontal, Theme.spaceSm)
-                .padding(.bottom, Theme.contentPadding)
+                .padding(.horizontal, Space.xs)
+                .padding(.bottom, Space.md)
             }
         }
         .frame(width: 280)
-        .background(Theme.parchment)
+        .background(Surface.group)
     }
 
     // MARK: - 关联文件面板
@@ -160,82 +141,37 @@ struct UninstallerView: View {
     private var relatedPanel: some View {
         VStack(spacing: 0) {
             if let app = uninstaller.selectedApp {
-                // 所选 App 信息
-                HStack(spacing: Theme.spaceSm) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(app.name)
-                            .font(Theme.displayFont(20, weight: .semibold))
-                            .foregroundColor(Theme.labelPrimary)
-                        Text(app.path)
-                            .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.labelSecondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        if let bundleID = app.bundleID {
-                            Text(bundleID)
-                                .font(Theme.bodyFont(11))
-                                .foregroundColor(Theme.labelTertiary)
-                        }
-                    }
-                    Spacer()
-                    Text("本体 \(app.size.byteStringCN)")
-                        .font(Theme.bodyFont(14, weight: .semibold))
-                        .foregroundColor(Theme.labelPrimary)
-                }
-                .padding(Theme.spaceMd)
-                .macCard(cornerRadius: Theme.radiusMd)
-                .padding(Theme.spaceMd)
+                appSummary(app)
 
                 if app.isRunning {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(Theme.textWarning)
-                        Text("该 App 正在运行，关联文件扫描已暂停。请先退出后再卸载。")
-                            .font(Theme.bodyFont(14, weight: .medium))
-                            .foregroundColor(Theme.textWarning)
-                    }
-                    .padding(.horizontal, Theme.spaceMd)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: Theme.radiusMd).fill(Theme.warningOrange.opacity(0.08)))
-                    .padding(.horizontal, Theme.spaceMd)
+                    runningWarning
                 }
 
                 if uninstaller.isScanning {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small).tint(Theme.actionBlue)
+                    HStack(spacing: Space.xs) {
+                        ProgressView().controlSize(.small)
                         Text("正在查找关联文件…")
-                            .font(Theme.bodyFont(12))
-                            .foregroundColor(Theme.inkMuted48)
+                            .font(Typo.body)
+                            .foregroundStyle(Ink.secondary)
                     }
-                    .padding(Theme.spaceMd)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Space.md)
+                    .padding(.top, Space.md)
                 } else if uninstaller.related.isEmpty {
-                    VStack(spacing: Theme.spaceXs) {
-                        Image(systemName: "checkmark.circle")
-                            .font(.system(size: 28, weight: .light))
-                            .foregroundColor(Theme.actionBlue.opacity(0.7))
-                        Text("未发现残留文件")
-                            .font(Theme.bodyFont(15, weight: .medium))
-                            .foregroundColor(Theme.inkMuted48)
-                        Text("该 App 很干净，或残留已被清理")
-                            .font(Theme.bodyFont(11))
-                            .foregroundColor(Theme.inkMuted48.opacity(0.8))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, Theme.spaceXl)
+                    EmptyState(
+                        icon: "checkmark.circle",
+                        title: "未发现残留文件",
+                        message: "该 App 很干净，或残留已被清理。"
+                    )
                 } else {
                     relatedList(app: app)
                 }
             } else {
-                VStack(spacing: Theme.spaceXs) {
-                    Image(systemName: "hand.point.up.left")
-                        .font(.system(size: 32, weight: .light))
-                        .foregroundColor(Theme.inkMuted48.opacity(0.6))
-                    Text("从左侧选择一个 App")
-                        .font(Theme.bodyFont(14))
-                        .foregroundColor(Theme.inkMuted48)
-                }
+                EmptyState(
+                    icon: "hand.point.up.left",
+                    title: "从左侧选择一个 App",
+                    message: "选中后会扫描它的关联文件，可逐项勾选清理。"
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Spacer(minLength: 0)
@@ -243,43 +179,109 @@ struct UninstallerView: View {
         }
     }
 
+    // MARK: - 所选 App 概要
+
+    private func appSummary(_ app: InstalledApp) -> some View {
+        GroupBox {
+            GroupedRow(isLast: true) {
+                HStack(spacing: Space.sm) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.path))
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 32, height: 32)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(app.name)
+                            .font(Typo.title)
+                            .foregroundStyle(Ink.primary)
+                            .lineLimit(1)
+
+                        Text(app.path)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+
+                        if let bundleID = app.bundleID {
+                            Text(bundleID)
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.quaternary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: Space.sm)
+
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(app.size.byteStringCN)
+                            .font(.mcNumeric(15, weight: .semibold))
+                            .foregroundStyle(Ink.primary)
+                        Text("本体")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.top, Space.md)
+    }
+
+    private var runningWarning: some View {
+        HStack(spacing: Space.xs) {
+            IconSlot(systemName: "exclamationmark.triangle.fill", size: 12,
+                     color: Signal.caution, width: 16)
+            Text("该 App 正在运行，关联文件扫描已暂停。请先退出后再卸载。")
+                .font(Typo.body)
+                .foregroundStyle(Signal.caution)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, Space.xs)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(Signal.caution.opacity(0.1))
+        )
+        .padding(.horizontal, Space.md)
+        .padding(.top, Space.sm)
+    }
+
     private func relatedList(app: InstalledApp) -> some View {
         VStack(spacing: 0) {
             // 全选行
-            HStack {
+            HStack(spacing: Space.xs) {
                 Button(uninstaller.allSelected ? "取消全选" : "全选") {
                     uninstaller.setAllSelected(!uninstaller.allSelected)
                 }
-                .buttonStyle(.plain)
-                .font(Theme.bodyFont(14, weight: .medium))
-                .foregroundColor(Theme.actionBlue)
+                .pressable()
+                .font(Typo.row)
+                .foregroundStyle(Accent.tint)
+
                 Spacer()
-                Text("\(uninstaller.related.count) 个关联文件 · 共 \(uninstaller.related.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(Theme.inkMuted48)
+
+                Text("\(uninstaller.related.count) 项 · \(uninstaller.related.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
+                    .font(.mcNumeric(11))
+                    .foregroundStyle(Ink.tertiary)
             }
-            .padding(.horizontal, Theme.spaceMd)
-            .padding(.vertical, Theme.spaceXs)
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.xs)
 
             ScrollView {
-                VStack(spacing: 0) {
+                GroupBox {
                     ForEach(Array(uninstaller.related.enumerated()), id: \.element.id) { index, file in
-                        if index > 0 {
-                            Divider()
-                                .overlay(Theme.separator.opacity(0.35))
-                                .padding(.leading, 38)
+                        GroupedRow(isLast: index == uninstaller.related.count - 1) {
+                            RelatedFileRow(file: file)
+                                .contentShape(Rectangle())
+                                .onTapGesture { uninstaller.toggle(file.id, !file.isSelected) }
+                                // 行内 checkbox 已是真 Button（键盘可激活）；整行点击补 VO 按钮语义
+                                .accessibilityAddTraits(file.isSelected ? [.isSelected] : [])
+                                .accessibilityLabel("\(file.name)，\(file.size.byteStringCN)")
                         }
-                        RelatedFileRow(file: file)
-                            .contentShape(Rectangle())
-                            .onTapGesture { uninstaller.toggle(file.id, !file.isSelected) }
-                            // 行内 checkbox 已是真 Button（键盘可激活）；整行点击补 VO 按钮语义
-                            .accessibilityAddTraits(file.isSelected ? [.isSelected] : [])
-                            .accessibilityLabel("\(file.name)，\(file.size.byteStringCN)")
                     }
                 }
-                .macCard(cornerRadius: Theme.radiusMd)
-                .padding(.horizontal, Theme.spaceMd)
-                .padding(.bottom, Theme.spaceMd)
+                .padding(.horizontal, Space.md)
+                .padding(.bottom, Space.md)
             }
         }
     }
@@ -287,27 +289,27 @@ struct UninstallerView: View {
     // MARK: - Footer
 
     private var footer: some View {
-        HStack(spacing: Theme.spaceMd) {
+        HStack(spacing: Space.md) {
             if let summary = uninstaller.lastSummary {
-                HStack(spacing: 6) {
+                HStack(spacing: Space.xxs) {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(Theme.actionBlue)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.positive)
                     Text(summary)
-                        .font(Theme.bodyFont(14, weight: .medium))
-                        .foregroundColor(Theme.inkMuted80)
+                        .font(Typo.body)
+                        .foregroundStyle(Ink.secondary)
                 }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 0) {
                 Text("已选 \(uninstaller.selectedFiles.count) 项")
-                    .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.labelTertiary)
-                    .contentTransition(.numericText())
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                    .motionSafeNumericTransition()
                 Text(uninstaller.selectedSize.byteStringCN)
-                    .font(Theme.displayFont(20, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
-                    .monospacedDigit()
-                    .contentTransition(.numericText())
+                    .font(.mcNumeric(17, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
             }
 
             // 彻底删除（红色，需二次确认）
@@ -318,7 +320,7 @@ struct UninstallerView: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
-            .tint(Theme.dangerRed)
+            .tint(Signal.critical)
             .accessibilityIdentifier("uninstallPermanentButton")
             .disabled(uninstaller.selectedFiles.isEmpty || uninstaller.isUninstalling)
 
@@ -330,15 +332,14 @@ struct UninstallerView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .tint(Theme.actionBlue)
             .accessibilityIdentifier("uninstallTrashButton")
             .disabled(uninstaller.selectedFiles.isEmpty || uninstaller.isUninstalling)
         }
-        .padding(.horizontal, Theme.contentPadding)
-        .padding(.vertical, Theme.spaceSm)
-        .frostedBar()
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(.bar)
         .overlay(alignment: .top) {
-            Divider().overlay(Theme.separator)
+            Hairline()
         }
     }
 }
@@ -347,46 +348,38 @@ struct UninstallerView: View {
 struct AppRow: View {
     let app: InstalledApp
     let isSelected: Bool
-    @State private var isHovered = false
 
     private var appIcon: NSImage {
         NSWorkspace.shared.icon(forFile: app.path)
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Space.xs) {
             Image(nsImage: appIcon)
                 .resizable()
                 .interpolation(.high)
-                .frame(width: 26, height: 26)
-                .cornerRadius(5)
+                .frame(width: 24, height: 24)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 0) {
                 Text(app.name)
-                    .font(Theme.bodyFont(13, weight: isSelected ? .semibold : .medium))
-                    .foregroundColor(isSelected ? Theme.actionBlue : Theme.labelPrimary)
+                    .font(isSelected ? Typo.rowStrong : Typo.row)
+                    .foregroundStyle(Ink.primary)
                     .lineLimit(1)
                 Text(app.size.byteStringCN)
-                    .font(Theme.monoFont(10))
-                    .foregroundColor(Theme.labelTertiary)
-                    .monospacedDigit()
+                    .font(.mcNumeric(10))
+                    .foregroundStyle(Ink.tertiary)
             }
-            Spacer()
+            Spacer(minLength: Space.xxs)
             if app.isRunning {
-                Circle().fill(Theme.warningOrange).frame(width: 6, height: 6)
+                Circle().fill(Signal.caution).frame(width: 6, height: 6)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, Space.xs)
         .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(isSelected ? Theme.actionBlue.opacity(0.14) : (isHovered ? Color.primary.opacity(0.045) : Color.clear))
-        )
-        .onHover { hovering in
-            withAnimation(Theme.fastTransition) {
-                isHovered = hovering
-            }
-        }
+        .contentShape(Rectangle())
+        .selectionHighlight(isSelected)
+        .rowHover()
         .contextMenu {
             Button {
                 let url = URL(fileURLWithPath: app.path)
@@ -413,64 +406,52 @@ struct RelatedFileRow: View {
     private var uninstaller: UninstallerState { app.uninstaller }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Space.sm) {
             Button(action: { uninstaller.toggle(file.id, !file.isSelected) }) {
                 Image(systemName: file.isSelected ? "checkmark.square.fill" : "square")
-                    .font(.system(size: 15))
-                    .foregroundColor(file.isSelected ? Theme.actionBlue : Theme.labelTertiary)
+                    .font(.system(size: 14))
+                    .foregroundStyle(file.isSelected ? Accent.tint : Ink.tertiary)
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("relatedFileToggle")
 
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
+                HStack(spacing: Space.xs) {
                     Text(file.name)
-                        .font(Theme.bodyFont(13, weight: .medium))
-                        .foregroundColor(Theme.labelPrimary)
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
                         .lineLimit(1)
                     Text(file.kind)
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelTertiary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(Color.primary.opacity(0.04))
-                        )
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
                 }
                 Text(file.path)
-                    .font(Theme.monoFont(10))
-                    .foregroundColor(Theme.labelTertiary)
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.quaternary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Spacer()
+            Spacer(minLength: Space.xs)
             Text(file.size.byteStringCN)
-                .font(Theme.monoFont(12, weight: .medium))
-                .foregroundColor(Theme.labelPrimary)
-                .monospacedDigit()
+                .font(.mcNumeric(12, weight: .medium))
+                .foregroundStyle(Ink.primary)
 
             // 问 AI：针对该关联文件提问（LOW-2：请求在途时禁用）
             Button {
                 app.ai.askAbout(file: file)
             } label: {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(Theme.actionBlue)
-                    .frame(width: 22, height: 22)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(Theme.actionBlue.opacity(app.ai.isLoading ? 0.04 : 0.1))
-                    )
+                Image(systemName: "questionmark.bubble")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(app.ai.isLoading ? Ink.quaternary : Accent.tint)
             }
             .buttonStyle(.plain)
             .disabled(app.ai.isLoading)
             .accessibilityIdentifier("askAIFileButton")
             .help(app.ai.isLoading ? "AI 回复中，请稍候" : "问 AI：这个残留是什么？能删吗？")
+            .accessibilityLabel(app.ai.isLoading ? "AI 回复中，请稍候" : "问 AI：这个残留是什么？能删吗？")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .macRowHover(cornerRadius: 0)
+        .contentShape(Rectangle())
+        .rowHover()
         .contextMenu {
             Button {
                 let url = URL(fileURLWithPath: file.path)
@@ -504,4 +485,3 @@ struct RelatedFileRow: View {
         }
     }
 }
-

@@ -3,7 +3,10 @@ import CoreGraphics
 import ImageIO
 import AppKit
 
-/// 相似照片高质量下采样预览视图
+/// 相似照片高质量下采样预览视图。
+///
+/// 重写要点：图片是内容，chrome 要退到后面。占位态不再用彩色图标底板，
+/// 只留一个中性灰的 `photo` 符号 + 一句说明。
 struct PhotoThumbnailPreview: View {
     let path: String
     let maxPixelSize: Int
@@ -34,22 +37,30 @@ struct PhotoThumbnailPreview: View {
                     .resizable()
                     .aspectRatio(contentMode: .fit)
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: Space.xs) {
                     Image(systemName: "photo")
-                        .font(.system(size: 36))
-                        .foregroundColor(Theme.labelTertiary)
-                    Text("载入中...")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelTertiary)
+                        .font(.system(size: 26, weight: .light))
+                        .foregroundStyle(Ink.quaternary)
+                    Text("载入中…")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 }
 
-/// 相似照片双栏快速对比与 EXIF 快门参数分析弹窗
+/// 相似照片双栏快速对比与 EXIF 快门参数分析弹窗。
+///
+/// 重写要点：
+///  - 紫色"AI 分析"配色整套删掉。全弹窗只用 `Accent.tint` 一个强调色，画质优劣靠字重与
+///    淡强调底色表达。
+///  - 浮空卡片（描边 + 阴影）换成 inset group：单张照片是一组 `GroupedRow`，参数矩阵也是。
+///  - 装饰性副标题（"智能解析快门防抖、感光度与画质差异"）删掉，右侧位置改放真实数据：
+///    组内张数、感知相似度。
+///  - chrome 全部走中性色，底色用 `Surface.sunken`，让照片本身成为视觉主体。
 struct PhotoCompareSheet: View {
     let group: DuplicateGroup
     @ObservedObject var dupState: DuplicateState
@@ -111,29 +122,29 @@ struct PhotoCompareSheet: View {
             // MARK: - 顶栏标题与多图切换
             headerView
 
-            Divider().overlay(Theme.separator)
+            Hairline()
 
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(spacing: 16) {
-                    // MARK: - 智能推荐理由横幅
-                    recommendationBanner
+                VStack(spacing: Space.md) {
+                    // MARK: - 智能推荐理由
+                    recommendationStrip
 
-                    // MARK: - 双栏大图对比与快速勾选卡片
+                    // MARK: - 双栏大图对比
                     dualColumnPreviewSection
 
                     // MARK: - EXIF 快门与画质参数对比矩阵
                     exifMatrixSection
                 }
-                .padding(16)
+                .padding(Space.md)
             }
 
-            Divider().overlay(Theme.separator)
+            Hairline()
 
             // MARK: - 底部快捷操作与提示栏
             footerView
         }
         .frame(minWidth: 840, idealWidth: 920, minHeight: 640, idealHeight: 720)
-        .background(Theme.canvas)
+        .background(Surface.window)
         .overlay(
             // 隐形快捷键监听
             Group {
@@ -156,28 +167,23 @@ struct PhotoCompareSheet: View {
 
     // MARK: - 顶栏视图
     private var headerView: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "square.split.2x1")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(Color.purple)
+        HStack(spacing: Space.sm) {
+            IconSlot(systemName: "square.split.2x1", size: 13, weight: .medium,
+                     color: Ink.secondary, width: 18)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("相似照片双栏对比与 EXIF 参数分析")
-                        .font(Theme.bodyFont(14, weight: .bold))
-                        .foregroundColor(Theme.labelPrimary)
+            Text("照片对比")
+                .font(Typo.title)
+                .foregroundStyle(Ink.primary)
 
-                    Text("组内共 \(group.items.count) 张相似图片 · 智能解析快门防抖、感光度与画质差异")
-                        .font(Theme.bodyFont(11))
-                        .foregroundColor(Theme.labelSecondary)
-                }
-            }
+            Text("\(group.items.count) 张")
+                .font(.mcNumeric(11))
+                .foregroundStyle(Ink.tertiary)
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
             // 当组内图片超过 2 张时，提供左右对比切换下拉菜单
             if group.items.count > 2 {
-                HStack(spacing: 6) {
+                HStack(spacing: Space.xs) {
                     Picker("照片 A", selection: Binding(
                         get: { itemAIndex },
                         set: { newIdx in
@@ -193,8 +199,8 @@ struct PhotoCompareSheet: View {
                     .controlSize(.small)
 
                     Image(systemName: "arrow.left.and.right")
-                        .font(.system(size: 11))
-                        .foregroundColor(Theme.labelTertiary)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Ink.quaternary)
 
                     Picker("照片 B", selection: Binding(
                         get: { itemBIndex },
@@ -210,73 +216,80 @@ struct PhotoCompareSheet: View {
                     .frame(width: 150)
                     .controlSize(.small)
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Color.primary.opacity(0.04))
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .padding(.horizontal, Space.xs)
+                .padding(.vertical, 3)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                        .fill(Surface.sunken)
+                )
             }
 
             Button {
                 onDismiss()
             } label: {
                 Text("完成")
-                    .font(Theme.bodyFont(12, weight: .medium))
+                    .font(Typo.rowStrong)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
             .keyboardShortcut(.escape, modifiers: [])
             .accessibilityIdentifier("photoCompareDoneButton")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.sm)
+        .background(.bar)
     }
 
-    // MARK: - 智能推荐理由横幅
-    private var recommendationBanner: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 18))
-                .foregroundColor(Color.purple)
+    // MARK: - 智能推荐理由
+    private var recommendationStrip: some View {
+        GroupBox {
+            GroupedRow(isLast: true) {
+                HStack(alignment: .top, spacing: Space.sm) {
+                    IconSlot(systemName: "checkmark.seal", size: 13, weight: .medium,
+                             color: Accent.tint, width: 18)
 
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("智能画质分析建议")
-                        .font(Theme.bodyFont(12, weight: .bold))
-                        .foregroundColor(Color.purple)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(recommendationTitle)
+                            .font(Typo.rowStrong)
+                            .foregroundStyle(Ink.primary)
+
+                        Text(comparison?.recommendationReason ?? "正在分析曝光与画质参数…")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: Space.sm)
 
                     if let sim = comparison?.similarity {
-                        Text("感知相似度 \(String(format: "%.1f", sim * 100))%")
-                            .font(Theme.bodyFont(10, weight: .semibold))
-                            .foregroundColor(Theme.labelSecondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color.purple.opacity(0.12)))
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(String(format: "%.1f%%", sim * 100))
+                                .font(.mcNumeric(13, weight: .medium))
+                                .foregroundStyle(Ink.primary)
+                            Text("感知相似度")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.tertiary)
+                        }
                     }
                 }
-
-                Text(comparison?.recommendationReason ?? "正在分析照片曝光与画质参数...")
-                    .font(Theme.bodyFont(12))
-                    .foregroundColor(Theme.labelPrimary)
             }
-
-            Spacer()
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.purple.opacity(0.06))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.purple.opacity(0.2), lineWidth: 1)
-                )
-        )
+    }
+
+    private var recommendationTitle: String {
+        guard let choice = comparison?.recommendedChoice else { return "正在分析…" }
+        switch choice {
+        case .left: return "建议保留照片 A"
+        case .right: return "建议保留照片 B"
+        case .tie: return "两张画质相当"
+        case .none: return "两张均无明显优势"
+        }
     }
 
     // MARK: - 双栏大图对比部分
     private var dualColumnPreviewSection: some View {
-        HStack(alignment: .top, spacing: 16) {
-            // 左图卡片
+        HStack(alignment: .top, spacing: Space.md) {
+            // 左图
             if let itemA = currentItemA, let mA = metaA {
                 singlePhotoCard(
                     title: "照片 A",
@@ -287,7 +300,7 @@ struct PhotoCompareSheet: View {
                 )
             }
 
-            // 右图卡片
+            // 右图
             if let itemB = currentItemB, let mB = metaB {
                 singlePhotoCard(
                     title: "照片 B",
@@ -300,7 +313,7 @@ struct PhotoCompareSheet: View {
         }
     }
 
-    // MARK: - 单个照片展示卡片
+    // MARK: - 单张照片
     private func singlePhotoCard(
         title: String,
         item: DuplicateFileItem,
@@ -308,237 +321,193 @@ struct PhotoCompareSheet: View {
         isRecommended: Bool,
         onKeepThis: @escaping () -> Void
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // 头部状态条
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(Theme.bodyFont(12, weight: .bold))
-                    .foregroundColor(Theme.labelPrimary)
+        GroupBox {
+            // 大图：靠中性深底衬托，图片本身是唯一焦点
+            GroupedRow(padding: Space.sm) {
+                PhotoThumbnailPreview(path: item.path, maxPixelSize: 1024)
+                    .frame(height: 240)
+                    .frame(maxWidth: .infinity)
+                    .background(Surface.sunken)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+            }
 
-                if isRecommended {
-                    HStack(spacing: 3) {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 9))
-                        Text("推荐保留")
-                    }
-                    .font(Theme.bodyFont(10, weight: .semibold))
-                    .foregroundColor(Color.purple)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.purple.opacity(0.15)))
-                }
+            // 标题 + 推荐标记 + 清理/保留状态
+            GroupedRow {
+                HStack(spacing: Space.xs) {
+                    Text(title)
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
 
-                Spacer()
+                    if isRecommended {
+                        HStack(spacing: 3) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 9))
+                            Text("推荐保留")
+                        }
+                        .font(Typo.micro)
+                        .foregroundStyle(Accent.tint)
+                    }
 
-                // 清理 / 保留状态
-                if item.isSelected {
-                    HStack(spacing: 3) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 10))
-                        Text("已标记待清理")
-                    }
-                    .font(Theme.bodyFont(10, weight: .medium))
-                    .foregroundColor(Theme.dangerRed)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Theme.dangerRed.opacity(0.12)))
-                } else {
-                    HStack(spacing: 3) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                        Text("保留此照片")
-                    }
-                    .font(Theme.bodyFont(10, weight: .medium))
-                    .foregroundColor(Theme.actionBlue)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Theme.actionBlue.opacity(0.12)))
+                    Spacer(minLength: Space.xs)
+
+                    photoStatusLabel(item: item)
                 }
             }
 
-            // 大图预览区域
-            PhotoThumbnailPreview(path: item.path, maxPixelSize: 1024)
-                .frame(height: 220)
-                .frame(maxWidth: .infinity)
-                .background(Color.black.opacity(0.04))
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(Theme.hairline, lineWidth: 0.5)
-                )
+            // 主操作 + 文件属性
+            GroupedRow(isLast: true) {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    keepButton(item: item, isRecommended: isRecommended, action: onKeepThis)
 
-            // 操作主按键
-            Button {
-                onKeepThis()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: item.isSelected ? "arrow.uturn.backward" : "hand.thumbsup.fill")
-                        .font(.system(size: 11))
-                    Text("保留此张 (清理对面)")
-                        .font(Theme.bodyFont(11, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name)
+                            .font(Typo.row)
+                            .foregroundStyle(Ink.primary)
+                            .lineLimit(1)
+
+                        HStack(spacing: Space.xxs) {
+                            Text(meta.resolutionString)
+                                .font(.mcNumeric(10))
+                            Text("·")
+                            Text(meta.fileSize.byteStringCN)
+                                .font(.mcNumeric(10))
+                            Text("·")
+                            Text(meta.format)
+                                .font(Typo.caption)
+                        }
+                        .foregroundStyle(Ink.tertiary)
+
+                        Text(item.path)
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.quaternary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(isRecommended ? Color.purple : Theme.actionBlue)
-            .controlSize(.regular)
-
-            // 文件基础属性
-            VStack(alignment: .leading, spacing: 3) {
-                Text(item.name)
-                    .font(Theme.bodyFont(12, weight: .medium))
-                    .foregroundColor(Theme.labelPrimary)
-                    .lineLimit(1)
-
-                HStack(spacing: 6) {
-                    Text(meta.resolutionString)
-                        .font(Theme.monoFont(10))
-                        .foregroundColor(Theme.labelSecondary)
-                    Text("·")
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(meta.fileSize.byteStringCN)
-                        .font(Theme.monoFont(10))
-                        .foregroundColor(Theme.labelSecondary)
-                    Text("·")
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(meta.format)
-                        .font(Theme.bodyFont(10, weight: .medium))
-                        .foregroundColor(Theme.labelTertiary)
-                }
-
-                Text(item.path)
-                    .font(Theme.monoFont(9))
-                    .foregroundColor(Theme.labelTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
         }
-        .padding(12)
-        .macCard(cornerRadius: Theme.radiusMd)
+    }
+
+    @ViewBuilder
+    private func keepButton(item: DuplicateFileItem, isRecommended: Bool, action: @escaping () -> Void) -> some View {
+        let label = HStack(spacing: 5) {
+            Image(systemName: item.isSelected ? "arrow.uturn.backward" : "hand.thumbsup")
+                .font(.system(size: 11, weight: .medium))
+            Text(item.isSelected ? "保留这张（撤销待清理）" : "保留这张（清理另一张）")
+                .font(Typo.row)
+        }
+        .frame(maxWidth: .infinity)
+
+        if isRecommended {
+            Button(action: action) { label }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+        } else {
+            Button(action: action) { label }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+        }
+    }
+
+    @ViewBuilder
+    private func photoStatusLabel(item: DuplicateFileItem) -> some View {
+        if item.isSelected {
+            HStack(spacing: 3) {
+                Image(systemName: "trash")
+                    .font(.system(size: 10))
+                Text("待清理")
+            }
+            .font(Typo.micro)
+            .foregroundStyle(Signal.critical)
+        } else {
+            HStack(spacing: 3) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("保留")
+            }
+            .font(Typo.micro)
+            .foregroundStyle(Ink.secondary)
+        }
     }
 
     // MARK: - EXIF 快门与画质参数对比矩阵
     private var exifMatrixSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "camera.badge.ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
-                Text("EXIF 曝光与画质参数对比矩阵")
-                    .font(Theme.bodyFont(13, weight: .bold))
-                    .foregroundColor(Theme.labelPrimary)
-                Spacer()
-            }
-
-            VStack(spacing: 0) {
-                // 表头
+        GroupBox(title: "曝光与画质参数") {
+            // 表头
+            GroupedRow(padding: 6) {
                 HStack(spacing: 0) {
-                    Text("参数指标")
-                        .font(Theme.bodyFont(11, weight: .semibold))
-                        .foregroundColor(Theme.labelSecondary)
+                    Text("参数")
+                        .font(Typo.section)
+                        .foregroundStyle(Ink.tertiary)
                         .frame(width: 140, alignment: .leading)
 
                     Text("照片 A")
-                        .font(Theme.bodyFont(11, weight: .semibold))
-                        .foregroundColor(Theme.labelSecondary)
+                        .font(Typo.section)
+                        .foregroundStyle(Ink.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     Text("照片 B")
-                        .font(Theme.bodyFont(11, weight: .semibold))
-                        .foregroundColor(Theme.labelSecondary)
+                        .font(Typo.section)
+                        .foregroundStyle(Ink.tertiary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Theme.parchment.opacity(0.8))
+            }
 
-                Divider().overlay(Theme.separator.opacity(0.4))
-
-                // 行列表
-                if let rows = comparison?.diffRows {
-                    ForEach(rows) { row in
+            if let rows = comparison?.diffRows {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { idx, row in
+                    GroupedRow(isLast: idx == rows.count - 1) {
                         diffRowView(row)
-                        if row.id != rows.last?.id {
-                            Divider().overlay(Theme.separator.opacity(0.2))
-                        }
                     }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(Theme.hairline, lineWidth: 0.5)
-            )
         }
-        .padding(12)
-        .macCard(cornerRadius: Theme.radiusMd)
     }
 
     private func diffRowView(_ row: PhotoDiffRow) -> some View {
         HStack(spacing: 0) {
             // 参数名
-            HStack(spacing: 6) {
-                Image(systemName: row.icon)
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.labelTertiary)
-                    .frame(width: 14)
+            HStack(spacing: Space.xxs) {
+                IconSlot(systemName: row.icon, size: 11, color: Ink.tertiary, width: 16)
                 Text(row.label)
-                    .font(Theme.bodyFont(11, weight: .medium))
-                    .foregroundColor(Theme.labelPrimary)
+                    .font(Typo.row)
+                    .foregroundStyle(Ink.primary)
+                    .lineLimit(1)
             }
             .frame(width: 140, alignment: .leading)
 
-            // 照片 A
-            HStack(spacing: 6) {
-                Text(row.valA)
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(row.winner == .left ? Color.purple : Theme.labelPrimary)
+            diffValueCell(row.valA, isWinner: row.winner == .left, hint: row.hint)
 
-                if row.winner == .left, let hint = row.hint {
-                    Text(hint)
-                        .font(Theme.bodyFont(9, weight: .semibold))
-                        .foregroundColor(Color.purple)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.purple.opacity(0.12)))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 6)
-            .background(row.winner == .left ? Color.purple.opacity(0.04) : Color.clear)
-
-            // 照片 B
-            HStack(spacing: 6) {
-                Text(row.valB)
-                    .font(Theme.bodyFont(11))
-                    .foregroundColor(row.winner == .right ? Color.purple : Theme.labelPrimary)
-
-                if row.winner == .right, let hint = row.hint {
-                    Text(hint)
-                        .font(Theme.bodyFont(9, weight: .semibold))
-                        .foregroundColor(Color.purple)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(Color.purple.opacity(0.12)))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 6)
-            .background(row.winner == .right ? Color.purple.opacity(0.04) : Color.clear)
+            diffValueCell(row.valB, isWinner: row.winner == .right, hint: row.hint)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 2)
+    }
+
+    private func diffValueCell(_ value: String, isWinner: Bool, hint: String?) -> some View {
+        HStack(spacing: Space.xxs) {
+            Text(value)
+                .font(.mcNumeric(11, weight: isWinner ? .medium : .regular))
+                .foregroundStyle(isWinner ? Ink.primary : Ink.secondary)
+
+            if isWinner, let hint {
+                Text(hint)
+                    .font(Typo.micro)
+                    .foregroundStyle(Accent.tint)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Space.xs)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                .fill(isWinner ? Accent.softer : Color.clear)
+        )
     }
 
     // MARK: - 底部控制与快捷键说明
     private var footerView: some View {
-        HStack(spacing: 12) {
-            Text("快捷键：[1] 或 [←] 保留左图 · [2] 或 [→] 保留右图 · [0] 均保留 · [Esc] 关闭")
-                .font(Theme.monoFont(10))
-                .foregroundColor(Theme.labelTertiary)
+        HStack(spacing: Space.sm) {
+            Text("1 / ← 保留左图 · 2 / → 保留右图 · 0 均保留 · Esc 关闭")
+                .font(Typo.caption)
+                .foregroundStyle(Ink.tertiary)
 
             Spacer()
 
@@ -546,7 +515,6 @@ struct PhotoCompareSheet: View {
                 keepBoth()
             } label: {
                 Text("两张均保留")
-                    .font(Theme.bodyFont(11))
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
@@ -556,15 +524,14 @@ struct PhotoCompareSheet: View {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: itemA.path)])
                 } label: {
                     Label("在访达中显示", systemImage: "folder")
-                        .font(Theme.bodyFont(11))
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Theme.parchment)
+        .padding(.horizontal, Space.md)
+        .padding(.vertical, Space.xs)
+        .background(.bar)
     }
 
     // MARK: - 决策处理逻辑

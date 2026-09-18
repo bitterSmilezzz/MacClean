@@ -19,7 +19,14 @@ struct CleanResultSnapshot: Identifiable, Equatable {
     }
 }
 
-/// 清理成效可视化大卡弹窗
+/// 清理成效弹窗。
+///
+/// 重写要点：
+///  - 删掉 64pt 圆形成功徽章（"图标坐进彩色圆底"的翻版），改成左对齐的焦点数字 + 行内小图标。
+///  - 磁盘对比、分类分布、指标摘要三处"描边 + 阴影"卡片换成 `GroupBox` 内嵌分组。
+///  - 分类分布条是全 App 唯一使用 `ChartPalette`（`cat.chartColor`）的地方——它在这里
+///    是数据可视化，不是装饰。
+///  - 底部三个等权按钮收成一个主按钮 + 两个文字动作；对比条改用 `LegendItem` 图例。
 struct CleanResultSheet: View {
     let snapshot: CleanResultSnapshot
     var onViewHistory: () -> Void
@@ -28,261 +35,231 @@ struct CleanResultSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: Theme.spaceMd) {
-            // 1. 庆祝徽章与释放大字
-            headerSection
+        VStack(alignment: .leading, spacing: Space.md) {
+            // 1. 焦点：本次释放量
+            heroPanel
 
-            // 2. 磁盘可用空间前后对比大卡
-            diskComparisonCard
+            // 2. 磁盘可用空间前后对比
+            diskComparisonGroup
 
-            // 3. 各分类释放分布条（若有明细）
+            // 3. 各分类释放分布（若有明细）
             if !snapshot.breakdown.isEmpty {
-                breakdownCard
+                breakdownGroup
             }
 
-            // 4. 清理指标摘要行
-            metricsRow
+            // 4. 清理指标摘要
+            metricsGroup
 
-            Spacer(minLength: 4)
+            Spacer(minLength: Space.xxs)
 
-            Divider().overlay(Theme.hairline)
+            Hairline()
 
             // 5. 底部快捷操作
             actionButtons
         }
-        .padding(Theme.spaceLg)
+        .padding(Space.lg)
         .frame(width: 480)
-        .background(Theme.windowBackground)
+        .background(Surface.window)
     }
 
-    // MARK: - 顶栏庆祝徽标与数字
-    private var headerSection: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(Theme.successGreen.opacity(0.14))
-                    .frame(width: 64, height: 64)
+    // MARK: - 顶栏：释放量与成功状态
+    private var heroPanel: some View {
+        HStack(alignment: .center, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("本次释放")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.secondary)
 
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 38, weight: .semibold))
-                    .foregroundColor(Theme.successGreen)
-            }
-            .padding(.top, 4)
-
-            VStack(spacing: 4) {
                 Text("+\(snapshot.deltaString)")
-                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                    .foregroundColor(Theme.labelPrimary)
-                    .contentTransition(.numericText())
+                    .font(.mcNumeric(34, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
 
-                Text("已成功安全释放 \(snapshot.itemCount) 个项目 · \(snapshot.mode)")
-                    .font(Theme.bodyFont(13, weight: .medium))
-                    .foregroundColor(Theme.labelSecondary)
+                Text("\(snapshot.itemCount) 个项目 · \(snapshot.mode)")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
             }
+
+            Spacer(minLength: Space.md)
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 26, weight: .regular))
+                .foregroundStyle(Signal.positive)
         }
-    }
-
-    // MARK: - 磁盘空间前后对比大卡
-    private var diskComparisonCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Macintosh HD 可用空间变化", systemImage: "internaldrive")
-                    .font(Theme.bodyFont(12, weight: .semibold))
-                    .foregroundColor(Theme.labelPrimary)
-
-                Spacer()
-
-                // 增量角标
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 9, weight: .bold))
-                    Text("+\(snapshot.deltaString)")
-                        .font(Theme.monoFont(10, weight: .bold))
-                }
-                .foregroundColor(Theme.successGreen)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Theme.successGreen.opacity(0.15))
-                .cornerRadius(4)
-            }
-
-            // 前后对比数值条
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("清理前可用")
-                        .font(Theme.bodyFont(10))
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(snapshot.beforeAvailable.byteStringCN)
-                        .font(Theme.monoFont(12, weight: .medium))
-                        .foregroundColor(Theme.labelSecondary)
-                }
-
-                Spacer()
-
-                Image(systemName: "arrow.forward")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(Theme.successGreen)
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("当前可用")
-                        .font(Theme.bodyFont(10))
-                        .foregroundColor(Theme.labelTertiary)
-                    Text(snapshot.afterAvailable.byteStringCN)
-                        .font(Theme.monoFont(13, weight: .bold))
-                        .foregroundColor(Theme.labelPrimary)
-                }
-            }
-
-            // 比例条可视化对比
-            let before = max(0, snapshot.beforeAvailable)
-            let after = max(before, snapshot.afterAvailable)
-            let total = max(1, after)
-            let beforeRatio = CGFloat(before) / CGFloat(total)
-
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    // 底条：代表当前增加后的可用容量
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Theme.successGreen.opacity(0.35))
-                        .frame(width: geo.size.width)
-
-                    // 内条：代表原有可用容量
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Theme.actionBlue.opacity(0.7))
-                        .frame(width: max(0, geo.size.width * beforeRatio))
-                }
-            }
-            .frame(height: 7)
-
-            HStack {
-                HStack(spacing: 4) {
-                    Circle().fill(Theme.actionBlue.opacity(0.7)).frame(width: 6, height: 6)
-                    Text("原有容量").font(Theme.bodyFont(9)).foregroundColor(Theme.labelTertiary)
-                }
-                HStack(spacing: 4) {
-                    Circle().fill(Theme.successGreen).frame(width: 6, height: 6)
-                    Text("释放增量").font(Theme.bodyFont(9)).foregroundColor(Theme.labelTertiary)
-                }
-                Spacer()
-            }
-        }
-        .padding(Theme.spaceSm)
-        .macCard(cornerRadius: Theme.radiusSm)
-    }
-
-    // MARK: - 各分类释放分布条
-    private var breakdownCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("分类释放占比")
-                .font(Theme.bodyFont(11, weight: .semibold))
-                .foregroundColor(Theme.labelPrimary)
-
-            let total = max(1, snapshot.releasedBytes)
-            let sortedEntries = snapshot.breakdown.sorted(by: { $0.value > $1.value })
-
-            // 水平分段比例条
-            GeometryReader { geo in
-                HStack(spacing: 2) {
-                    ForEach(sortedEntries, id: \.key.id) { cat, bytes in
-                        let ratio = CGFloat(bytes) / CGFloat(total)
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(cat.accentColor)
-                            .frame(width: max(2, geo.size.width * ratio - 2))
-                    }
-                }
-            }
-            .frame(height: 6)
-
-            // 图例
-            FlowLayout(spacing: 8) {
-                ForEach(sortedEntries, id: \.key.id) { cat, bytes in
-                    let pct = Int(Double(bytes) / Double(total) * 100)
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(cat.accentColor)
-                            .frame(width: 6, height: 6)
-                        Text(cat.title)
-                            .font(Theme.bodyFont(10))
-                            .foregroundColor(Theme.labelSecondary)
-                        Text("\(bytes.byteStringCN) (\(pct)%)")
-                            .font(Theme.monoFont(10, weight: .medium))
-                            .foregroundColor(Theme.labelPrimary)
-                    }
-                }
-            }
-        }
-        .padding(Theme.spaceSm)
-        .macCard(cornerRadius: Theme.radiusSm)
-    }
-
-    // MARK: - 清理指标摘要
-    private var metricsRow: some View {
-        HStack(spacing: Theme.spaceSm) {
-            metricItem(title: "成功项目", value: "\(snapshot.itemCount) 项")
-            metricItem(title: "清理方式", value: snapshot.mode)
-            if snapshot.failureCount > 0 {
-                metricItem(title: "跳过/锁定", value: "\(snapshot.failureCount) 项", isWarning: true)
-            }
-            metricItem(title: "归档状态", value: "已记入历史")
-        }
-    }
-
-    private func metricItem(title: String, value: String, isWarning: Bool = false) -> some View {
-        VStack(spacing: 2) {
-            Text(title)
-                .font(Theme.bodyFont(10))
-                .foregroundColor(Theme.labelTertiary)
-            Text(value)
-                .font(Theme.bodyFont(11, weight: .medium))
-                .foregroundColor(isWarning ? Theme.warningOrange : Theme.labelPrimary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
+        .padding(Space.md)
         .background(
-            RoundedRectangle(cornerRadius: Theme.radiusSm, style: .continuous)
-                .fill(Theme.controlBackground.opacity(0.6))
+            RoundedRectangle(cornerRadius: Radius.overlay, style: .continuous)
+                .fill(Accent.softer)
         )
     }
 
-    // MARK: - 底部快捷操作按钮
+    // MARK: - 磁盘空间前后对比
+    private var diskComparisonGroup: some View {
+        let before = max(0, snapshot.beforeAvailable)
+        let after = max(before, snapshot.afterAvailable)
+        let total = max(1, after)
+        let beforeRatio = CGFloat(before) / CGFloat(total)
+
+        return GroupBox(title: "Macintosh HD 可用空间") {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                // 前后对比数值
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("清理前")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                        Text(snapshot.beforeAvailable.byteStringCN)
+                            .font(.mcNumeric(13, weight: .medium))
+                            .foregroundStyle(Ink.secondary)
+                    }
+
+                    Spacer(minLength: Space.sm)
+
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Ink.quaternary)
+
+                    Spacer(minLength: Space.sm)
+
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("当前")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                        Text(snapshot.afterAvailable.byteStringCN)
+                            .font(.mcNumeric(15, weight: .semibold))
+                            .foregroundStyle(Ink.primary)
+                            .motionSafeNumericTransition()
+                    }
+                }
+
+                // 分段比例条：原有可用 + 本次释放增量
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Signal.positive)
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Accent.tint)
+                            .frame(width: max(0, geo.size.width * beforeRatio))
+                    }
+                }
+                .frame(height: 7)
+
+                HStack(spacing: Space.lg) {
+                    LegendItem(color: Accent.tint, label: "原有可用",
+                               value: snapshot.beforeAvailable.byteStringCN)
+                    LegendItem(color: Signal.positive, label: "本次释放",
+                               value: "+\(snapshot.deltaString)", emphasized: true)
+                }
+            }
+            .padding(Space.sm)
+        }
+    }
+
+    // MARK: - 各分类释放分布
+    private var breakdownGroup: some View {
+        let total = max(1, snapshot.releasedBytes)
+        let sortedEntries = snapshot.breakdown.sorted(by: { $0.value > $1.value })
+
+        return GroupBox(title: "分类释放占比") {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                // 水平分段比例条（唯一使用 ChartPalette 的场景）
+                GeometryReader { geo in
+                    HStack(spacing: 2) {
+                        ForEach(sortedEntries, id: \.key.id) { cat, bytes in
+                            let ratio = CGFloat(bytes) / CGFloat(total)
+                            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                                .fill(cat.chartColor)
+                                .frame(width: max(2, geo.size.width * ratio - 2))
+                        }
+                    }
+                }
+                .frame(height: 6)
+
+                // 图例
+                VStack(spacing: Space.xxs) {
+                    ForEach(sortedEntries, id: \.key.id) { cat, bytes in
+                        let pct = Int(Double(bytes) / Double(total) * 100)
+                        LegendItem(color: cat.chartColor, label: cat.title,
+                                   value: "\(bytes.byteStringCN) (\(pct)%)")
+                    }
+                }
+            }
+            .padding(Space.sm)
+        }
+    }
+
+    // MARK: - 清理指标摘要
+    private var metricsGroup: some View {
+        GroupBox(title: "本次清理") {
+            metricRow(title: "成功项目", value: "\(snapshot.itemCount) 项",
+                      isLast: snapshot.failureCount == 0)
+            if snapshot.failureCount > 0 {
+                metricRow(title: "跳过/锁定", value: "\(snapshot.failureCount) 项",
+                          isWarning: true, isLast: true)
+            }
+        }
+    }
+
+    private func metricRow(title: String, value: String,
+                           isWarning: Bool = false, isLast: Bool = false) -> some View {
+        GroupedRow(isLast: isLast) {
+            HStack(spacing: Space.sm) {
+                Text(title)
+                    .font(Typo.row)
+                    .foregroundStyle(Ink.secondary)
+                Spacer(minLength: Space.sm)
+                Text(value)
+                    .font(Typo.rowStrong)
+                    .foregroundStyle(isWarning ? Signal.caution : Ink.primary)
+            }
+        }
+    }
+
+    // MARK: - 底部快捷操作
     private var actionButtons: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Space.md) {
             // 在访达中打开废纸篓
             if snapshot.mode.contains("废纸篓") {
-                Button {
+                textAction("查看废纸篓", icon: "trash") {
                     let trashURL = URL(fileURLWithPath: CleanPaths.expand("~/.Trash"))
                     NSWorkspace.shared.open(trashURL)
-                } label: {
-                    Label("查看废纸篓", systemImage: "trash")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
             }
 
             // 查看历史趋势
-            Button {
+            textAction("历史趋势", icon: "chart.bar.xaxis") {
                 onViewHistory()
-            } label: {
-                Label("历史趋势", systemImage: "chart.bar.xaxis")
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
             .accessibilityIdentifier("resultSheetHistoryButton")
 
-            Spacer()
+            Spacer(minLength: Space.sm)
 
-            // 完成按钮
+            // 完成按钮：唯一主操作
             Button("完成") {
                 onDismiss()
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
-            .tint(Theme.actionBlue)
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("resultSheetDoneButton")
         }
+    }
+
+    private func textAction(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .medium))
+                Text(title)
+                    .font(Typo.row)
+            }
+            .foregroundStyle(Accent.tint)
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .pressable()
+        .rowHover()
     }
 }
 
