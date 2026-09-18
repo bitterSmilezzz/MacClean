@@ -1,17 +1,12 @@
 import SwiftUI
 
-/// App 卸载器（融合 Pearcleaner / PureMac：选 App → 扫全部关联文件 → 移废纸篓）
-///
-/// 重写要点：
-///  - 44×44 的蓝色圆角图标底板、26pt 的巨大标题都删掉：图标就是图标，标题回到 `Typo.title`。
-///  - 装饰性副标题（"· 规则 A1–A4"）删掉，右侧位置改放真实数据：已列出的 App 数量。
-///  - 浮空卡片换成 inset group：所选 App 信息、关联文件列表都是 `GroupBox` + `GroupedRow`。
-///  - 空态统一走 `EmptyState`，搜索框走 `SearchField`，行悬停走 `.rowHover()`。
-///  - 全 App 只剩 `Accent.tint` 一个强调色；橙色只留给"App 正在运行"这个真实警告。
+/// App 卸载器与孤儿残留排查（融合 Pearcleaner / PureMac：选 App 卸载 + 孤儿文件全盘检索）
 struct UninstallerView: View {
     @EnvironmentObject private var app: AppState
     @State private var searchText = ""
+    @State private var orphanSearchText = ""
     @State private var confirmPermanent = false
+    @State private var confirmPermanentOrphans = false
 
     private var uninstaller: UninstallerState { app.uninstaller }
 
@@ -21,24 +16,46 @@ struct UninstallerView: View {
         return list.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
+    private var filteredOrphanApps: [OrphanApp] {
+        let list = uninstaller.orphanApps
+        guard !orphanSearchText.isEmpty else { return list }
+        return list.filter {
+            $0.name.localizedCaseInsensitiveContains(orphanSearchText) ||
+            ($0.bundleID?.localizedCaseInsensitiveContains(orphanSearchText) == true)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Hairline()
 
-            if uninstaller.apps.isEmpty && !uninstaller.isScanning {
-                emptyView
+            if uninstaller.currentTab == .apps {
+                if uninstaller.apps.isEmpty && !uninstaller.isScanning {
+                    emptyAppsView
+                } else {
+                    HStack(spacing: 0) {
+                        appList
+                        Divider()
+                        relatedPanel
+                    }
+                }
             } else {
-                HStack(spacing: 0) {
-                    appList
-                    Divider()
-                    relatedPanel
+                if uninstaller.orphanApps.isEmpty && !uninstaller.isScanningOrphans {
+                    emptyOrphansView
+                } else {
+                    HStack(spacing: 0) {
+                        orphanAppList
+                        Divider()
+                        orphanRelatedPanel
+                    }
                 }
             }
         }
         .background(Surface.window)
         .onAppear {
             if uninstaller.apps.isEmpty { uninstaller.loadApps() }
+            if uninstaller.orphanApps.isEmpty { uninstaller.loadOrphans() }
         }
         .confirmationDialog("彻底删除不可恢复", isPresented: $confirmPermanent, titleVisibility: .visible) {
             Button("彻底删除所选", role: .destructive) {
@@ -47,6 +64,14 @@ struct UninstallerView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("将删除 \(uninstaller.selectedFiles.count) 个关联文件（\(uninstaller.selectedSize.byteStringCN)），此操作无法恢复。建议优先使用「移入废纸篓」。")
+        }
+        .confirmationDialog("彻底删除孤儿残留", isPresented: $confirmPermanentOrphans, titleVisibility: .visible) {
+            Button("彻底删除所选", role: .destructive) {
+                _ = uninstaller.cleanSelectedOrphans(permanently: true)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将彻底删除 \(uninstaller.selectedOrphanCount) 个孤儿残留组件（\(uninstaller.selectedOrphanSize.byteStringCN)），此操作无法恢复。建议优先使用「移入废纸篓」。")
         }
     }
 
@@ -57,35 +82,65 @@ struct UninstallerView: View {
             IconSlot(systemName: "app.dashed", size: 14, weight: .medium,
                      color: Ink.secondary, width: 18)
 
-            Text("App 卸载器")
+            Text("App 卸载与残留排查")
                 .font(Typo.title)
                 .foregroundStyle(Ink.primary)
 
             Spacer()
 
-            if !uninstaller.apps.isEmpty {
-                Text("\(filteredApps.count) 个 App")
-                    .font(.mcNumeric(11))
-                    .foregroundStyle(Ink.tertiary)
+            Picker("模式切换", selection: Binding(
+                get: { uninstaller.currentTab },
+                set: { uninstaller.currentTab = $0 }
+            )) {
+                ForEach(UninstallerState.UninstallerTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
             }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+            .accessibilityIdentifier("uninstallerTabPicker")
 
-            Button {
-                uninstaller.loadApps()
-            } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
+            Spacer()
+
+            if uninstaller.currentTab == .apps {
+                if !uninstaller.apps.isEmpty {
+                    Text("\(filteredApps.count) 个 App")
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(Ink.tertiary)
+                }
+
+                Button {
+                    uninstaller.loadApps()
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+            } else {
+                if !uninstaller.orphanApps.isEmpty {
+                    Text("\(filteredOrphanApps.count) 个孤儿应用")
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(Ink.tertiary)
+                }
+
+                Button {
+                    uninstaller.loadOrphans()
+                } label: {
+                    Label("重新排查", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
         }
         .padding(.horizontal, Space.gutter)
         .padding(.vertical, Space.sm)
         .background(.bar)
     }
 
-    // MARK: - 空态
+    // MARK: - 已安装 App 视图
 
     @ViewBuilder
-    private var emptyView: some View {
+    private var emptyAppsView: some View {
         if uninstaller.isScanning {
             VStack(spacing: Space.sm) {
                 ProgressView().controlSize(.large)
@@ -105,8 +160,6 @@ struct UninstallerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
-
-    // MARK: - App 列表
 
     private var appList: some View {
         VStack(spacing: 0) {
@@ -135,8 +188,6 @@ struct UninstallerView: View {
         .frame(width: 280)
         .background(Surface.group)
     }
-
-    // MARK: - 关联文件面板
 
     private var relatedPanel: some View {
         VStack(spacing: 0) {
@@ -175,11 +226,9 @@ struct UninstallerView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Spacer(minLength: 0)
-            footer
+            appFooter
         }
     }
-
-    // MARK: - 所选 App 概要
 
     private func appSummary(_ app: InstalledApp) -> some View {
         GroupBox {
@@ -249,7 +298,6 @@ struct UninstallerView: View {
 
     private func relatedList(app: InstalledApp) -> some View {
         VStack(spacing: 0) {
-            // 全选行
             HStack(spacing: Space.xs) {
                 Button(uninstaller.allSelected ? "取消全选" : "全选") {
                     uninstaller.setAllSelected(!uninstaller.allSelected)
@@ -274,7 +322,6 @@ struct UninstallerView: View {
                             RelatedFileRow(file: file)
                                 .contentShape(Rectangle())
                                 .onTapGesture { uninstaller.toggle(file.id, !file.isSelected) }
-                                // 行内 checkbox 已是真 Button（键盘可激活）；整行点击补 VO 按钮语义
                                 .accessibilityAddTraits(file.isSelected ? [.isSelected] : [])
                                 .accessibilityLabel("\(file.name)，\(file.size.byteStringCN)")
                         }
@@ -286,9 +333,7 @@ struct UninstallerView: View {
         }
     }
 
-    // MARK: - Footer
-
-    private var footer: some View {
+    private var appFooter: some View {
         HStack(spacing: Space.md) {
             if let summary = uninstaller.lastSummary {
                 HStack(spacing: Space.xxs) {
@@ -312,7 +357,6 @@ struct UninstallerView: View {
                     .motionSafeNumericTransition()
             }
 
-            // 彻底删除（红色，需二次确认）
             Button {
                 confirmPermanent = true
             } label: {
@@ -324,7 +368,6 @@ struct UninstallerView: View {
             .accessibilityIdentifier("uninstallPermanentButton")
             .disabled(uninstaller.selectedFiles.isEmpty || uninstaller.isUninstalling)
 
-            // 移入废纸篓（默认安全路径）
             Button {
                 _ = uninstaller.uninstallSelected(permanently: false)
             } label: {
@@ -340,6 +383,347 @@ struct UninstallerView: View {
         .background(.bar)
         .overlay(alignment: .top) {
             Hairline()
+        }
+    }
+
+    // MARK: - 孤儿残留排查视图
+
+    @ViewBuilder
+    private var emptyOrphansView: some View {
+        if uninstaller.isScanningOrphans {
+            VStack(spacing: Space.sm) {
+                ProgressView().controlSize(.large)
+                Text("正在排查已卸载应用的孤儿残留…")
+                    .font(Typo.body)
+                    .foregroundStyle(Ink.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            EmptyState(
+                icon: "sparkles",
+                title: "未发现孤儿残留",
+                message: "系统很干净，所有残留已被清理，或均属于正常已安装的应用。",
+                actionTitle: "重新排查",
+                action: { uninstaller.loadOrphans() }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var orphanAppList: some View {
+        VStack(spacing: 0) {
+            SearchField(placeholder: "搜索孤儿应用", text: $orphanSearchText)
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, Space.sm)
+
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(filteredOrphanApps) { orphanApp in
+                        Button {
+                            withAnimation(Motion.micro) {
+                                uninstaller.selectOrphanApp(orphanApp)
+                            }
+                        } label: {
+                            OrphanAppRow(orphanApp: orphanApp, isSelected: uninstaller.selectedOrphanApp?.id == orphanApp.id)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("orphanAppRow_\(orphanApp.name)")
+                    }
+                }
+                .padding(.horizontal, Space.xs)
+                .padding(.bottom, Space.md)
+            }
+        }
+        .frame(width: 280)
+        .background(Surface.group)
+    }
+
+    private var orphanRelatedPanel: some View {
+        VStack(spacing: 0) {
+            if let orphanApp = uninstaller.selectedOrphanApp {
+                orphanSummary(orphanApp)
+                orphanItemsList(orphanApp: orphanApp)
+            } else {
+                EmptyState(
+                    icon: "hand.point.up.left",
+                    title: "从左侧选择一个孤儿应用",
+                    message: "查看其留在沙盒容器、偏好设置与窗口状态中的孤儿文件并清理。"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            Spacer(minLength: 0)
+            orphanFooter
+        }
+    }
+
+    private func orphanSummary(_ orphanApp: OrphanApp) -> some View {
+        GroupBox {
+            GroupedRow(isLast: true) {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "questionmark.app")
+                        .font(.system(size: 24, weight: .regular))
+                        .foregroundStyle(Ink.secondary)
+                        .frame(width: 32, height: 32)
+                        .background(Surface.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: Space.xs) {
+                            Text(orphanApp.name)
+                                .font(Typo.title)
+                                .foregroundStyle(Ink.primary)
+                                .lineLimit(1)
+
+                            Text("已卸载")
+                                .font(Typo.micro)
+                                .foregroundStyle(Signal.caution)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Signal.caution.opacity(0.12))
+                                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        }
+
+                        if let bundleID = orphanApp.bundleID {
+                            Text(bundleID)
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.quaternary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: Space.sm)
+
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(orphanApp.totalSize.byteStringCN)
+                            .font(.mcNumeric(15, weight: .semibold))
+                            .foregroundStyle(Ink.primary)
+                        Text("\(orphanApp.items.count) 个残留组件")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.top, Space.md)
+    }
+
+    private func orphanItemsList(orphanApp: OrphanApp) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Space.xs) {
+                Button(orphanApp.allSelected ? "取消全选" : "全选该应用") {
+                    uninstaller.toggleOrphanApp(appID: orphanApp.id, on: !orphanApp.allSelected)
+                }
+                .pressable()
+                .font(Typo.row)
+                .foregroundStyle(Accent.tint)
+
+                Spacer()
+
+                Text("\(orphanApp.items.count) 项 · \(orphanApp.totalSize.byteStringCN)")
+                    .font(.mcNumeric(11))
+                    .foregroundStyle(Ink.tertiary)
+            }
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.xs)
+
+            ScrollView {
+                GroupBox {
+                    ForEach(Array(orphanApp.items.enumerated()), id: \.element.id) { index, item in
+                        GroupedRow(isLast: index == orphanApp.items.count - 1) {
+                            OrphanItemRow(item: item, appID: orphanApp.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    uninstaller.toggleOrphanItem(appID: orphanApp.id, itemID: item.id, on: !item.isSelected)
+                                }
+                        }
+                    }
+                }
+                .padding(.horizontal, Space.md)
+                .padding(.bottom, Space.md)
+            }
+        }
+    }
+
+    private var orphanFooter: some View {
+        HStack(spacing: Space.md) {
+            if let summary = uninstaller.lastOrphanSummary {
+                HStack(spacing: Space.xxs) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.positive)
+                    Text(summary)
+                        .font(Typo.body)
+                        .foregroundStyle(Ink.secondary)
+                }
+            }
+            Spacer()
+
+            Button(uninstaller.allOrphansSelected ? "取消全部勾选" : "勾选全部孤儿残留") {
+                uninstaller.setAllOrphansSelected(!uninstaller.allOrphansSelected)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .accessibilityIdentifier("orphanSelectAllButton")
+
+            VStack(alignment: .trailing, spacing: 0) {
+                Text("已选 \(uninstaller.selectedOrphanCount) 项")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                    .motionSafeNumericTransition()
+                Text(uninstaller.selectedOrphanSize.byteStringCN)
+                    .font(.mcNumeric(17, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
+            }
+
+            Button {
+                confirmPermanentOrphans = true
+            } label: {
+                Label("彻底删除", systemImage: "trash.slash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .tint(Signal.critical)
+            .accessibilityIdentifier("orphanPermanentButton")
+            .disabled(uninstaller.selectedOrphanItems.isEmpty || uninstaller.isCleaningOrphans)
+
+            Button {
+                _ = uninstaller.cleanSelectedOrphans(permanently: false)
+            } label: {
+                Label("移入废纸篓", systemImage: "trash")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("orphanTrashButton")
+            .disabled(uninstaller.selectedOrphanItems.isEmpty || uninstaller.isCleaningOrphans)
+        }
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Hairline()
+        }
+    }
+}
+
+// MARK: - 孤儿应用与条目组件
+
+struct OrphanAppRow: View {
+    @EnvironmentObject private var appState: AppState
+    let orphanApp: OrphanApp
+    let isSelected: Bool
+
+    private var uninstaller: UninstallerState { self.appState.uninstaller }
+
+    var body: some View {
+        HStack(spacing: Space.xs) {
+            Button(action: { uninstaller.toggleOrphanApp(appID: self.orphanApp.id, on: !self.orphanApp.isSelected) }) {
+                Image(systemName: self.orphanApp.isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 13))
+                    .foregroundStyle(self.orphanApp.isSelected ? Accent.tint : Ink.tertiary)
+            }
+            .buttonStyle(.plain)
+
+            Image(systemName: "questionmark.app")
+                .font(.system(size: 16, weight: .regular))
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 22, height: 22)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text(self.orphanApp.name)
+                    .font(isSelected ? Typo.rowStrong : Typo.row)
+                    .foregroundStyle(Ink.primary)
+                    .lineLimit(1)
+                Text("\(self.orphanApp.items.count) 项 · \(self.orphanApp.totalSize.byteStringCN)")
+                    .font(.mcNumeric(10))
+                    .foregroundStyle(Ink.tertiary)
+            }
+            Spacer(minLength: Space.xxs)
+        }
+        .padding(.horizontal, Space.xs)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .selectionHighlight(isSelected)
+        .rowHover()
+    }
+}
+
+struct OrphanItemRow: View {
+    @EnvironmentObject private var app: AppState
+    let item: OrphanItem
+    let appID: UUID
+
+    private var uninstaller: UninstallerState { app.uninstaller }
+
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            Button(action: { uninstaller.toggleOrphanItem(appID: appID, itemID: item.id, on: !item.isSelected) }) {
+                Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 14))
+                    .foregroundStyle(item.isSelected ? Accent.tint : Ink.tertiary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("orphanItemToggle")
+
+            Image(systemName: item.kind.icon)
+                .font(.system(size: 14))
+                .foregroundStyle(Accent.tint)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: Space.xs) {
+                    Text(item.name)
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
+                        .lineLimit(1)
+
+                    Text(item.kind.rawValue)
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Surface.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                }
+
+                Text(item.path)
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.quaternary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: Space.xs)
+
+            Text(item.size.byteStringCN)
+                .font(.mcNumeric(12, weight: .medium))
+                .foregroundStyle(Ink.primary)
+        }
+        .contentShape(Rectangle())
+        .rowHover()
+        .contextMenu {
+            Button {
+                let url = URL(fileURLWithPath: item.path)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
+                Label("在访达中显示", systemImage: "folder")
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.path, forType: .string)
+            } label: {
+                Label("拷贝路径", systemImage: "doc.on.doc")
+            }
+
+            Divider()
+
+            Button {
+                app.addPathToWhitelist(item.path, comment: item.name)
+            } label: {
+                Label("加入白名单排除（不再识别为孤儿）", systemImage: "shield.slash")
+            }
         }
     }
 }

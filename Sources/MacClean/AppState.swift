@@ -188,6 +188,13 @@ final class AppState: ObservableObject {
         uninstaller.related.removeAll { f in
             whitelist.isWhitelisted(path: f.path)
         }
+        uninstaller.orphanApps = uninstaller.orphanApps.compactMap { app in
+            let remaining = app.items.filter { !self.whitelist.isWhitelisted(path: $0.path) }
+            guard !remaining.isEmpty else { return nil }
+            var updated = app
+            updated.items = remaining
+            return updated
+        }
     }
 
     /// 将指定文件扩展名加入排除白名单并立刻从当前已扫描项目中移除
@@ -200,6 +207,13 @@ final class AppState: ObservableObject {
         }
         uninstaller.related.removeAll { f in
             whitelist.isExtensionWhitelisted(path: f.path)
+        }
+        uninstaller.orphanApps = uninstaller.orphanApps.compactMap { app in
+            let remaining = app.items.filter { !self.whitelist.isExtensionWhitelisted(path: $0.path) }
+            guard !remaining.isEmpty else { return nil }
+            var updated = app
+            updated.items = remaining
+            return updated
         }
         duplicateState.groups = duplicateState.groups.compactMap { group in
             let filtered = group.items.filter { !whitelist.isExtensionWhitelisted(path: $0.path) }

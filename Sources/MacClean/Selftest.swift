@@ -76,6 +76,8 @@ enum Selftest {
         suiteAccessibility()
         // 无人值守与后台开销
         suiteUnattended()
+        // 孤儿残留排查
+        suiteOrphans()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

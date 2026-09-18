@@ -25,9 +25,10 @@
   - **大文件与清理项清单一键多格式导出**：扫描后支持一键导出当前分类待清理项目为标准 CSV 表格或 Markdown 文本报告，清楚记录文件名、大小、字节数、风险等级、使用情况与绝对路径，方便二次归档或团队汇报；
   - **大文件细分类型深度解析与快捷过滤**：支持按「安装包 (dmg/pkg)」、「压缩包 (zip/tar/7z)」、「音视频 (mov/mp4/mp3)」、「RAW相机与设计原稿 (cr2/cr3/nef/arw/dng/psd/blend/c4d)」、「虚拟机与镜像 (iso/img/vdi/vmdk/parallels)」、「项目归档与开发包 (xcarchive/apk/node_modules)」、「模拟器与备份」和「其他」共 8 大细分类型精准识别，统计与批量全选自动对齐当前可见类型。
 - **电脑风险提醒**：独立于文件清理的敏感数据检查模块（SSH 私钥/目录权限过宽检测、明文密钥环境变量暴露排查、敏感命名文件扫描）。
-- **App 卸载器**（融合 Pearcleaner/PureMac）：
-  - 提取本机已安装应用的**真实高清官方图标**；
-  - 智能扫描全部关联残留（Preferences/Caches/Containers/Application Support/Logs/LaunchAgents）→ 安全移入废纸篓。
+- **App 卸载器与孤儿残留排查（融合 Pearcleaner / PureMac 双模式）**：
+  - **已安装应用全量卸载**：提取本机已安装应用的**真实高清官方图标**，智能关联扫描 Preferences、Caches、Containers、Application Support、Logs、LaunchAgents 等全部关联数据，清晰标明每一项用途并安全移入废纸篓；
+  - **全新「孤儿残留排查（Orphan Finder）」深度检索模式**：基于逆向反查机制，全盘遍历检索已从系统中卸载移除的遗留应用数据，涵盖沙盒容器 (`~/Library/Containers`)、共享组容器 (`~/Library/Group Containers`)、窗口恢复状态 (`Saved Application State`)、WebKit 缓存、HTTP 存储、自启代理项 (`LaunchAgents`) 及过期偏好设置 (`Preferences`)；
+  - **多重安全护栏与白名单保护**：建立 Apple 系统服务与守护进程硬白名单、正在运行进程动态防护、以及已安装应用指纹（Bundle ID / 前缀 / 归一化名称 / 可执行名）多重校验，绝不误伤系统与在用软件；支持自动按应用聚类与批量安全清理。
 - **桌面级原生交互体验**：
   - **全局键盘快捷键体系**：
     - `⌘R`：智能刷新与扫描（按当前分类/全局上下文自适应）；

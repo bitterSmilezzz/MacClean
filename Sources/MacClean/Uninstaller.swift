@@ -32,12 +32,27 @@ struct RelatedFile: Identifiable, Equatable {
 // MARK: - 卸载器状态
 
 final class UninstallerState: ObservableObject {
+    public enum UninstallerTab: String, CaseIterable, Identifiable {
+        case apps = "已安装应用"
+        case orphans = "孤儿残留排查"
+        public var id: String { rawValue }
+    }
+
+    @Published var currentTab: UninstallerTab = .apps
+
     @Published var apps: [InstalledApp] = []
     @Published var selectedApp: InstalledApp?
     @Published var related: [RelatedFile] = []
     @Published var isScanning = false
     @Published var lastSummary: String?
     @Published var isUninstalling = false
+
+    // MARK: - 孤儿残留状态
+    @Published var orphanApps: [OrphanApp] = []
+    @Published var selectedOrphanApp: OrphanApp?
+    @Published var isScanningOrphans = false
+    @Published var lastOrphanSummary: String?
+    @Published var isCleaningOrphans = false
 
     func loadApps() {
         // 三巡：置 isScanning 避免首次进入闪现"未发现可卸载 App"空态
@@ -115,6 +130,111 @@ final class UninstallerState: ObservableObject {
                 var parts = ["已卸载 \(result.succeeded) 项，释放 \(result.releasedBytes.byteStringCN)"]
                 if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
                 self.lastSummary = parts.joined(separator: "，")
+            }
+        }
+        return true
+    }
+
+    // MARK: - 孤儿残留排查逻辑
+
+    func loadOrphans() {
+        isScanningOrphans = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let orphans = OrphanScanner.scan()
+            DispatchQueue.main.async {
+                self?.orphanApps = orphans
+                self?.isScanningOrphans = false
+                if self?.selectedOrphanApp == nil || !orphans.contains(where: { $0.id == self?.selectedOrphanApp?.id }) {
+                    self?.selectedOrphanApp = orphans.first
+                }
+            }
+        }
+    }
+
+    func selectOrphanApp(_ app: OrphanApp?) {
+        selectedOrphanApp = app
+    }
+
+    func toggleOrphanItem(appID: UUID, itemID: UUID, on: Bool) {
+        guard let appIdx = orphanApps.firstIndex(where: { $0.id == appID }) else { return }
+        var apps = orphanApps
+        if let itemIdx = apps[appIdx].items.firstIndex(where: { $0.id == itemID }) {
+            apps[appIdx].items[itemIdx].isSelected = on
+            apps[appIdx].isSelected = apps[appIdx].items.allSatisfy(\.isSelected)
+        }
+        orphanApps = apps
+        if selectedOrphanApp?.id == appID {
+            selectedOrphanApp = apps[appIdx]
+        }
+    }
+
+    func toggleOrphanApp(appID: UUID, on: Bool) {
+        guard let appIdx = orphanApps.firstIndex(where: { $0.id == appID }) else { return }
+        var apps = orphanApps
+        apps[appIdx].isSelected = on
+        apps[appIdx].items = apps[appIdx].items.map { var i = $0; i.isSelected = on; return i }
+        orphanApps = apps
+        if selectedOrphanApp?.id == appID {
+            selectedOrphanApp = apps[appIdx]
+        }
+    }
+
+    func setAllOrphansSelected(_ on: Bool) {
+        orphanApps = orphanApps.map { var a = $0; a.isSelected = on; a.items = a.items.map { var i = $0; i.isSelected = on; return i }; return a }
+        if let sel = selectedOrphanApp, let updated = orphanApps.first(where: { $0.id == sel.id }) {
+            selectedOrphanApp = updated
+        }
+    }
+
+    var selectedOrphanItems: [OrphanItem] {
+        orphanApps.flatMap { $0.items.filter(\.isSelected) }
+    }
+
+    var selectedOrphanSize: Int64 {
+        selectedOrphanItems.reduce(0) { $0 + $1.size }
+    }
+
+    var selectedOrphanCount: Int {
+        selectedOrphanItems.count
+    }
+
+    var allOrphansSelected: Bool {
+        !orphanApps.isEmpty && orphanApps.allSatisfy { $0.allSelected }
+    }
+
+    /// 清理选中的孤儿残留（默认移入废纸篓）
+    func cleanSelectedOrphans(permanently: Bool) -> Bool {
+        let itemsToClean = selectedOrphanItems
+        guard !itemsToClean.isEmpty, !isCleaningOrphans else { return false }
+        isCleaningOrphans = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let result = OrphanScanner.clean(items: itemsToClean, permanently: permanently) { _ in }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let doneIDs = Set(itemsToClean.map(\.id))
+                let failedPaths = result.failedPaths
+
+                var updatedApps: [OrphanApp] = []
+                for var app in self.orphanApps {
+                    app.items.removeAll { item in
+                        doneIDs.contains(item.id) && !failedPaths.contains(item.path)
+                    }
+                    if !app.items.isEmpty {
+                        app.isSelected = app.items.allSatisfy(\.isSelected)
+                        updatedApps.append(app)
+                    }
+                }
+                self.orphanApps = updatedApps
+                if let current = self.selectedOrphanApp {
+                    self.selectedOrphanApp = updatedApps.first(where: { $0.id == current.id }) ?? updatedApps.first
+                } else {
+                    self.selectedOrphanApp = updatedApps.first
+                }
+                self.isCleaningOrphans = false
+                var parts = ["已清理 \(result.succeeded) 项孤儿残留，释放 \(result.releasedBytes.byteStringCN)"]
+                if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
+                self.lastOrphanSummary = parts.joined(separator: "，")
             }
         }
         return true
