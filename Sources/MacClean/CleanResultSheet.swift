@@ -13,6 +13,10 @@ struct CleanResultSnapshot: Identifiable, Equatable {
     var afterAvailable: Int64          // 清理后可用空间
     var breakdown: [CleanCategory: Int64] = [:] // 各分类释放量
     var timestamp: Date = Date()
+    /// 可选关联的撤销会话 ID（v1.35.0）
+    var undoSessionID: UUID? = nil
+
+    var canUndo: Bool { undoSessionID != nil }
 
     var deltaString: String {
         releasedBytes.byteStringCN
@@ -33,6 +37,9 @@ struct CleanResultSheet: View {
     var onDismiss: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @State private var isRestored = false
+    @State private var toastMessage = ""
+    @State private var showToast = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
@@ -60,6 +67,7 @@ struct CleanResultSheet: View {
         .padding(Space.lg)
         .frame(width: 480)
         .background(Surface.window)
+        .toast(isPresented: $showToast, text: toastMessage)
     }
 
     // MARK: - 顶栏：释放量与成功状态
@@ -218,6 +226,19 @@ struct CleanResultSheet: View {
     // MARK: - 底部快捷操作
     private var actionButtons: some View {
         HStack(spacing: Space.md) {
+            // 撤销放回原位（v1.35.0）
+            if let sessionID = snapshot.undoSessionID, snapshot.mode.contains("废纸篓") {
+                textAction(isRestored ? "已放回原位" : "撤销（放回原位）",
+                           icon: isRestored ? "checkmark" : "arrow.uturn.backward") {
+                    guard !isRestored else { return }
+                    let res = UndoManagerStore.restore(sessionID: sessionID)
+                    isRestored = true
+                    toastMessage = res.summary
+                    showToast = true
+                }
+                .disabled(isRestored)
+            }
+
             // 在访达中打开废纸篓
             if snapshot.mode.contains("废纸篓") {
                 textAction("查看废纸篓", icon: "trash") {

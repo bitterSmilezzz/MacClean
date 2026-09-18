@@ -78,6 +78,8 @@ enum Selftest {
         suiteUnattended()
         // 孤儿残留排查
         suiteOrphans()
+        // 清理撤销与回滚（v1.35.0）
+        suiteUndo()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

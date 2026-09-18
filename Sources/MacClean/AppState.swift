@@ -387,11 +387,17 @@ final class AppState: ObservableObject {
                 st.isScanned = true
                 self.isCleaning = false
                 self.refreshDisk()
-                self.recordClean(categoryName: cat.title,
-                                 itemCount: result.succeeded,
-                                 bytes: result.releasedBytes,   // N8：历史记录用实际释放量，而非计划量
-                                 mode: permanently ? "彻底删除" : "废纸篓",
-                                 failures: result.failures.count)
+                let record = self.recordClean(categoryName: cat.title,
+                                              itemCount: result.succeeded,
+                                              bytes: result.releasedBytes,   // N8：历史记录用实际释放量，而非计划量
+                                              mode: permanently ? "彻底删除" : "废纸篓",
+                                              failures: result.failures.count)
+                var undoID: UUID? = nil
+                if !permanently && !result.trashedSnapshots.isEmpty {
+                    let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
+                    UndoManagerStore.record(session: session)
+                    undoID = session.id
+                }
                 var parts = ["已释放 \(result.releasedBytes.byteStringCN)"]
                 if !result.failures.isEmpty {
                     parts.append("\(result.failures.count) 项失败")
@@ -410,7 +416,8 @@ final class AppState: ObservableObject {
                         beforeAvailable: beforeAvailable,
                         afterAvailable: self.diskAvailable,
                         breakdown: [cat: result.releasedBytes],
-                        timestamp: Date()
+                        timestamp: Date(),
+                        undoSessionID: undoID
                     )
                     self.showCleanResultSheet = true
                 }
@@ -510,13 +517,19 @@ final class AppState: ObservableObject {
     private func reportAggregateCleanOutcome(result: Cleaner.Result,
                                              breakdown: [CleanCategory: Int64],
                                              runningBlocked: [CleanItem],
-                                             beforeAvailable: Int64,
-                                             permanently: Bool) {
-        recordClean(categoryName: "多分类",
-                    itemCount: result.succeeded,
-                    bytes: result.releasedBytes,   // N8：实际释放量
-                    mode: permanently ? "彻底删除" : "废纸篓",
-                    failures: result.failures.count)
+                                              beforeAvailable: Int64,
+                                              permanently: Bool) {
+        let record = recordClean(categoryName: "多分类",
+                                 itemCount: result.succeeded,
+                                 bytes: result.releasedBytes,   // N8：实际释放量
+                                 mode: permanently ? "彻底删除" : "废纸篓",
+                                 failures: result.failures.count)
+        var undoID: UUID? = nil
+        if !permanently && !result.trashedSnapshots.isEmpty {
+            let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
+            UndoManagerStore.record(session: session)
+            undoID = session.id
+        }
         var parts = ["已释放 \(result.releasedBytes.byteStringCN)"]
         if !result.failures.isEmpty {
             parts.append("\(result.failures.count) 项失败")
@@ -535,7 +548,8 @@ final class AppState: ObservableObject {
                 beforeAvailable: beforeAvailable,
                 afterAvailable: diskAvailable,
                 breakdown: breakdown,
-                timestamp: Date()
+                timestamp: Date(),
+                undoSessionID: undoID
             )
             showCleanResultSheet = true
         }
@@ -569,12 +583,29 @@ final class AppState: ObservableObject {
     }
 
     /// 记录一次清理历史（Mole `mo history` 思路）
+    @discardableResult
     func recordClean(categoryName: String, itemCount: Int, bytes: Int64,
-                     mode: String, failures: Int) {
-        history.insert(CleanRecord(categoryName: categoryName, itemCount: itemCount,
-                                   bytes: bytes, mode: mode, failures: failures), at: 0)
+                     mode: String, failures: Int) -> CleanRecord {
+        let record = CleanRecord(categoryName: categoryName, itemCount: itemCount,
+                                 bytes: bytes, mode: mode, failures: failures)
+        history.insert(record, at: 0)
         if history.count > 200 { history = Array(history.prefix(200)) }
         HistoryStore.save(history)
+        return record
+    }
+
+    /// 执行放回原位（Undo 撤销清理）
+    @discardableResult
+    func restoreCleanRecord(recordID: UUID) -> RestoreResult {
+        guard let session = UndoManagerStore.session(for: recordID) else {
+            return RestoreResult(errors: ["未找到对应的撤销快照"])
+        }
+        let res = UndoManagerStore.restore(sessionID: session.id)
+        if res.succeeded > 0 {
+            refreshDisk()
+            objectWillChange.send()
+        }
+        return res
     }
 
     func clearHistory() {

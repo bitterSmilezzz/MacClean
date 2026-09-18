@@ -111,7 +111,11 @@ struct HistoryView: View {
         GroupBox(title: "全部记录") {
             ForEach(Array(filteredRecords.enumerated()), id: \.element.id) { index, record in
                 GroupedRow(isLast: index == filteredRecords.count - 1) {
-                    HistoryRow(record: record)
+                    HistoryRow(record: record) { rec in
+                        let res = app.restoreCleanRecord(recordID: rec.id)
+                        hudMessage = res.summary
+                        showHud = true
+                    }
                 }
             }
         }
@@ -236,12 +240,17 @@ struct HistoryView: View {
 /// 每行高度不一致、数字不对齐。拆成固定宽度的列之后，视线可以竖着扫下来比较体积。
 struct HistoryRow: View {
     let record: CleanRecord
+    var onRestore: ((CleanRecord) -> Void)? = nil
 
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm"
         return f
     }()
+
+    private var undoSession: CleanUndoSession? {
+        UndoManagerStore.session(for: record.id)
+    }
 
     var body: some View {
         HStack(spacing: Space.sm) {
@@ -256,13 +265,13 @@ struct HistoryRow: View {
                 .font(Typo.rowStrong)
                 .foregroundStyle(Ink.primary)
                 .lineLimit(1)
-                .frame(width: 96, alignment: .leading)
+                .frame(width: 88, alignment: .leading)
 
             Text(record.mode)
                 .font(Typo.caption)
                 .foregroundStyle(record.mode == "彻底删除" ? Signal.critical : Ink.tertiary)
                 .lineLimit(1)
-                .frame(width: 64, alignment: .leading)
+                .frame(width: 58, alignment: .leading)
 
             Text(Self.formatter.string(from: record.date))
                 .font(.mcNumeric(11))
@@ -275,10 +284,37 @@ struct HistoryRow: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+            // 放回原位操作按钮（若有可还原项）
+            if let session = undoSession, session.canRestore {
+                Button {
+                    onRestore?(record)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 10, weight: .medium))
+                        Text("放回")
+                            .font(Typo.caption)
+                    }
+                    .foregroundStyle(Accent.tint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                            .fill(Accent.soft)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("将废纸篓中的文件放回原路径")
+            } else if let session = undoSession, session.isFullyRestored {
+                Text("已放回")
+                    .font(Typo.caption)
+                    .foregroundStyle(Signal.positive)
+            }
+
             Text(record.bytes.byteStringCN)
                 .font(.mcNumeric(12, weight: .semibold))
                 .foregroundStyle(Ink.primary)
-                .frame(width: 84, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
         }
         .padding(.horizontal, Space.xxs)
         .contentShape(Rectangle())

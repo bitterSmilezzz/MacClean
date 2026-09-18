@@ -13,6 +13,8 @@ final class Cleaner {
         var succeededItemIDs: Set<UUID> = []
         /// 逐 item 实际释放字节（LOW-4：与 releasedBytes 口径一致，供跨分类精确记账）
         var releasedBytesByItem: [UUID: Int64] = [:]
+        /// 移入废纸篓的项目快照（v1.35.0：供 Undo / 放回原位使用）
+        var trashedSnapshots: [TrashedItemEntry] = []
     }
 
     /// 执行清理
@@ -54,6 +56,14 @@ final class Cleaner {
                     } else {
                         var resulting: NSURL?
                         try fm.trashItem(at: url, resultingItemURL: &resulting)
+                        if let trashPath = (resulting as URL?)?.path {
+                            result.trashedSnapshots.append(TrashedItemEntry(
+                                originalPath: target,
+                                trashPath: trashPath,
+                                size: actual,
+                                itemName: item.name
+                            ))
+                        }
                     }
                     deletedAnyPath = true
                     itemBytes += actual
