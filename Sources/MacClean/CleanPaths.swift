@@ -63,9 +63,11 @@ enum CleanPaths {
     ]
     static let containersCaches = "~/Library/Containers"
 
-    // MARK: 2. 日志与临时文件 L1–L4
+    // MARK: 2. 日志与临时文件 L1–L8
     static let logs = "~/Library/Logs"
     static let diagnosticReports = "~/Library/Logs/DiagnosticReports"
+    static let diagnosticReportsRetired = "~/Library/Logs/DiagnosticReports/Retired"
+    static let crashReporter = "~/Library/Application Support/CrashReporter"
     static let tmp = "/private/tmp"
     static let varTmp = "/private/var/tmp"
     static let temporaryItems = "~/Library/TemporaryItems"
@@ -102,9 +104,11 @@ enum CleanPaths {
     static let dockerVmData = "~/Library/Containers/com.docker.docker/Data/vms/0/data"
     static let codeRoots = ["~/workspace", "~/projects", "~/dev", "~/code"]
 
-    // MARK: 4. App 残留 A1–A4
+    // MARK: 4. App 残留 A1–A5
     static let appSupport = "~/Library/Application Support"
     static let preferences = "~/Library/Preferences"
+    static let preferencesByHost = "~/Library/Preferences/ByHost"
+    static let savedApplicationState = "~/Library/Saved Application State"
     static let launchAgents = "~/Library/LaunchAgents"
     static let appDirs = ["/Applications", "~/Applications", "/System/Applications",
                           "/Library/Input Methods", "~/Library/Input Methods"]
@@ -300,6 +304,22 @@ enum CleanPaths {
         let anyJetBrainsRunning = runningBundleIDs.contains(where: { $0.lowercased().contains("jetbrains") })
             || runningDisplayNames.contains(where: { $0.lowercased().contains("jetbrains") || $0.lowercased().contains("idea") })
         return (anyJetBrainsRunning, "JetBrains IDE")
+    }
+
+    /// 从 ByHost plist 文件名（如 com.example.app.A1B2C3D4-E5F6-7890-ABCD-EF1234567890.plist）中剥离硬件 UUID，提取原生 bundle 标识符
+    static func extractBundleFromByHostFilename(_ filename: String) -> String? {
+        guard filename.hasSuffix(".plist") else { return nil }
+        let base = String(filename.dropLast(".plist".count))
+        // 匹配末尾形如 .[0-9A-Fa-f-]{32,} 的 UUID 段
+        let pattern = #"\.([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32})$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(base.startIndex..<base.endIndex, in: base)
+        guard let match = regex.firstMatch(in: base, options: [], range: range) else {
+            return nil
+        }
+        guard let matchRange = Range(match.range, in: base) else { return nil }
+        let stripped = String(base[..<matchRange.lowerBound])
+        return stripped.isEmpty ? nil : stripped
     }
 
     // MARK: - v1.1 新增规则的路径（文档 §1.7 / §2.6 / §3.13–3.15 / §6.4）

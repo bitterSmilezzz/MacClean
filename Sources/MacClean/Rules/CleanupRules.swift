@@ -100,8 +100,12 @@ enum CleanupRules {
              consequence: "应用自动更新完成后的残留，更新已经结束",
              summary: "$TMPDIR/<bundle-id>.ShipIt.<suffix> 应用更新残留",
              isNew: true),
+        Rule(id: "L7", category: .logsAndTemp, nature: .staleArtifact,
+             consequence: "应用崩溃历史排查记录与提交日志，不影响应用与系统正常运行",
+             summary: "~/Library/Application Support/CrashReporter/*（>30 天历史崩溃记录）",
+             isNew: true),
 
-        // MARK: 3. 开发残留 D1–D15
+        // MARK: 3. 开发残留 D1–D23
         Rule(id: "D1", category: .devResidue, nature: .rebuildable,
              consequence: "Xcode 编译产物，下次构建会重新生成（首次构建明显变慢）",
              summary: "~/Library/Developer/Xcode/DerivedData/*"),
@@ -200,6 +204,14 @@ enum CleanupRules {
         Rule(id: "A3", category: .appResidue, nature: .systemCritical,
              consequence: "开机启动项配置，删错会影响登录或后台服务，务必逐个确认",
              summary: "~/Library/LaunchAgents/*.plist（指向已卸载 App）"),
+        Rule(id: "A4", category: .appResidue, nature: .orphanedResidue,
+             consequence: "已卸载应用的窗口状态恢复缓存，应用本体已不在本机",
+             summary: "~/Library/Saved Application State/<bundle>.savedState（App 已卸载）",
+             isNew: true),
+        Rule(id: "A5", category: .appResidue, nature: .orphanedResidue,
+             consequence: "已卸载应用在 ByHost 中遗留的硬件偏好配置，应用已不在本机",
+             summary: "~/Library/Preferences/ByHost/<bundle>.<UUID>.plist（App 已卸载）",
+             isNew: true),
 
         // MARK: 5. 大文件与垃圾箱 T1–T5
         Rule(id: "T1", category: .largeFiles, nature: .userData,

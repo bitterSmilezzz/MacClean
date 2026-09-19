@@ -12,6 +12,8 @@ struct CategoryDetailView: View {
     @State private var selectedTypeFilter: LargeFileTypeFilter = .all
     @State private var selectedAgeFilter: LargeFileAgeFilter = .all
     @State private var selectedSortOrder: LargeFileSortOrder = .recommended
+    @State private var selectedAppResidueFilter: AppResidueFilterKind = .all
+    @State private var selectedLogsFilter: LogsFilterKind = .all
     @State private var activeDirectoryFilter: String? = nil
     @State private var showDirectoryTreeSheet = false
     @State private var showHud = false
@@ -33,6 +35,12 @@ struct CategoryDetailView: View {
         }
         if category == .largeFiles && selectedAgeFilter != .all {
             result = result.filter { selectedAgeFilter.matches(item: $0) }
+        }
+        if category == .appResidue && selectedAppResidueFilter != .all {
+            result = result.filter { selectedAppResidueFilter.matches(item: $0) }
+        }
+        if category == .logsAndTemp && selectedLogsFilter != .all {
+            result = result.filter { selectedLogsFilter.matches(item: $0) }
         }
         if category == .largeFiles, let dirFilter = activeDirectoryFilter, !dirFilter.isEmpty {
             let expDir = CleanPaths.expand(dirFilter)
@@ -74,7 +82,7 @@ struct CategoryDetailView: View {
             header(filtered: filtered)
             Divider().overlay(Surface.hairline)
             statusBanners
-            largeFileTypeFilterBarIfNeeded
+            subCategoryFilterBarIfNeeded
             contentArea(filtered: filtered, grouped: grouped)
             footer(filtered: filtered, visibleSelectedCount: visibleSelectedCount)
         }
@@ -234,11 +242,15 @@ struct CategoryDetailView: View {
         }
     }
 
-    /// 大文件细分分类筛选条（安装包、视频、压缩包、镜像、文档等）
+    /// 分类细分筛选条（大文件、应用残留与日志临时）
     @ViewBuilder
-    private var largeFileTypeFilterBarIfNeeded: some View {
+    private var subCategoryFilterBarIfNeeded: some View {
         if category == .largeFiles && st.isScanned && !st.items.isEmpty {
             largeFileTypeFilterBar
+        } else if category == .appResidue && st.isScanned && !st.items.isEmpty {
+            appResidueFilterBar
+        } else if category == .logsAndTemp && st.isScanned && !st.items.isEmpty {
+            logsFilterBar
         }
     }
 
@@ -1093,6 +1105,50 @@ struct ReviewBadge: View {
     }
 }
 
+// MARK: - 应用残留细分类型过滤
+
+enum AppResidueFilterKind: String, CaseIterable, Identifiable {
+    case all = "全部残留"
+    case appSupport = "应用数据 (A1)"
+    case preferences = "偏好设置 (A2/A5)"
+    case launchAgents = "自启代理 (A3)"
+    case savedState = "窗口状态 (A4)"
+
+    var id: String { rawValue }
+
+    func matches(item: CleanItem) -> Bool {
+        switch self {
+        case .all: return true
+        case .appSupport: return item.rule == "A1" || item.path.contains("/Application Support/")
+        case .preferences: return item.rule == "A2" || item.rule == "A5" || item.path.contains("/Preferences/")
+        case .launchAgents: return item.rule == "A3" || item.path.contains("/LaunchAgents/")
+        case .savedState: return item.rule == "A4" || item.path.contains("/Saved Application State/")
+        }
+    }
+}
+
+// MARK: - 日志与临时细分类型过滤
+
+enum LogsFilterKind: String, CaseIterable, Identifiable {
+    case all = "全部日志与临时"
+    case logs = "应用日志 (L1/L5)"
+    case diagnostics = "崩溃与诊断 (L2/L7)"
+    case temporary = "临时文件 (L3/L4)"
+    case shipIt = "更新残留 (L6)"
+
+    var id: String { rawValue }
+
+    func matches(item: CleanItem) -> Bool {
+        switch self {
+        case .all: return true
+        case .logs: return item.rule == "L1" || item.rule == "L5"
+        case .diagnostics: return item.rule == "L2" || item.rule == "L7"
+        case .temporary: return item.rule == "L3" || item.rule == "L4"
+        case .shipIt: return item.rule == "L6"
+        }
+    }
+}
+
 // MARK: - 大文件细分类型过滤
 
 enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
@@ -1258,6 +1314,82 @@ extension CategoryDetailView {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("largeFilesDirectoryTreeButton")
+    }
+
+    /// 应用残留细分过滤栏
+    var appResidueFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.xxs) {
+                ForEach(AppResidueFilterKind.allCases) { filter in
+                    let isSelected = selectedAppResidueFilter == filter
+                    let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
+
+                    Button {
+                        withAnimation(Motion.micro) { selectedAppResidueFilter = filter }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(filter.rawValue)
+                                .font(isSelected ? Typo.rowStrong : Typo.row)
+                            Text("\(count)")
+                                .font(.mcNumeric(10))
+                                .opacity(0.65)
+                        }
+                        .padding(.horizontal, Space.xs)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                                .fill(isSelected ? Accent.tint : Color.clear)
+                        )
+                        .foregroundStyle(isSelected ? Color.white : Ink.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("appResidueFilter_\(filter.id)")
+                }
+            }
+            .padding(.horizontal, Space.gutter)
+            .padding(.vertical, Space.xs)
+        }
+        .background(Surface.window)
+        .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// 日志与临时细分过滤栏
+    var logsFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.xxs) {
+                ForEach(LogsFilterKind.allCases) { filter in
+                    let isSelected = selectedLogsFilter == filter
+                    let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
+
+                    Button {
+                        withAnimation(Motion.micro) { selectedLogsFilter = filter }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(filter.rawValue)
+                                .font(isSelected ? Typo.rowStrong : Typo.row)
+                            Text("\(count)")
+                                .font(.mcNumeric(10))
+                                .opacity(0.65)
+                        }
+                        .padding(.horizontal, Space.xs)
+                        .padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                                .fill(isSelected ? Accent.tint : Color.clear)
+                        )
+                        .foregroundStyle(isSelected ? Color.white : Ink.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("logsFilter_\(filter.id)")
+                }
+            }
+            .padding(.horizontal, Space.gutter)
+            .padding(.vertical, Space.xs)
+        }
+        .background(Surface.window)
+        .overlay(alignment: .bottom) { Hairline() }
     }
 }
 

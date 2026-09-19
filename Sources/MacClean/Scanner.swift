@@ -13,13 +13,13 @@ final class Scanner {
     ///
     /// **新增或删除规则时，这里必须同步。**
     static let implementedRuleIDs: Set<String> = [
-        "A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5",
+        "A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3", "B4", "B5",
         "C1", "C2", "C3", "C4", "C5", "C6", "C7", "D1",
         "D10", "D11", "D12", "D13", "D14", "D15", "D16",
         "D17", "D18", "D19", "D2", "D20", "D21", "D22",
         "D23", "D3",
         "D4", "D5", "D6", "D7", "D8", "D9", "L1", "L2",
-        "L3", "L4", "L5", "L6", "T1", "T2", "T3", "T4",
+        "L3", "L4", "L5", "L6", "L7", "T1", "T2", "T3", "T4",
         "T5",
     ]
 
@@ -522,6 +522,7 @@ final class Scanner {
         items += scanL4TemporaryItems()
         items += scanL5RotatedLogs(coveredByL1: l1CoveredPaths)
         items += scanL6AppUpdateResidue()
+        items += scanL7CrashReporter()
 
         return items.sorted { $0.size > $1.size }
     }
@@ -633,6 +634,32 @@ final class Scanner {
                     name: (child as NSString).lastPathComponent,
                     path: child, size: size, rule: "L6", category: .logsAndTemp,
                     note: "应用自动更新残留（旧版本副本）"))
+            }
+        }
+        return items
+    }
+
+    // L7: CrashReporter 历史崩溃诊断与记录（>30 天）
+    private static func scanL7CrashReporter() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let crashRoot = CleanPaths.expand(CleanPaths.crashReporter)
+        guard FileSystem.isDir(crashRoot), FileSystem.isSafeToClean(crashRoot) else { return items }
+        let cutoff = Date().addingTimeInterval(-30 * 86400)
+        for child in FileSystem.children(of: crashRoot) {
+            guard FileSystem.isSafeToClean(child) else { continue }
+            guard let mdate = FileSystem.modificationDate(child), mdate < cutoff else { continue }
+            let size = FileSystem.size(at: child)
+            if size > 0 {
+                let name = (child as NSString).lastPathComponent
+                items.append(CleanItem(
+                    name: "CrashReporter (\(name))",
+                    path: child,
+                    size: size,
+                    rule: "L7",
+                    category: .logsAndTemp,
+                    note: "超过 30 天的历史崩溃排查记录",
+                    modificationDate: mdate
+                ))
             }
         }
         return items
@@ -1213,6 +1240,10 @@ final class Scanner {
         items += scanA2OrphanPreferences(installedApps: installedApps,
                                          installedBundlePrefixes: installedBundlePrefixes)
         items += scanA3DanglingLaunchAgents()
+        items += scanA4SavedApplicationState(installedApps: installedApps,
+                                             installedBundlePrefixes: installedBundlePrefixes)
+        items += scanA5ByHostPreferences(installedApps: installedApps,
+                                         installedBundlePrefixes: installedBundlePrefixes)
 
         return items.sorted { $0.size > $1.size }
     }
@@ -1335,6 +1366,81 @@ final class Scanner {
                         break
                     }
                 }
+            }
+        }
+        return items
+    }
+
+    // A4: Saved Application State 中已卸载应用的窗口状态
+    private static func scanA4SavedApplicationState(installedApps: Set<String>,
+                                                    installedBundlePrefixes: Set<String>) -> [CleanItem] {
+        var items: [CleanItem] = []
+        let stateRoot = CleanPaths.expand(CleanPaths.savedApplicationState)
+        guard FileSystem.isDir(stateRoot) else { return items }
+        let systemBundles = ["com.apple", "com.google", "com.microsoft", "com.adobe", "com.oracle",
+                             "org.chromium", "com.jetbrains", "com.tencent", "com.alibaba", "com.bytedance"]
+        for child in FileSystem.children(of: stateRoot) {
+            guard child.hasSuffix(".savedState"), FileSystem.isSafeToClean(child) else { continue }
+            let bundle = (child as NSString).lastPathComponent.replacingOccurrences(of: ".savedState", with: "")
+            if systemBundles.contains(where: { bundle.hasPrefix($0) }) { continue }
+            if !bundle.contains(".") { continue }
+            let segments = bundle.lowercased().split(separator: ".")
+            let prefixStillInstalled = segments.count >= 2
+                && installedBundlePrefixes.contains("\(segments[0]).\(segments[1])")
+            let nameStillInstalled = installedApps.contains { app in
+                app.contains(bundle.lowercased()) || bundle.lowercased().contains(app)
+            }
+            if prefixStillInstalled || nameStillInstalled { continue }
+            let size = FileSystem.size(at: child)
+            if size > 0 {
+                let mdate = FileSystem.modificationDate(child)
+                items.append(CleanItem(
+                    name: "窗口状态 (\(bundle))",
+                    path: child,
+                    size: size,
+                    rule: "A4",
+                    category: .appResidue,
+                    note: "已卸载应用的窗口恢复状态",
+                    modificationDate: mdate
+                ))
+            }
+        }
+        return items
+    }
+
+    // A5: Preferences/ByHost 中孤立的硬件绑定偏好设置
+    private static func scanA5ByHostPreferences(installedApps: Set<String>,
+                                                installedBundlePrefixes: Set<String>) -> [CleanItem] {
+        var items: [CleanItem] = []
+        let byHostRoot = CleanPaths.expand(CleanPaths.preferencesByHost)
+        guard FileSystem.isDir(byHostRoot) else { return items }
+        let systemBundles = ["com.apple", "com.google", "com.microsoft", "com.adobe", "com.oracle",
+                             "org.chromium", "com.jetbrains", "com.tencent", "com.alibaba", "com.bytedance"]
+        for child in FileSystem.children(of: byHostRoot) {
+            guard child.hasSuffix(".plist"), FileSystem.isSafeToClean(child) else { continue }
+            let filename = (child as NSString).lastPathComponent
+            guard let bundle = CleanPaths.extractBundleFromByHostFilename(filename) else { continue }
+            if systemBundles.contains(where: { bundle.hasPrefix($0) }) { continue }
+            if !bundle.contains(".") { continue }
+            let segments = bundle.lowercased().split(separator: ".")
+            let prefixStillInstalled = segments.count >= 2
+                && installedBundlePrefixes.contains("\(segments[0]).\(segments[1])")
+            let nameStillInstalled = installedApps.contains { app in
+                app.contains(bundle.lowercased()) || bundle.lowercased().contains(app)
+            }
+            if prefixStillInstalled || nameStillInstalled { continue }
+            let size = FileSystem.size(at: child)
+            if size > 0 {
+                let mdate = FileSystem.modificationDate(child)
+                items.append(CleanItem(
+                    name: "ByHost 偏好 (\(bundle))",
+                    path: child,
+                    size: size,
+                    rule: "A5",
+                    category: .appResidue,
+                    note: "已卸载应用的硬件绑定偏好碎片",
+                    modificationDate: mdate
+                ))
             }
         }
         return items

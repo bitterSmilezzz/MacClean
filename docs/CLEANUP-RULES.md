@@ -12,7 +12,8 @@
 >   与另算的「使用频率」互不调和，必然产出「安全 + 频繁使用中」这种自相矛盾的标注。
 >   现改为 **本质（`ItemNature`：删了会怎样）× 占用状态（`UseState`：此刻是否在用）
 >   → 唯一结论（`Recommendation`）**。同时把原 B4 拆成 B4（下载缓存）/ B5（按需下载的功能组件），
->   修掉"把 WidevineCdm 这类 DRM 组件标成安全"的误判。**当前共 6 大类 41 条规则。**
+>   修掉"把 WidevineCdm 这类 DRM 组件标成安全"的误判。**当前共 6 大类 52 条规则。**
+> - **v1.44.0（2026-09-19）**：新增 L7（CrashReporter 历史崩溃诊断）、A4（Saved Application State 窗口恢复状态）、A5（ByHost 硬件绑定偏好碎片）。
 
 ---
 
@@ -61,6 +62,7 @@
 | L4 | `~/Library/TemporaryItems/*` | 存在 | 可重建缓存 | trash |
 | L5 | 旋转旧日志 | `~/Library/Logs` 内递归深度 ≤3，`*.log.N` / `*.N.log` / `*.gz` 且 >30 天 | 历史产物 | trash |
 | **L6** | **应用更新残留（ShipIt）** | `$TMPDIR/<bundle-id>.ShipIt.<字母数字后缀>`（**仅顶层直接子项**） | 历史产物 | trash |
+| **L7** | **CrashReporter 历史崩溃诊断与排查记录** | `~/Library/Application Support/CrashReporter/*` | 超过 30 天的历史崩溃记录 | 历史产物 | trash |
 
 > **L6 实测依据（v1.1）**：Squirrel/ShipIt 自动更新框架在替换 App 后留下旧版本副本，
 > 本机清出 **2.24 GB**（DimAgent 657 MB、Vokie 791 MB ×2），零风险。见 §8.1 的放行约束。
@@ -113,7 +115,7 @@
 > ①无编译进程在跑（`.lock` 文件的 mtime）；②无进程持有句柄（`lsof +D <dir>`）；
 > ③Gradle 需先 `./gradlew --stop`（daemon 会持有 `intermediates/dex/**` 句柄导致删除失败）。
 
-## 4. App 残留与卸载残留（A1–A3）
+## 4. App 残留与卸载残留（A1–A5）
 
 > 审计报告经验：Lemon（LaunchDaemons 残留）、Parallels（keychain 残留）、rtk（钩子残留）均为典型卸载残留案例。
 
@@ -121,8 +123,9 @@
 |------|----------|------|------|----------|
 | A1 | `~/Library/Application Support/<name>` | 对应 app 不在 `/Applications`、`~/Applications`，且非 G6 白名单，且 180 天未更新，且 >10 MB | 孤儿残留 | trash |
 | A2 | `~/Library/Preferences/<bundle>.plist` | 对应 app 已卸载、bundle id 不属于系统、>180 天未更新 | 孤儿残留 | trash |
-| A3 | `~/Library/Caches/<bundle>` | 对应 app 已卸载 | 孤儿残留 | trash |
 | A3 | `~/Library/LaunchAgents/*` | 指向已卸载 app 的 plist | 关键组件 | trash（用户重点确认） |
+| **A4** | **已卸载应用的窗口恢复状态** | `~/Library/Saved Application State/<bundle>.savedState` | 对应 app 已卸载、bundle 不属于系统 | 孤儿残留 | trash |
+| **A5** | **ByHost 硬件绑定偏好碎片** | `~/Library/Preferences/ByHost/<bundle>.<UUID>.plist` | 对应 app 已卸载、bundle 不属于系统 | 孤儿残留 | trash |
 
 > **A 类的判定强化（v1.1）**：实测发现「App 已卸载」不能只看 `/Applications`——
 > 主程序可能已被拖入废纸篓。应交叉核对 `mdfind` / LaunchServices 注册记录，

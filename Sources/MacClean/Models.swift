@@ -220,12 +220,14 @@ struct CleanItem: Identifiable, Equatable {
     let permanentDelete: Bool
     /// 占用状态（扫描时观测）
     var use: UseState = .unknown
+    /// 触发的规则编号（若适用）
+    let rule: String?
     /// 用户勾选（默认不勾选，遵守 G2）
     var isSelected: Bool = false
 
     init(name: String, path: String, paths: [String]? = nil, size: Int64, nature: ItemNature,
          consequence: String = "", category: CleanCategory, note: String = "",
-         permanentDelete: Bool = false, use: UseState = .unknown) {
+         permanentDelete: Bool = false, use: UseState = .unknown, rule: String? = nil) {
         self.name = name
         self.path = path
         self.paths = paths ?? [path]
@@ -236,6 +238,7 @@ struct CleanItem: Identifiable, Equatable {
         self.note = note
         self.permanentDelete = permanentDelete
         self.use = use
+        self.rule = rule
     }
 
     /// 最近使用时间（转发，兼容既有调用）
@@ -365,7 +368,7 @@ extension CleanItem {
                   nature: r?.nature ?? .userData,
                   consequence: r?.consequence ?? "",
                   category: category, note: note, permanentDelete: permanentDelete,
-                  use: actualUse)
+                  use: actualUse, rule: rule)
     }
 }
 
