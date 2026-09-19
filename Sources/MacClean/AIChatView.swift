@@ -567,6 +567,10 @@ struct AISettingsView: View {
                 .font(Typo.caption)
                 .foregroundStyle(Ink.secondary)
 
+            launchAgentSetting
+
+            Hairline()
+
             autoScanSetting
 
             lowSpaceAlertSetting
@@ -578,6 +582,82 @@ struct AISettingsView: View {
             Hairline()
 
             menuBarAssistantSetting
+        }
+    }
+
+    /// 系统级后台定时维护 (LaunchAgent) 设置卡片
+    @ViewBuilder
+    private var launchAgentSetting: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Toggle("开启系统级后台定时维护 (LaunchAgent)", isOn: $app.diskMonitor.config.launchAgentEnabled)
+                .font(Typo.body)
+                .toggleStyle(.switch)
+
+            Text("即使 MacClean 完全退出，macOS 也会在后台按计划准时唤醒执行巡检与自愈清理。")
+                .font(Typo.caption)
+                .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if app.diskMonitor.config.launchAgentEnabled {
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    HStack {
+                        Text("维护触发频率")
+                            .font(Typo.body)
+                            .foregroundStyle(Ink.secondary)
+                        Spacer()
+                        Picker("", selection: $app.diskMonitor.config.launchAgentFrequency) {
+                            ForEach(LaunchAgentFrequency.allCases) { freq in
+                                Text(freq.rawValue).tag(freq)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 180)
+                    }
+
+                    if app.diskMonitor.config.launchAgentFrequency == .daily {
+                        HStack {
+                            Text("每日定点执行时间")
+                                .font(Typo.body)
+                                .foregroundStyle(Ink.secondary)
+                            Spacer()
+                            Stepper(value: $app.diskMonitor.config.launchAgentDailyHour, in: 0...23) {
+                                Text(String(format: "%02d:00", app.diskMonitor.config.launchAgentDailyHour))
+                                    .font(.mcNumeric(13))
+                                    .foregroundStyle(Accent.tint)
+                            }
+                        }
+                    }
+
+                    Toggle("磁盘空间不足时自动触发深度自愈清理", isOn: $app.diskMonitor.config.autoHealOnLowSpace)
+                        .font(Typo.body)
+                        .toggleStyle(.checkbox)
+
+                    Toggle("自动清理纳入高等级智能精选推荐项", isOn: $app.diskMonitor.config.autoCleanSmartRecommended)
+                        .font(Typo.body)
+                        .toggleStyle(.checkbox)
+
+                    HStack(spacing: Space.xs) {
+                        Circle()
+                            .fill(LaunchAgentManager.shared.isInstalled() ? Signal.positive : Ink.tertiary)
+                            .frame(width: 8, height: 8)
+                        Text(LaunchAgentManager.shared.isInstalled() ? "系统 LaunchAgent 服务已加载生效" : "服务配置就绪")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                        Spacer()
+                        Button("测试运行一次") {
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                _ = AutoCleanService.run()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(Typo.caption)
+                        .foregroundStyle(Accent.tint)
+                    }
+                    .padding(.top, Space.xxs)
+                }
+                .padding(.leading, Space.sm)
+                .padding(.top, Space.xxs)
+            }
         }
     }
 

@@ -33,6 +33,19 @@ struct DiskMonitorConfig: Codable, Equatable {
     var autoCleanUserCaches: Bool = true
     var autoCleanLogsAndTemp: Bool = true
 
+    /// 是否开启系统级后台定时维护 (macOS LaunchAgent)
+    var launchAgentEnabled: Bool = false
+    /// LaunchAgent 调度触发频率
+    var launchAgentFrequency: LaunchAgentFrequency = .daily
+    /// 每天定点执行小时（0~23，默认 3 点）
+    var launchAgentDailyHour: Int = 3
+    /// 每天定点执行分钟（0~59，默认 0 分）
+    var launchAgentDailyMinute: Int = 0
+    /// 磁盘可用容量跌破警戒阈值时，是否自动触发自愈深度清理
+    var autoHealOnLowSpace: Bool = true
+    /// 自动清理是否纳入加权评分评定为高等级的智能推荐精选项
+    var autoCleanSmartRecommended: Bool = true
+
     /// 菜单栏助手显示模式
     var menuBarDisplayMode: MenuBarDisplayMode = .iconOnly
 
@@ -74,6 +87,7 @@ final class DiskMonitor: ObservableObject {
         didSet {
             config.save()
             rescheduleTimer()
+            LaunchAgentManager.shared.syncWithConfig(config)
         }
     }
 

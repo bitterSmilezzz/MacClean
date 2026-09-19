@@ -84,6 +84,8 @@ enum Selftest {
         suiteSmartRecommendation()
         // API Key 存储（钥匙串优先 + 内存回退，绝不落盘）
         suiteAIKeyStorage()
+        // 系统后台定时维护计划器 (LaunchAgent & AutoClean v1.38.0)
+        suiteLaunchAgent()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

@@ -10,6 +10,10 @@ struct MacCleanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             exit(Selftest.run())
         }
+        // 后台定时维护与低空间自愈命令行模式（LaunchAgent 无头执行，零窗口）
+        if CommandLine.arguments.contains("--autoclean") {
+            exit(AutoCleanService.run())
+        }
         // 一次性迁移：旧明文 Key 文件 → 系统钥匙串（swift run MacClean --keymigrate）
         // v1.35 及以前 Key 存 ~/Library/Application Support/MacClean/ai.key（明文）；
         // 现在只写钥匙串。本模式让老用户无需启动 GUI 即可完成迁移，成功即删除明文文件。
