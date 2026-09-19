@@ -373,6 +373,20 @@ struct DuplicateView: View {
                     .motionSafeNumericTransition()
             }
 
+            // 硬链接无损去重（保留路径与访问，释放物理空间）
+            Button {
+                _ = dup.dedupSelectedWithHardlink()
+                app.refreshDisk()
+            } label: {
+                Label("硬链接无损去重", systemImage: "link")
+                    .font(Typo.rowStrong)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .disabled(dup.selectedCount == 0 || dup.isScanning)
+            .help("将选中的完全相同副本替换为 APFS 硬链接：保留原有文件路径，但释放底层物理空间")
+            .accessibilityIdentifier("duplicateHardlinkDedupButton")
+
             Button {
                 showConfirmSheet = true
             } label: {

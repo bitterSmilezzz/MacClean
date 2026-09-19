@@ -410,6 +410,24 @@ final class DuplicateState: ObservableObject {
 
         return result
     }
+
+    /// 使用 APFS 硬链接无损替换勾选的重复副本（保留文件路径，仅释放底层物理空间）
+    @discardableResult
+    func dedupSelectedWithHardlink() -> HardlinkDedupResult {
+        let result = HardlinkDedupService.dedupSelected(in: groups)
+
+        for gIndex in groups.indices {
+            for iIndex in groups[gIndex].items.indices {
+                if groups[gIndex].items[iIndex].isSelected {
+                    groups[gIndex].items[iIndex].isSelected = false
+                    groups[gIndex].items[iIndex].inodeKey = DuplicateScanner.inodeKey(forPath: groups[gIndex].items[iIndex].path)
+                }
+            }
+        }
+
+        lastSummary = result.summaryText
+        return result
+    }
 }
 
 /// 重复文件扫描底层引擎（基于大小快速聚类 + SHA-256 分块哈希检验）

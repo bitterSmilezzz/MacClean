@@ -102,6 +102,10 @@ enum Selftest {
         suiteMenuBarDeep()
         // 重复文件与大文件智能分析进阶 (v1.46.0)
         suiteMediaAndPivotDeep()
+        // 系统启动项与后台服务治理 (v1.47.0)
+        suiteStartupItemsDeep()
+        // 重复大文件 APFS 硬链接无损去重 (v1.47.0)
+        suiteHardlinkDedupDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

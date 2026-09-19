@@ -22,7 +22,7 @@ extension Selftest {
             for file in ["AIChatView", "AIReviewView", "CategoryDetailView", "CleanConfirmSheet",
                          "CleanResultSheet", "DashboardView", "DirectoryTreeView", "DuplicateView",
                          "HistoryView", "MenuBarView", "PhotoCompareView", "RiskView",
-                         "SearchView", "SidebarView", "SpaceVisualizerView", "UninstallerView"] {
+                         "SearchView", "SidebarView", "SpaceVisualizerView", "StartupItemManagerView", "UninstallerView"] {
                 let path = "Sources/MacClean/\(file).swift"
                 guard let src = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
                 for (idx, line) in src.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {

@@ -52,6 +52,9 @@ struct SidebarView: View {
                            trailing: app.duplicateState.groups.isEmpty ? nil : "\(app.duplicateState.groups.count)")
                         .accessibilityIdentifier("toolRow_重复文件")
 
+                    navRow(.startupItems, title: "启动项管理", icon: "bolt.horizontal.circle")
+                        .accessibilityIdentifier("toolRow_启动项管理")
+
                     navRow(.history, title: "清理历史", icon: "clock.arrow.circlepath",
                            trailing: app.history.isEmpty ? nil : "\(app.history.count)")
                         .accessibilityIdentifier("toolRow_清理历史")

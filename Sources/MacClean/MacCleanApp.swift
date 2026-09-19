@@ -427,6 +427,8 @@ struct ContentView: View {
                 RiskView()
             case .spaceTreemap:
                 SpaceVisualizerView()
+            case .startupItems:
+                StartupItemManagerView()
             }
         }
         .motionSafeTransition(.opacity)
