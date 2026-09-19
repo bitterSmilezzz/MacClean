@@ -799,15 +799,24 @@ struct RelatedFileRow: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("relatedFileToggle")
 
+            Image(systemName: file.fileKind.icon)
+                .font(.system(size: 14))
+                .foregroundStyle(Accent.tint)
+                .frame(width: 20)
+
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: Space.xs) {
                     Text(file.name)
                         .font(Typo.rowStrong)
                         .foregroundStyle(Ink.primary)
                         .lineLimit(1)
-                    Text(file.kind)
+                    Text(file.fileKind.rawValue)
                         .font(Typo.micro)
                         .foregroundStyle(Ink.tertiary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Surface.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                 }
                 Text(file.path)
                     .font(Typo.micro)

@@ -18,15 +18,87 @@ struct InstalledApp: Identifiable, Equatable {
     }
 }
 
+// MARK: - 关联残留文件类型细分
+
+enum RelatedFileKind: String, CaseIterable, Identifiable, Codable {
+    case appSupport = "应用支持数据"
+    case preferences = "偏好设置"
+    case caches = "缓存数据"
+    case containers = "沙盒容器"
+    case groupContainers = "共享组容器"
+    case webKitAndCookies = "WebKit 与 Cookie"
+    case crashReports = "崩溃诊断报告"
+    case savedState = "状态与恢复"
+    case appScripts = "应用脚本"
+    case launchAgents = "自启守护项"
+    case httpStorages = "网络数据"
+    case other = "其他关联"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .appSupport: return "folder.badge.gearshape"
+        case .preferences: return "gearshape"
+        case .caches: return "archivebox"
+        case .containers: return "shippingbox"
+        case .groupContainers: return "person.2.badge.gearshape"
+        case .webKitAndCookies: return "safari"
+        case .crashReports: return "exclamationmark.bubble"
+        case .savedState: return "clock.arrow.circlepath"
+        case .appScripts: return "applescript"
+        case .launchAgents: return "bolt"
+        case .httpStorages: return "network"
+        case .other: return "doc"
+        }
+    }
+}
+
 // MARK: - 关联文件（App 卸载器扫描结果）
 
 struct RelatedFile: Identifiable, Equatable {
-    let id = UUID()
+    let id: UUID
     let name: String
     let path: String
     let size: Int64
-    let kind: String   // 所属类别：Application Support / Preferences / Caches / Containers / Logs ...
+    let kind: String   // 所属类别文字描述，保持兼容
+    let fileKind: RelatedFileKind
     var isSelected: Bool = false
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        path: String,
+        size: Int64,
+        kind: String,
+        fileKind: RelatedFileKind? = nil,
+        isSelected: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.size = size
+        self.kind = kind
+        self.fileKind = fileKind ?? Self.inferFileKind(from: kind)
+        self.isSelected = isSelected
+    }
+
+    private static func inferFileKind(from kind: String) -> RelatedFileKind {
+        switch kind {
+        case "Application Support": return .appSupport
+        case "Preferences": return .preferences
+        case "Caches": return .caches
+        case "Containers": return .containers
+        case "Group Containers": return .groupContainers
+        case "WebKit", "WebKit 与 Cookie": return .webKitAndCookies
+        case "Logs", "崩溃诊断报告": return .crashReports
+        case "Saved State", "状态与恢复": return .savedState
+        case "Application Scripts", "应用脚本": return .appScripts
+        case "LaunchAgents", "自启守护项": return .launchAgents
+        case "HTTPStorages", "网络数据": return .httpStorages
+        default: return .other
+        }
+    }
 }
 
 // MARK: - 卸载器状态
@@ -241,7 +313,7 @@ final class UninstallerState: ObservableObject {
     }
 }
 
-// MARK: - 卸载器扫描（借鉴 PureMac 匹配思路的简化实现）
+// MARK: - 卸载器扫描（借鉴 PureMac 匹配思路的深度实现）
 
 enum UninstallerScanner {
 
@@ -262,15 +334,14 @@ enum UninstallerScanner {
         return apps.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 
-    /// 查找某 App 的全部关联文件（简化版 10 级匹配：bundle id + 名称）
-    static func relatedFiles(for app: InstalledApp) -> [RelatedFile] {
-        let home = NSHomeDirectory()
+    /// 查找某 App 的全部关联文件（全维度 12 级深度匹配：Bundle ID + App 名称 + 厂商子目录 + 隐蔽系统存储）
+    static func relatedFiles(for app: InstalledApp, home: String = NSHomeDirectory()) -> [RelatedFile] {
         let bundle = app.bundleID
         let normName = normalize(app.name)
         var results: [RelatedFile] = []
         var seen = Set<String>()
 
-        func add(_ path: String, kind: String) {
+        func add(_ path: String, kind: String, fileKind: RelatedFileKind? = nil) {
             let expanded = CleanPaths.expand(path)
             guard FileManager.default.fileExists(atPath: expanded),
                   FileSystem.isSafeToClean(expanded),
@@ -280,47 +351,114 @@ enum UninstallerScanner {
             if size > 0 {
                 results.append(RelatedFile(
                     name: (expanded as NSString).lastPathComponent,
-                    path: expanded, size: size, kind: kind))
+                    path: expanded,
+                    size: size,
+                    kind: kind,
+                    fileKind: fileKind
+                ))
             }
         }
 
-        // 1) Preferences：bundle id 前缀（含 helper：com.xxx.app.helper.plist）
+        // 1) Preferences & ByHost：偏好设置与硬件主机级偏好
         if let bundle {
+            // 标准 Preferences
             for child in FileSystem.children(of: "\(home)/Library/Preferences", keepHidden: false)
             where child.hasSuffix(".plist") {
                 let file = (child as NSString).lastPathComponent.replacingOccurrences(of: ".plist", with: "")
                 if file == bundle || file.hasPrefix(bundle + ".") {
-                    add(child, kind: "Preferences")
+                    add(child, kind: "Preferences", fileKind: .preferences)
+                }
+            }
+            // ByHost 机器硬件级偏好设置 (~/Library/Preferences/ByHost/<bundleID>.<UUID>.plist)
+            for child in FileSystem.children(of: "\(home)/Library/Preferences/ByHost", keepHidden: false)
+            where child.hasSuffix(".plist") {
+                let file = (child as NSString).lastPathComponent.replacingOccurrences(of: ".plist", with: "")
+                if file.contains(bundle) {
+                    add(child, kind: "Preferences", fileKind: .preferences)
                 }
             }
         }
+        // App 专属名称的 plist（某些轻量或非反向域名 App 直接以 AppName.plist 存储）
+        for child in FileSystem.children(of: "\(home)/Library/Preferences", keepHidden: false)
+        where child.hasSuffix(".plist") {
+            let file = (child as NSString).lastPathComponent.replacingOccurrences(of: ".plist", with: "")
+            if normalize(file) == normName && normName.count >= 3 {
+                add(child, kind: "Preferences", fileKind: .preferences)
+            }
+        }
 
-        // 2) Caches / Containers / HTTPStorages / WebKit / Saved Application State：bundle id
+        // 2) WebKit 独立本地存储、Cookie 与 LocalStorage
         if let bundle {
-            for (root, kind) in [
-                ("\(home)/Library/Caches", "Caches"),
-                ("\(home)/Library/Containers", "Containers"),
-                ("\(home)/Library/HTTPStorages", "HTTPStorages"),
-                ("\(home)/Library/WebKit", "WebKit"),
-                ("\(home)/Library/Saved Application State", "Saved State"),
+            for child in [
+                "\(home)/Library/WebKit/\(bundle)",
+                "\(home)/Library/Cookies/\(bundle).binarycookies",
+                "\(home)/Library/Cookies/\(bundle)",
+            ] {
+                add(child, kind: "WebKit 与 Cookie", fileKind: .webKitAndCookies)
+            }
+            for child in FileSystem.children(of: "\(home)/Library/Safari/LocalStorage", keepHidden: false) {
+                let name = (child as NSString).lastPathComponent
+                if name.contains(bundle) {
+                    add(child, kind: "WebKit 与 Cookie", fileKind: .webKitAndCookies)
+                }
+            }
+        }
+        if normName.count >= 3 {
+            add("\(home)/Library/WebKit/\(app.name)", kind: "WebKit 与 Cookie", fileKind: .webKitAndCookies)
+        }
+
+        // 3) CrashReporter 与 DiagnosticReports（崩溃诊断与转储报告）
+        let diagReportsDir = "\(home)/Library/Logs/DiagnosticReports"
+        for child in FileSystem.children(of: diagReportsDir, keepHidden: false) {
+            let name = (child as NSString).lastPathComponent
+            let lowerName = name.lowercased()
+            let matchesApp = normName.count >= 3 && (lowerName.hasPrefix(normName + "_") || lowerName.hasPrefix(normName + "."))
+            let matchesBundle = bundle != nil && (lowerName.hasPrefix(bundle!.lowercased() + "_") || lowerName.hasPrefix(bundle!.lowercased() + "."))
+            if matchesApp || matchesBundle {
+                add(child, kind: "崩溃诊断报告", fileKind: .crashReports)
+            }
+        }
+        if normName.count >= 3 {
+            add("\(home)/Library/Logs/CrashReporter/\(app.name)", kind: "崩溃诊断报告", fileKind: .crashReports)
+        }
+        if let bundle {
+            add("\(home)/Library/Logs/CrashReporter/\(bundle)", kind: "崩溃诊断报告", fileKind: .crashReports)
+        }
+
+        // 4) Caches / Containers / HTTPStorages / Saved State / Application Scripts：bundle id 强匹配
+        if let bundle {
+            for (root, kind, fKind) in [
+                ("\(home)/Library/Caches", "Caches", RelatedFileKind.caches),
+                ("\(home)/Library/Containers", "Containers", RelatedFileKind.containers),
+                ("\(home)/Library/HTTPStorages", "HTTPStorages", RelatedFileKind.httpStorages),
+                ("\(home)/Library/Saved Application State", "Saved State", RelatedFileKind.savedState),
+                ("\(home)/Library/Application Scripts", "Application Scripts", RelatedFileKind.appScripts),
             ] {
                 for child in FileSystem.children(of: root) {
                     let name = (child as NSString).lastPathComponent
-                    if name == bundle || name.hasPrefix(bundle + ".") {
-                        add(child, kind: kind)
+                    if name == bundle || name.hasPrefix(bundle + ".") || name == "\(bundle).savedState" {
+                        add(child, kind: kind, fileKind: fKind)
                     }
                 }
             }
         }
 
-        // 3) Application Support / Logs：名称匹配（N5：收紧防误删他 App 数据）
-        // 只允许「目录名 == app 名」或「目录名包含完整 app 名」——
-        // 不允许短 vendor 目录（Google/Microsoft）因"app 名包含它"被整体列入
-        // LOW-5（终检）：Group Containers 中 iCloud 系统容器（group.com.apple.*）永远白名单跳过
-        for (root, kind) in [
-            ("\(home)/Library/Application Support", "Application Support"),
-            ("\(home)/Library/Logs", "Logs"),
-            ("\(home)/Library/Group Containers", "Group Containers"),
+        // 5) Autosave Information（自动保存文档与恢复数据）
+        let autosaveDir = "\(home)/Library/Autosave Information"
+        for child in FileSystem.children(of: autosaveDir, keepHidden: false) {
+            let name = (child as NSString).lastPathComponent
+            let matchesApp = normName.count >= 3 && normalize(name).contains(normName)
+            let matchesBundle = bundle != nil && name.contains(bundle!)
+            if matchesApp || matchesBundle {
+                add(child, kind: "Saved State", fileKind: .savedState)
+            }
+        }
+
+        // 6) Application Support / Logs / Group Containers：名称匹配与多级厂商子目录匹配
+        for (root, kind, fKind) in [
+            ("\(home)/Library/Application Support", "Application Support", RelatedFileKind.appSupport),
+            ("\(home)/Library/Logs", "Logs", RelatedFileKind.crashReports),
+            ("\(home)/Library/Group Containers", "Group Containers", RelatedFileKind.groupContainers),
         ] {
             for child in FileSystem.children(of: root) {
                 let dirName = (child as NSString).lastPathComponent
@@ -329,22 +467,62 @@ enum UninstallerScanner {
                 if kind == "Group Containers", dirName.hasPrefix("group.com.apple.") { continue }
                 let norm = normalize(dirName)
                 guard norm.count >= 3 else { continue }
-                // 等价：app 名 == 目录名；或目录名包含完整 app 名（含分隔符边界）
-                if norm == normName {
-                    add(child, kind: kind)
-                } else if norm.count > normName.count, norm.contains(normName) {
-                    add(child, kind: kind)
+
+                // 核心：app 名 == 目录名；或目录名包含完整 app 名（含分隔符边界）
+                if norm == normName || (norm.count > normName.count && norm.contains(normName)) {
+                    add(child, kind: kind, fileKind: fKind)
+                } else if let bundle, (dirName == bundle || dirName.hasPrefix(bundle + ".")) {
+                    add(child, kind: kind, fileKind: fKind)
+                }
+
+                // 针对 Application Support 中的厂商子目录（如 Google/Chrome、Microsoft/Teams、Adobe/After Effects）
+                // 仅扫描子目录，严禁把母厂商目录作为整体添加（严格遵循 N5 规则）
+                if kind == "Application Support" && norm != normName {
+                    for subChild in FileSystem.children(of: child) {
+                        let subDirName = (subChild as NSString).lastPathComponent
+                        let subNorm = normalize(subDirName)
+                        guard subNorm.count >= 3 else { continue }
+                        let matchesNorm = subNorm == normName || (subNorm.count > normName.count && subNorm.contains(normName))
+                        let matchesVendorCombo = (norm + subNorm == normName) || (normName.hasPrefix(norm) && normName.hasSuffix(subNorm))
+                        var matchesBundle = false
+                        if let bundle {
+                            let lowerBundle = bundle.lowercased()
+                            matchesBundle = subDirName == bundle ||
+                                            subDirName.hasPrefix(bundle + ".") ||
+                                            lowerBundle.hasSuffix("." + subNorm) ||
+                                            lowerBundle.hasSuffix("." + subDirName.lowercased())
+                        }
+                        if matchesNorm || matchesVendorCombo || matchesBundle {
+                            add(subChild, kind: kind, fileKind: fKind)
+                        }
+                    }
                 }
             }
         }
 
-        // 4) LaunchAgents：ProgramArguments 指向该 App
+        // 7) LaunchAgents：ProgramArguments 指向该 App 或文件名直配
         for child in FileSystem.children(of: "\(home)/Library/LaunchAgents", keepHidden: false)
         where child.hasSuffix(".plist") {
-            if let dict = NSDictionary(contentsOfFile: child),
+            let fileName = (child as NSString).lastPathComponent
+            var matched = false
+
+            // a. 文件名包含 Bundle ID
+            if let bundle, (fileName == "\(bundle).plist" || fileName.hasPrefix("\(bundle).")) {
+                matched = true
+            }
+            // b. 文件名包含 App 规范名
+            if !matched && normName.count >= 4 && normalize(fileName).contains(normName) {
+                matched = true
+            }
+            // c. 内容 ProgramArguments 指向该 App 路径
+            if !matched, let dict = NSDictionary(contentsOfFile: child),
                let args = dict["ProgramArguments"] as? [String],
                args.contains(where: { $0 == app.path || $0.hasPrefix(app.path + "/") }) {
-                add(child, kind: "LaunchAgents")
+                matched = true
+            }
+
+            if matched {
+                add(child, kind: "LaunchAgents", fileKind: .launchAgents)
             }
         }
 

@@ -86,6 +86,8 @@ enum Selftest {
         suiteAIKeyStorage()
         // 系统后台定时维护计划器 (LaunchAgent & AutoClean v1.38.0)
         suiteLaunchAgent()
+        // 应用程序卸载器深度扫描增强 (v1.39.0)
+        suiteUninstallerDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
