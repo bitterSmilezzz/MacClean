@@ -2,6 +2,107 @@ import Foundation
 import SwiftUI
 import CoreGraphics
 
+// MARK: - 文件类型细分与色彩编码
+
+enum FileTypeKind: String, CaseIterable, Identifiable, Codable {
+    case video = "视频媒体"
+    case audio = "音频音乐"
+    case image = "照片图像"
+    case archive = "压缩包与镜像"
+    case document = "文档与办公"
+    case codeAndDev = "代码与工程产物"
+    case appOrBinary = "应用与系统库"
+    case cacheOrLog = "缓存与日志"
+    case other = "其他文件"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .video: return "film"
+        case .audio: return "music.note"
+        case .image: return "photo"
+        case .archive: return "archivebox"
+        case .document: return "doc.text"
+        case .codeAndDev: return "chevron.left.forwardslash.chevron.right"
+        case .appOrBinary: return "app.dashed"
+        case .cacheOrLog: return "clock.arrow.circlepath"
+        case .other: return "doc"
+        }
+    }
+
+    /// 高对比度、不透明的色彩方案（与 Dark/Light 良好适配）
+    var color: Color {
+        switch self {
+        case .video: return Color(hex: 0x8B5CF6)       // 紫罗兰
+        case .audio: return Color(hex: 0xEC4899)       // 粉红
+        case .image: return Color(hex: 0xF43F5E)       // 玫瑰红
+        case .archive: return Color(hex: 0xF59E0B)     // 琥珀橙
+        case .document: return Color(hex: 0x10B981)    // 祖母绿
+        case .codeAndDev: return Color(hex: 0x0EA5E9)  // 天蓝
+        case .appOrBinary: return Color(hex: 0x6366F1) // 靛蓝
+        case .cacheOrLog: return Color(hex: 0x78716C)  // 暖褐灰
+        case .other: return Color(hex: 0x94A3B8)       // 石板灰
+        }
+    }
+
+    /// 智能推导路径对应的文件类型
+    static func infer(path: String, isDir: Bool = false) -> FileTypeKind {
+        let name = (path as NSString).lastPathComponent.lowercased()
+        let ext = (path as NSString).pathExtension.lowercased()
+
+        // 1. 特殊开发工程与构建产物目录
+        if isDir {
+            if name.hasSuffix(".app") || name.hasSuffix(".framework") || name.hasSuffix(".bundle") || name.hasSuffix(".plugin") {
+                return .appOrBinary
+            }
+            if name == "deriveddata" || name == "node_modules" || name == "build" || name == "target" ||
+               name == ".git" || name == "pods" || name.hasSuffix(".xcodeproj") || name.hasSuffix(".xcworkspace") {
+                return .codeAndDev
+            }
+            if name.contains("cache") || name == "caches" || name.contains("diagnosticreports") {
+                return .cacheOrLog
+            }
+        }
+
+        // 2. 按扩展名匹配
+        switch ext {
+        case "mp4", "mov", "mkv", "avi", "flv", "webm", "wmv", "m4v", "m2ts":
+            return .video
+        case "mp3", "wav", "flac", "aac", "m4a", "ogg", "wma", "aiff":
+            return .audio
+        case "png", "jpg", "jpeg", "heic", "gif", "webp", "raw", "tiff", "psd", "ai", "svg", "bmp":
+            return .image
+        case "zip", "tar", "gz", "tgz", "7z", "rar", "dmg", "pkg", "iso", "xz", "bz2":
+            return .archive
+        case "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "pages", "numbers", "key", "csv", "rtf":
+            return .document
+        case "swift", "c", "cpp", "h", "m", "mm", "js", "ts", "py", "go", "rs", "java", "kt", "html", "css",
+             "json", "yaml", "yml", "xml", "sh", "rb", "php", "sql", "xcarchive", "dylib", "o", "a":
+            return .codeAndDev
+        case "app", "framework", "bundle", "plugin", "kext", "xpc":
+            return .appOrBinary
+        case "log", "ips", "crash", "spin", "diag", "trace", "asl":
+            return .cacheOrLog
+        default:
+            if isDir {
+                if name.contains("cache") { return .cacheOrLog }
+                if name.contains("log") { return .cacheOrLog }
+                return .other
+            }
+            return .other
+        }
+    }
+}
+
+/// 空间透视色彩编码模式
+enum ColorCodingMode: String, CaseIterable, Identifiable {
+    case fileType = "按文件类型"
+    case category = "按清理分类"
+
+    var id: String { rawValue }
+}
+
 // MARK: - 空间可视化节点数据模型
 
 /// 空间层级节点（通用树结构）
@@ -13,6 +114,7 @@ struct SpaceNode: Identifiable, Equatable {
     let color: Color
     let icon: String?
     let category: CleanCategory?
+    let fileTypeKind: FileTypeKind?
     var children: [SpaceNode]
 
     init(
@@ -23,6 +125,7 @@ struct SpaceNode: Identifiable, Equatable {
         color: Color,
         icon: String? = nil,
         category: CleanCategory? = nil,
+        fileTypeKind: FileTypeKind? = nil,
         children: [SpaceNode] = []
     ) {
         self.id = id
@@ -32,6 +135,7 @@ struct SpaceNode: Identifiable, Equatable {
         self.color = color
         self.icon = icon
         self.category = category
+        self.fileTypeKind = fileTypeKind ?? (path.map { FileTypeKind.infer(path: $0, isDir: !children.isEmpty) })
         self.children = children
     }
 
@@ -41,6 +145,22 @@ struct SpaceNode: Identifiable, Equatable {
 
     var formattedSize: String {
         size.byteStringCN
+    }
+
+    var isExpandableDir: Bool {
+        guard let p = path, !p.isEmpty else { return false }
+        let expanded = CleanPaths.expand(p)
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    func displayColor(for mode: ColorCodingMode) -> Color {
+        switch mode {
+        case .category:
+            return color
+        case .fileType:
+            return fileTypeKind?.color ?? color
+        }
     }
 
     func percentage(of total: Int64) -> Double {
@@ -257,6 +377,74 @@ enum SpaceHierarchyBuilder {
         }
 
         return subNodes
+    }
+
+    /// 动态对物理目录按需展开生成下一级 SpaceNode 节点
+    static func expandDirectory(path: String, colorMode: ColorCodingMode = .fileType, topLimit: Int = 16) -> [SpaceNode] {
+        let expanded = CleanPaths.expand(path)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir), isDir.boolValue else {
+            return []
+        }
+
+        let children = FileSystem.children(of: expanded, keepHidden: false)
+        guard !children.isEmpty else { return [] }
+
+        var items: [(name: String, path: String, size: Int64, isDir: Bool, kind: FileTypeKind)] = []
+        for child in children {
+            let name = (child as NSString).lastPathComponent
+            guard !name.hasPrefix(".") else { continue }
+            var subIsDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: child, isDirectory: &subIsDir)
+            let sz = FileSystem.size(at: child)
+            if sz > 0 {
+                let kind = FileTypeKind.infer(path: child, isDir: subIsDir.boolValue)
+                items.append((name: name, path: child, size: sz, isDir: subIsDir.boolValue, kind: kind))
+            }
+        }
+
+        guard !items.isEmpty else { return [] }
+        items.sort { $0.size > $1.size }
+
+        let count = min(topLimit, items.count)
+        var result: [SpaceNode] = []
+        var topTotal: Int64 = 0
+
+        for i in 0..<count {
+            let it = items[i]
+            topTotal += it.size
+            let defaultColor = ChartPalette.color(at: i)
+            let nodeColor = (colorMode == .fileType) ? it.kind.color : defaultColor
+            let iconName = it.isDir ? (it.kind == .appOrBinary ? "app.dashed" : "folder.fill") : it.kind.icon
+
+            result.append(SpaceNode(
+                name: it.name,
+                path: it.path,
+                size: it.size,
+                color: nodeColor,
+                icon: iconName,
+                category: nil,
+                fileTypeKind: it.kind,
+                children: []
+            ))
+        }
+
+        let totalDirSize = items.reduce(0) { $0 + $1.size }
+        let remaining = totalDirSize - topTotal
+        if remaining > 0 && items.count > count {
+            result.append(SpaceNode(
+                name: "其他 \(items.count - count) 个小型项目",
+                path: nil,
+                size: remaining,
+                color: TilePalette.residual,
+                icon: "ellipsis.circle",
+                category: nil,
+                fileTypeKind: .other,
+                children: []
+            ))
+        }
+
+        return result
     }
 }
 

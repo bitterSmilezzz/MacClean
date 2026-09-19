@@ -88,6 +88,8 @@ enum Selftest {
         suiteLaunchAgent()
         // 应用程序卸载器深度扫描增强 (v1.39.0)
         suiteUninstallerDeep()
+        // 空间透视热力图与大文件分布可视化增强 (v1.40.0)
+        suiteSpaceVisualizerDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import QuickLook
 
 /// 可视化展示模式
 enum VisualizerMode: String, CaseIterable, Identifiable {
@@ -62,11 +63,14 @@ struct SpaceVisualizerView: View {
 
     @State var mode: VisualizerMode = .treemap
     @State var scope: VisualizerScope = .disk
+    @State var colorMode: ColorCodingMode = .fileType
 
     @State var rootNode: SpaceNode
     @State var currentNode: SpaceNode
     @State var breadcrumbStack: [SpaceNode] = []
     @State var hoveredNode: SpaceNode? = nil
+    @State var isExpandingDir: Bool = false
+    @State var quickLookURL: URL? = nil
 
     init(app: AppState? = nil) {
         let initialRoot: SpaceNode
@@ -109,6 +113,7 @@ struct SpaceVisualizerView: View {
             detailInspector
         }
         .background(Surface.window)
+        .quickLookPreview($quickLookURL)
         .onAppear {
             reloadHierarchy()
         }
@@ -136,6 +141,17 @@ struct SpaceVisualizerView: View {
             .labelsHidden()
             .frame(width: 170)
             .controlSize(.small)
+
+            // 色彩编码选择器
+            Picker("色彩编码", selection: $colorMode) {
+                Text("按类型").tag(ColorCodingMode.fileType)
+                Text("按分类").tag(ColorCodingMode.category)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 140)
+            .controlSize(.small)
+            .accessibilityIdentifier("visualizerColorModePicker")
 
             // 模式选择器
             Picker("图表形态", selection: $mode) {
@@ -211,6 +227,17 @@ struct SpaceVisualizerView: View {
                     .foregroundStyle(Ink.primary)
             }
 
+            if isExpandingDir {
+                HStack(spacing: Space.xxs) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在测算目录…")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
+                }
+                .padding(.leading, Space.xs)
+            }
+
             Spacer(minLength: Space.sm)
 
             if !breadcrumbStack.isEmpty {
@@ -263,10 +290,11 @@ struct SpaceVisualizerView: View {
         let hasChildren = !tile.node.children.isEmpty
         let width = tile.rect.width - 2
         let height = tile.rect.height - 2
+        let displayColor = tile.node.displayColor(for: colorMode)
 
         return ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
-                .fill(tile.node.color.opacity(isHovered ? 0.95 : 0.78))
+                .fill(displayColor.opacity(isHovered ? 0.95 : 0.78))
                 .overlay(
                     RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
                         .stroke(isHovered ? Color.white.opacity(0.9) : Surface.hairline, lineWidth: isHovered ? 1.5 : 0.5)
@@ -295,7 +323,7 @@ struct SpaceVisualizerView: View {
                             .opacity(0.85)
                     }
                 }
-                .foregroundStyle(tile.node.color.readableForeground(for: colorScheme))
+                .foregroundStyle(displayColor.readableForeground(for: colorScheme))
                 .padding(6)
             }
         }
@@ -309,7 +337,14 @@ struct SpaceVisualizerView: View {
         .onTapGesture {
             if hasChildren {
                 drillDown(into: tile.node)
+            } else if tile.node.isExpandableDir {
+                expandAndDrillDown(tile.node)
+            } else if let p = tile.node.path, !p.isEmpty {
+                quickLookURL = URL(fileURLWithPath: CleanPaths.expand(p))
             }
+        }
+        .contextMenu {
+            nodeContextMenu(for: tile.node)
         }
     }
 
@@ -360,6 +395,7 @@ struct SpaceVisualizerView: View {
 
     private func sunburstSectorView(sector: SunburstSector, center: CGPoint) -> some View {
         let isHovered = hoveredNode?.id == sector.node.id
+        let displayColor = sector.node.displayColor(for: colorMode)
         let shape = SunburstArcShape(
             startAngle: sector.startAngle,
             endAngle: sector.endAngle,
@@ -368,7 +404,7 @@ struct SpaceVisualizerView: View {
         )
 
         return shape
-            .fill(sector.node.color.opacity(isHovered ? 0.95 : (sector.level == 1 ? 0.82 : 0.65)))
+            .fill(displayColor.opacity(isHovered ? 0.95 : (sector.level == 1 ? 0.82 : 0.65)))
             .overlay(
                 shape
                     .stroke(isHovered ? Color.white : Surface.window.opacity(0.8), lineWidth: isHovered ? 2.0 : 1.0)
@@ -382,7 +418,14 @@ struct SpaceVisualizerView: View {
             .onTapGesture {
                 if !sector.node.children.isEmpty {
                     drillDown(into: sector.node)
+                } else if sector.node.isExpandableDir {
+                    expandAndDrillDown(sector.node)
+                } else if let p = sector.node.path, !p.isEmpty {
+                    quickLookURL = URL(fileURLWithPath: CleanPaths.expand(p))
                 }
+            }
+            .contextMenu {
+                nodeContextMenu(for: sector.node)
             }
     }
 
@@ -392,10 +435,11 @@ struct SpaceVisualizerView: View {
     // 读数用 `.mcNumeric` 等宽数字，鼠标扫过画布时数字不会左右跳动。
     private var detailInspector: some View {
         let target = hoveredNode ?? currentNode
+        let targetColor = target.displayColor(for: colorMode)
         return HStack(spacing: Space.sm) {
             // 序列色点：与画布中该节点的填充色一一对应
             Circle()
-                .fill(target.color)
+                .fill(targetColor)
                 .frame(width: 7, height: 7)
 
             IconSlot(systemName: target.icon ?? "folder", size: 12, color: Ink.secondary, width: 16)
@@ -427,10 +471,22 @@ struct SpaceVisualizerView: View {
 
             Spacer(minLength: Space.sm)
 
-            // 动作：一个主操作 + 两个文本动作，避免一排等重描边按钮
+            // 动作：快捷预览与在访达中显示
             if let p = target.path, !p.isEmpty {
+                let expanded = CleanPaths.expand(p)
                 Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: CleanPaths.expand(p))])
+                    quickLookURL = URL(fileURLWithPath: expanded)
+                } label: {
+                    Label("快速预览", systemImage: "eye")
+                        .font(Typo.caption)
+                        .contentShape(Rectangle())
+                }
+                .pressable()
+                .foregroundStyle(Accent.tint)
+                .accessibilityIdentifier("visualizerQuickLookButton")
+
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: expanded)])
                 } label: {
                     Label("在访达中显示", systemImage: "folder")
                         .font(Typo.caption)
@@ -438,6 +494,7 @@ struct SpaceVisualizerView: View {
                 }
                 .pressable()
                 .foregroundStyle(Accent.tint)
+                .accessibilityIdentifier("visualizerFinderButton")
             }
 
             if let cat = target.category {
@@ -461,11 +518,72 @@ struct SpaceVisualizerView: View {
                 }
                 .pressable()
                 .foregroundStyle(Accent.tint)
+            } else if target.isExpandableDir && target.id != currentNode.id {
+                Button {
+                    expandAndDrillDown(target)
+                } label: {
+                    Label("展开下钻", systemImage: "plus.magnifyingglass")
+                        .font(Typo.caption)
+                        .contentShape(Rectangle())
+                }
+                .pressable()
+                .foregroundStyle(Accent.tint)
+                .disabled(isExpandingDir)
             }
         }
         .padding(.horizontal, Space.gutter)
         .padding(.vertical, Space.xs)
         .background(Surface.group)
+    }
+
+    // MARK: - 右键上下文菜单构建
+    @ViewBuilder
+    private func nodeContextMenu(for node: SpaceNode) -> some View {
+        if let p = node.path, !p.isEmpty {
+            let expanded = CleanPaths.expand(p)
+            let url = URL(fileURLWithPath: expanded)
+
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
+                Label("在访达中显示", systemImage: "folder")
+            }
+
+            Button {
+                quickLookURL = url
+            } label: {
+                Label("快速预览", systemImage: "eye")
+            }
+
+            if !node.children.isEmpty {
+                Button {
+                    drillDown(into: node)
+                } label: {
+                    Label("下钻深入此目录", systemImage: "plus.magnifyingglass")
+                }
+            } else if node.isExpandableDir {
+                Button {
+                    expandAndDrillDown(node)
+                } label: {
+                    Label("展开下钻此目录", systemImage: "plus.magnifyingglass")
+                }
+            }
+
+            Divider()
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(expanded, forType: .string)
+            } label: {
+                Label("拷贝完整路径", systemImage: "doc.on.doc")
+            }
+
+            Button {
+                app.addPathToWhitelist(expanded, comment: node.name)
+            } label: {
+                Label("加入白名单排除", systemImage: "shield.slash")
+            }
+        }
     }
 
     // MARK: - 下钻与导航
@@ -476,6 +594,21 @@ struct SpaceVisualizerView: View {
             breadcrumbStack.append(currentNode)
             currentNode = node
             hoveredNode = nil
+        }
+    }
+
+    func expandAndDrillDown(_ node: SpaceNode) {
+        guard let p = node.path, !p.isEmpty, !isExpandingDir else { return }
+        isExpandingDir = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let subNodes = SpaceHierarchyBuilder.expandDirectory(path: p, colorMode: self.colorMode)
+            DispatchQueue.main.async {
+                self.isExpandingDir = false
+                guard !subNodes.isEmpty else { return }
+                var expandedNode = node
+                expandedNode.children = subNodes
+                self.drillDown(into: expandedNode)
+            }
         }
     }
 
