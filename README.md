@@ -22,8 +22,9 @@
 - **6 大清理分类**（对应 [CLEANUP-RULES.md](docs/CLEANUP-RULES.md) 的 42 条固化规则，规则源头见 [CleanupRules.swift](Sources/MacClean/Rules/CleanupRules.swift)）：
   用户缓存 · 日志与临时文件 · 开发残留 · App 残留 · 大文件与垃圾箱 · 浏览器与系统数据
   - **全分类原生 Quick Look 快速预览**：详情页中每个文件清理项与大文件均提供直观的「👁️ 快速查看」图标与右键菜单项，直接调用 macOS 原生 Quick Look 预览图片、音视频、文档与压缩归档，确认内容后再决定清理；
-  - **大文件与清理项清单一键多格式导出**：扫描后支持一键导出当前分类待清理项目为标准 CSV 表格或 Markdown 文本报告，清楚记录文件名、大小、字节数、风险等级、使用情况与绝对路径，方便二次归档或团队汇报；
-  - **大文件细分类型深度解析与快捷过滤**：支持按「安装包 (dmg/pkg)」、「压缩包 (zip/tar/7z)」、「音视频 (mov/mp4/mp3)」、「RAW相机与设计原稿 (cr2/cr3/nef/arw/dng/psd/blend/c4d)」、「虚拟机与镜像 (iso/img/vdi/vmdk/parallels)」、「项目归档与开发包 (xcarchive/apk/node_modules)」、「模拟器与备份」和「其他」共 8 大细分类型精准识别，统计与批量全选自动对齐当前可见类型。
+  - **大文件细分类型深度解析与快捷过滤**：支持按「安装包 (dmg/pkg)」、「压缩包 (zip/tar/7z)」、「音视频 (mov/mp4/mp3)」、「RAW相机与设计原稿 (cr2/cr3/nef/arw/dng/psd/blend/c4d)」、「虚拟机与镜像 (iso/img/vdi/vmdk/parallels)」、「项目归档与开发包 (xcarchive/apk/node_modules)」、「模拟器与备份」和「其他」共 8 大细分类型精准识别，统计与批量全选自动对齐当前可见类型；
+  - **大文件闲置时间区间筛选与多维排序（v1.42.0 新增）**：支持 6 级时间跨度分档（全部 / 30天内活跃 / 1-3个月 / 3-6个月 / 半年至1年 / 1年以上闲置），并提供「推荐排序」、「体积从大到小」、「修改时间最旧优先」与「修改时间最新优先」多维排序，列表中配备闲置天数动态徽标（如 `闲置 240 天`），精准锁定常年未动的陈旧沉睡大文件；
+  - **大文件与清理项清单多格式导出及外接盘迁移脚本**：扫描后支持一键导出当前分类待清理项目为标准 CSV 表格或 Markdown 文本报告。针对超大文件，更支持一键生成带有安全校验断言的 `export_move_script.sh` 外接盘 Shell 迁移脚本（`rsync -avP --remove-source-files`），插上移动硬盘即可一键安全腾挪本地空间。
 - **电脑风险提醒**：独立于文件清理的敏感数据检查模块（SSH 私钥/目录权限过宽检测、明文密钥环境变量暴露排查、敏感命名文件扫描）。
 - **App 卸载器与孤儿残留排查（融合 Pearcleaner / PureMac 双模式）**：
   - **已安装应用全量卸载**：提取本机已安装应用的**真实高清官方图标**，智能关联扫描 Preferences、Caches、Containers、Application Support、Logs、LaunchAgents 等全部关联数据，清晰标明每一项用途并安全移入废纸篓；
