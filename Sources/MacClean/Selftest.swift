@@ -100,6 +100,8 @@ enum Selftest {
         suiteOrphanPrefsDeep()
         // 日常运行与菜单栏常驻调优 (v1.45.0)
         suiteMenuBarDeep()
+        // 重复文件与大文件智能分析进阶 (v1.46.0)
+        suiteMediaAndPivotDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

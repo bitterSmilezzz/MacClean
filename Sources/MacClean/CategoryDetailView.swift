@@ -15,6 +15,8 @@ struct CategoryDetailView: View {
     @State private var selectedAppResidueFilter: AppResidueFilterKind = .all
     @State private var selectedLogsFilter: LogsFilterKind = .all
     @State private var activeDirectoryFilter: String? = nil
+    @State private var activeYearFilter: String? = nil
+    @State private var showPivotCard = false
     @State private var showDirectoryTreeSheet = false
     @State private var showHud = false
     @State private var hudMessage = ""
@@ -35,6 +37,11 @@ struct CategoryDetailView: View {
         }
         if category == .largeFiles && selectedAgeFilter != .all {
             result = result.filter { selectedAgeFilter.matches(item: $0) }
+        }
+        if category == .largeFiles, let yearFilter = activeYearFilter, !yearFilter.isEmpty {
+            result = result.filter { item in
+                PivotAnalyzer.yearLabel(for: item.modificationDate) == yearFilter
+            }
         }
         if category == .appResidue && selectedAppResidueFilter != .all {
             result = result.filter { selectedAppResidueFilter.matches(item: $0) }
@@ -66,6 +73,20 @@ struct CategoryDetailView: View {
                 result.sort { ($0.modificationDate ?? Date.distantPast) < ($1.modificationDate ?? Date.distantPast) }
             case .ageNewest:
                 result.sort { ($0.modificationDate ?? Date.distantPast) > ($1.modificationDate ?? Date.distantPast) }
+            case .bitrateDescending:
+                result.sort { a, b in
+                    let bA = MediaMetadataParser.cachedOrParse(path: a.path, fileSize: a.size)?.bitrateKbps ?? 0
+                    let bB = MediaMetadataParser.cachedOrParse(path: b.path, fileSize: b.size)?.bitrateKbps ?? 0
+                    if bA != bB { return bA > bB }
+                    return a.size > b.size
+                }
+            case .durationDescending:
+                result.sort { a, b in
+                    let dA = MediaMetadataParser.cachedOrParse(path: a.path, fileSize: a.size)?.durationSeconds ?? 0
+                    let dB = MediaMetadataParser.cachedOrParse(path: b.path, fileSize: b.size)?.durationSeconds ?? 0
+                    if dA != dB { return dA > dB }
+                    return a.size > b.size
+                }
             }
         }
         return result
@@ -246,7 +267,25 @@ struct CategoryDetailView: View {
     @ViewBuilder
     private var subCategoryFilterBarIfNeeded: some View {
         if category == .largeFiles && st.isScanned && !st.items.isEmpty {
-            largeFileTypeFilterBar
+            VStack(spacing: 0) {
+                largeFileTypeFilterBar
+                if showPivotCard {
+                    CrossPivotCard(
+                        matrix: PivotAnalyzer.analyze(items: st.items),
+                        selectedType: $selectedTypeFilter,
+                        selectedYear: $activeYearFilter,
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showPivotCard = false
+                            }
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
         } else if category == .appResidue && st.isScanned && !st.items.isEmpty {
             appResidueFilterBar
         } else if category == .logsAndTemp && st.isScanned && !st.items.isEmpty {
@@ -856,6 +895,19 @@ struct ItemRowView: View {
                                 .fill(days >= 180 ? Signal.caution.opacity(0.12) : Surface.sunken)
                         )
                 }
+                if item.category == .largeFiles,
+                   MediaMetadataParser.isMediaFile(path: item.path),
+                   let meta = MediaMetadataParser.cachedOrParse(path: item.path, fileSize: item.size) {
+                    Text(meta.badgeText)
+                        .font(Typo.micro)
+                        .foregroundColor(Accent.tint)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(Accent.tint.opacity(0.12))
+                        )
+                }
             }
             if isExpanded { expandedDetail }
         }
@@ -889,6 +941,18 @@ struct ItemRowView: View {
             Text("最近写入：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
                 .font(Typo.caption)
                 .foregroundColor(Ink.tertiary)
+        }
+        if item.category == .largeFiles,
+           MediaMetadataParser.isMediaFile(path: item.path),
+           let meta = MediaMetadataParser.cachedOrParse(path: item.path, fileSize: item.size) {
+            HStack(spacing: 4) {
+                Image(systemName: "film")
+                    .font(.system(size: 10))
+                    .foregroundColor(Accent.tint)
+                Text(meta.detailedSummary)
+                    .font(Typo.caption)
+                    .foregroundColor(Ink.secondary)
+            }
         }
         if let aiReview, !aiReview.reason.isEmpty {
             Text("AI 建议：\(aiReview.reason)")
@@ -1164,6 +1228,20 @@ enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var icon: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .installer: return "shippingbox"
+        case .archive: return "doc.zipper"
+        case .media: return "film"
+        case .rawMedia: return "camera"
+        case .diskImage: return "internaldrive"
+        case .codeArchive: return "chevron.left.forwardslash.chevron.right"
+        case .simulator: return "iphone"
+        case .other: return "doc"
+        }
+    }
+
     func matches(item: CleanItem) -> Bool {
         let name = item.name.lowercased()
         let path = item.path.lowercased()
@@ -1240,13 +1318,21 @@ extension CategoryDetailView {
                 }
                 .pickerStyle(.menu)
                 .controlSize(.small)
-                .frame(width: 120)
+                .frame(width: 135)
                 .accessibilityIdentifier("largeFileSortPicker")
 
                 Rectangle()
                     .fill(Surface.hairline.opacity(0.6))
                     .frame(width: 0.5, height: 14)
                     .padding(.horizontal, Space.xxs)
+
+                pivotMatrixChip
+
+                if let yearFilter = activeYearFilter {
+                    YearFilterBadge(year: yearFilter) {
+                        activeYearFilter = nil
+                    }
+                }
 
                 directoryTreeChip
 
@@ -1263,8 +1349,7 @@ extension CategoryDetailView {
         .overlay(alignment: .bottom) { Hairline() }
     }
 
-    /// 类型筛选片。选中态用强调色实底，未选中态**不加底色也不加边框**——
-    /// 八个带描边的胶囊排成一行，视觉噪音远大于它提供的信息。
+    /// 类型筛选片。选中态用强调色实底，未选中态不加底色也不加边框。
     private func typeFilterChip(_ filter: LargeFileTypeFilter) -> some View {
         let isSelected = selectedTypeFilter == filter
         let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
@@ -1272,7 +1357,11 @@ extension CategoryDetailView {
         return Button {
             withAnimation(Motion.micro) { selectedTypeFilter = filter }
         } label: {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
+                if filter != .all {
+                    Image(systemName: filter.icon)
+                        .font(.system(size: 9))
+                }
                 Text(filter.rawValue)
                     .font(isSelected ? Typo.rowStrong : Typo.row)
                 Text("\(count)")
@@ -1289,6 +1378,35 @@ extension CategoryDetailView {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// 交叉透视矩阵开关胶囊
+    private var pivotMatrixChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showPivotCard.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "square.grid.3x3.fill")
+                    .font(.system(size: 10))
+                Text("交叉透视")
+                    .font(Typo.micro)
+                if activeYearFilter != nil {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showPivotCard ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showPivotCard ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("pivotMatrixToggle")
+        .help("展开/收起年份与类型多维空间占用透视矩阵")
     }
 
     private var directoryTreeChip: some View {
@@ -1431,6 +1549,8 @@ enum LargeFileSortOrder: String, CaseIterable, Identifiable {
     case sizeDescending = "体积从大到小"
     case ageOldest = "修改时间最旧优先"
     case ageNewest = "修改时间最新优先"
+    case bitrateDescending = "媒体码率最高优先"
+    case durationDescending = "媒体时长最长优先"
 
     var id: String { rawValue }
 }
