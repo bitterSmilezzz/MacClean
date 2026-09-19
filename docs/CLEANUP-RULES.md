@@ -88,6 +88,10 @@
 | **D13** | **Clang 模块缓存** | `$TMPDIR` 同级 `C/clang/ModuleCache` | 可重建缓存 | trash |
 | **D14** | **Node 编译缓存** | `$TMPDIR/node-compile-cache` | 可重建缓存 | trash |
 | **D15** | **全局 CLI 工具废弃版本副本** | `/opt/homebrew/lib/node_modules/{<pkg>,\@scope/<pkg>}` 名字含 `.old-` / `.retired-` / `.bak-` / `.disabled-` | 推断未用 | trash |
+| **D16** | **CocoaPods 缓存与规格库** | `~/Library/Caches/CocoaPods` 与 `~/.cocoapods/repos` | 可重建缓存 | trash |
+| **D17** | **Docker 构建缓存与日志** | `~/.docker/buildx/cache` 与容器守护运行日志 | 可重建缓存 | trash |
+| **D18** | **Cargo Git 源码检出库** | `~/.cargo/git/checkouts` 与 `~/.cargo/git/db` | 可重建缓存 | trash |
+| **D19** | **Gradle 守护日志与旧 Wrapper** | `~/.gradle/daemon/*/*.log` 与 `~/.gradle/wrapper/dists` | 历史产物 | trash |
 
 > **D13/D14 实测依据（v1.1）**：Clang 模块缓存 1.2 GB、Node 编译缓存 103 MB，均为自动重建的编译中间产物。
 >

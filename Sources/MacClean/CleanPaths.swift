@@ -82,6 +82,14 @@ enum CleanPaths {
     static let m2Repository = "~/.m2/repository"
     static let cargoRegistry = "~/.cargo/registry"
     static let swiftpmCache = "~/Library/Caches/org.swift.swiftpm"
+    static let cocoapodsCache = "~/Library/Caches/CocoaPods"
+    static let cocoapodsRepos = "~/.cocoapods/repos"
+    static let dockerBuildxCache = "~/.docker/buildx/cache"
+    static let dockerDataLogs = "~/Library/Containers/com.docker.docker/Data/log"
+    static let cargoGitCheckouts = "~/.cargo/git/checkouts"
+    static let cargoGitDb = "~/.cargo/git/db"
+    static let gradleDaemon = "~/.gradle/daemon"
+    static let gradleWrapperDists = "~/.gradle/wrapper/dists"
     static let codeRoots = ["~/workspace", "~/projects", "~/dev", "~/code"]
 
     // MARK: 4. App 残留 A1–A4

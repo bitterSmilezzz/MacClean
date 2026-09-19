@@ -20,14 +20,12 @@ extension Selftest {
         //   ③ README 写「23 条」而文档实际 32 条、代码 35 条。
         // 下列自检把这类不一致变成可自动发现的失败。
 
-        check("清理规则：登记条数与分类分布一致（6 大类 41 条）") {
-            // 41 → 42：原 B4 把"CRX 下载缓存"与"WidevineCdm/WasmTtsEngine/语言包"
-            // 混在一条里统标 safe，现按本质拆成 B4（下载缓存）+ B5（按需下载的功能组件）
-            // 42 → 41：删除幽灵规则 A3（登记但从未实现，且与 C1 目标集合重叠）
-            guard CleanupRules.count == 41 else { return false }
+        check("清理规则：登记条数与分类分布一致（6 大类 45 条）") {
+            // 41 → 45：v1.37.0 新增开发者深层残留 D16(CocoaPods)、D17(Docker)、D18(Cargo Git)、D19(Gradle Daemon/Wrapper)
+            guard CleanupRules.count == 45 else { return false }
             // 顺序对应 CleanCategory.allCases：C / L / D / A / T / B
             let byCategory = CleanCategory.allCases.map { CleanupRules.rules(in: $0).count }
-            return byCategory == [7, 6, 15, 3, 5, 5]
+            return byCategory == [7, 6, 19, 3, 5, 5]
         }
 
         // MARK: - 结论一致性不变量
@@ -380,6 +378,22 @@ extension Selftest {
             let gone = !FileManager.default.fileExists(atPath: file)
             try? FileManager.default.removeItem(atPath: dir)
             return gone && result.succeeded == 1
+        }
+
+        check("深度开发残留：D16–D19 规则本质与 CocoaPods/Docker/Cargo/Gradle 路径映射正确") {
+            guard let d16 = CleanupRules.rule("D16"), d16.nature == .losslessCache else { return false }
+            guard let d17 = CleanupRules.rule("D17"), d17.nature == .losslessCache else { return false }
+            guard let d18 = CleanupRules.rule("D18"), d18.nature == .losslessCache else { return false }
+            guard let d19 = CleanupRules.rule("D19"), d19.nature == .staleArtifact else { return false }
+
+            // 跨分类防双计：userCachesClaimedBySpecificRules 必须包含 cocoapodsCache
+            guard CleanupRules.userCachesClaimedBySpecificRules.contains(CleanPaths.cocoapodsCache) else { return false }
+
+            // 规则与实现一致
+            for id in ["D16", "D17", "D18", "D19"] {
+                guard Scanner.implementedRuleIDs.contains(id) else { return false }
+            }
+            return true
         }
 
     }

@@ -15,7 +15,8 @@ final class Scanner {
     static let implementedRuleIDs: Set<String> = [
         "A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5",
         "C1", "C2", "C3", "C4", "C5", "C6", "C7", "D1",
-        "D10", "D11", "D12", "D13", "D14", "D15", "D2", "D3",
+        "D10", "D11", "D12", "D13", "D14", "D15", "D16",
+        "D17", "D18", "D19", "D2", "D3",
         "D4", "D5", "D6", "D7", "D8", "D9", "L1", "L2",
         "L3", "L4", "L5", "L6", "T1", "T2", "T3", "T4",
         "T5",
@@ -686,6 +687,10 @@ final class Scanner {
         items += scanD12HomebrewOldVersions()
         items += scanD13D14TempBuildCaches()
         items += scanD15RetiredNodeModules()
+        items += scanD16CocoaPods()
+        items += scanD17DockerCache()
+        items += scanD18CargoGit()
+        items += scanD19GradleDaemonAndWrapper()
 
         return items.sorted { $0.size > $1.size }
     }
@@ -913,6 +918,129 @@ final class Scanner {
                 collectPycache(in: child, depth: depth + 1, maxDepth: maxDepth, into: &items)
             }
         }
+    }
+
+    // D16: CocoaPods 缓存与 Specs 镜像
+    private static func scanD16CocoaPods() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let cacheDir = CleanPaths.expand(CleanPaths.cocoapodsCache)
+        if FileSystem.isDir(cacheDir), FileSystem.isSafeToClean(cacheDir) {
+            let size = FileSystem.size(at: cacheDir)
+            if size > 0 {
+                items.append(CleanItem(
+                    name: "CocoaPods Cache",
+                    path: cacheDir, size: size, rule: "D16", category: .devResidue,
+                    note: "Pods 下载与 Specs 缓存"))
+            }
+        }
+        let reposDir = CleanPaths.expand(CleanPaths.cocoapodsRepos)
+        if FileSystem.isDir(reposDir), FileSystem.isSafeToClean(reposDir) {
+            for repo in FileSystem.subdirs(of: reposDir) {
+                guard FileSystem.isSafeToClean(repo) else { continue }
+                let size = FileSystem.size(at: repo)
+                if size > 0 {
+                    items.append(CleanItem(
+                        name: "CocoaPods Repo (\((repo as NSString).lastPathComponent))",
+                        path: repo, size: size, rule: "D16", category: .devResidue,
+                        note: "Specs 规格镜像库"))
+                }
+            }
+        }
+        return items
+    }
+
+    // D17: Docker 构建缓存与运行日志
+    private static func scanD17DockerCache() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let dockerRunning = CleanPaths.runningBundleIDs.contains("com.docker.docker")
+            || CleanPaths.runningDisplayNames.contains("docker")
+        if !dockerRunning {
+            let logDir = CleanPaths.expand(CleanPaths.dockerDataLogs)
+            if FileSystem.isDir(logDir), FileSystem.isSafeToClean(logDir) {
+                let size = FileSystem.size(at: logDir)
+                if size > 0 {
+                    items.append(CleanItem(
+                        name: "Docker 运行日志",
+                        path: logDir, size: size, rule: "D17", category: .devResidue,
+                        note: "Docker Desktop 守护进程日志"))
+                }
+            }
+        }
+        let buildxDir = CleanPaths.expand(CleanPaths.dockerBuildxCache)
+        if FileSystem.isDir(buildxDir), FileSystem.isSafeToClean(buildxDir) {
+            let size = FileSystem.size(at: buildxDir)
+            if size > 0 {
+                items.append(CleanItem(
+                    name: "Docker Buildx 缓存",
+                    path: buildxDir, size: size, rule: "D17", category: .devResidue,
+                    note: "容器构建缓存"))
+            }
+        }
+        return items
+    }
+
+    // D18: Cargo Git 检出与索引仓库
+    private static func scanD18CargoGit() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let gitDirs: [(String, String)] = [
+            (CleanPaths.cargoGitCheckouts, "Cargo Git 源码检出"),
+            (CleanPaths.cargoGitDb, "Cargo Git 索引数据库"),
+        ]
+        for (p, note) in gitDirs {
+            let dir = CleanPaths.expand(p)
+            guard FileSystem.isDir(dir), FileSystem.isSafeToClean(dir) else { continue }
+            let size = FileSystem.size(at: dir)
+            if size > 0 {
+                items.append(CleanItem(
+                    name: (dir as NSString).lastPathComponent,
+                    path: dir, size: size, rule: "D18", category: .devResidue,
+                    note: note))
+            }
+        }
+        return items
+    }
+
+    // D19: Gradle 守护进程日志与历史 Wrapper
+    private static func scanD19GradleDaemonAndWrapper() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let daemonDir = CleanPaths.expand(CleanPaths.gradleDaemon)
+        if FileSystem.isDir(daemonDir), FileSystem.isSafeToClean(daemonDir) {
+            var logPaths: [String] = []
+            var totalSize: Int64 = 0
+            for sub in FileSystem.subdirs(of: daemonDir) {
+                for file in FileSystem.children(of: sub) {
+                    if file.hasSuffix(".log") || file.hasSuffix(".out") {
+                        let full = (sub as NSString).appendingPathComponent(file)
+                        guard FileSystem.isSafeToClean(full) else { continue }
+                        let sz = FileSystem.size(at: full)
+                        if sz > 0 {
+                            logPaths.append(full)
+                            totalSize += sz
+                        }
+                    }
+                }
+            }
+            if !logPaths.isEmpty {
+                items.append(CleanItem(
+                    name: "Gradle 历史守护进程日志 (\(logPaths.count) 个)",
+                    path: daemonDir, paths: logPaths, size: totalSize, rule: "D19",
+                    category: .devResidue, note: "Gradle daemon 运行日志与堆栈"))
+            }
+        }
+        let wrapperDir = CleanPaths.expand(CleanPaths.gradleWrapperDists)
+        if FileSystem.isDir(wrapperDir), FileSystem.isSafeToClean(wrapperDir) {
+            for dist in FileSystem.subdirs(of: wrapperDir) {
+                guard FileSystem.isSafeToClean(dist) else { continue }
+                let sz = FileSystem.size(at: dist)
+                if sz > 0 {
+                    items.append(CleanItem(
+                        name: "Gradle Wrapper (\((dist as NSString).lastPathComponent))",
+                        path: dist, size: sz, rule: "D19", category: .devResidue,
+                        note: "历史下载的 Gradle 发行包"))
+                }
+            }
+        }
+        return items
     }
 
     // MARK: - 4. App 残留 A1–A4

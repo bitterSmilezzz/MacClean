@@ -150,6 +150,22 @@ enum CleanupRules {
              consequence: "依据命名推断为废弃副本；命名可能出自人工重命名，请确认后再删",
              summary: "全局 node_modules 下废弃版本副本（名字含 .old-/.retired-/.bak-/.disabled-）",
              isNew: true),
+        Rule(id: "D16", category: .devResidue, nature: .losslessCache,
+             consequence: "CocoaPods 依赖包与规格库缓存，下次执行 pod install 时按需重新下载",
+             summary: "~/Library/Caches/CocoaPods/* 与 ~/.cocoapods/repos",
+             isNew: true),
+        Rule(id: "D17", category: .devResidue, nature: .losslessCache,
+             consequence: "Docker 构建缓存与客户端运行日志，下次构建镜像时重新拉取或生成",
+             summary: "~/.docker/buildx/cache/* 与 ~/Library/Containers/com.docker.docker/Data/log/*",
+             isNew: true),
+        Rule(id: "D18", category: .devResidue, nature: .losslessCache,
+             consequence: "Cargo Git 源码仓库检出与索引，下次 cargo build 依赖时自动按需克隆",
+             summary: "~/.cargo/git/checkouts/* 与 ~/.cargo/git/db/*",
+             isNew: true),
+        Rule(id: "D19", category: .devResidue, nature: .staleArtifact,
+             consequence: "Gradle 历史守护进程日志与过时 Wrapper 发行包，不影响当前项目构建",
+             summary: "~/.gradle/daemon/*/*.log 与 ~/.gradle/wrapper/dists/*",
+             isNew: true),
 
         // MARK: 4. App 残留 A1–A3（原 A3「孤儿缓存」已删除，见下方说明）
         Rule(id: "A1", category: .appResidue, nature: .orphanedResidue,
@@ -224,6 +240,7 @@ enum CleanupRules {
         CleanPaths.pipCache,        // C3
         CleanPaths.homebrewCache,   // C4
         CleanPaths.swiftpmCache,    // D10（跨分类，最需要让位的一条）
+        CleanPaths.cocoapodsCache,  // D16（跨分类，CocoaPods 缓存让位）
     ] + CleanPaths.browserCacheDirs  // C5
 
     // MARK: - 查询接口
