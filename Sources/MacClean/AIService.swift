@@ -31,104 +31,250 @@ struct AIConfig: Codable, Equatable {
         }
     }
 
-    // MARK: 旧钥匙串（仅用于迁移读取；新 Key 存 0600 文件）
+    // MARK: API Key 存储（钥匙串优先；钥匙串不可用时仅存内存，**绝不落盘**）
+    //
+    // 为什么不再写明文文件：v1.35 及以前把 Key 写进
+    // ~/Library/Application Support/MacClean/ai.key（0600）。那与本项目自己的发布门槛
+    // docs/RELEASE-CHECKLIST.md「API Key 不落盘」直接矛盾，且任何能读该文件的进程都能
+    // 拿到可用凭据。现在只写钥匙串；进程内会话缓存是唯一的内存退路，进程退出即消失。
+    //
+    // 为什么钥匙串会失败：本 App 是 **ad-hoc 签名**（`codesign --sign -`，TeamIdentifier
+    // 为空），每次重新构建都会换签名身份 → 钥匙串 ACL 失配 → `SecItemCopyMatching` 会
+    // 弹窗甚至永久挂起（见提交 4ec2fe5 的根因二）。因此：数据保护钥匙串
+    // （kSecUseDataProtectionKeychain）在无 team ID 时不可用；传统钥匙串则必须
+    // **一律走后台线程 + 超时兜底**，失败时退到会话缓存并要求用户重新输入，
+    // 而不是挂死主线程、也不是回退去写明文。
 
     private static let keychainService = "com.macclean.app"
     private static let keychainAccount = "aiApiKey"
 
-    private static var keyFileURL: URL {
-        // 不用 `.first!`：这个 API 在正常环境下必定返回一个元素，但"环境不正常"
-        // （沙盒异常、容器损坏）时崩的是整个 App。退到 ~/Library/Application Support 即可。
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("MacClean", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("ai.key")
+    /// 自检注入：指向一次性测试 service，避免污染真实钥匙串
+    static var keychainServiceOverride: String?
+
+    /// 自检注入：指向临时文件，避免碰真实的历史明文 Key 文件
+    static var legacyKeyFileURLOverride: URL?
+
+    /// 钥匙串操作超时（ACL 失配时 SecItemCopyMatching 会挂起）
+    private static let keychainTimeout: DispatchTimeInterval = .seconds(3)
+
+    private static let stateLock = NSLock()
+    /// 进程内会话缓存——钥匙串不可用时的唯一去处
+    private static var sessionKey: String?
+    /// 首次读取超时后置位：避免每次调用都白付 3s 代价；显式保存时清除并重试
+    private static var keychainReadFailed = false
+    /// 最近一次钥匙串操作的 OSStatus（诊断用）
+    private static var lastStatusStorage: OSStatus = errSecSuccess
+
+    /// 超时哨兵：非系统状态码，仅用于诊断输出（区分"ACL 挂起"与"明确错误码"）
+    static let keychainTimeoutStatus: OSStatus = -9999
+
+    /// 最近一次钥匙串操作结果：`errSecSuccess` = 成功，`keychainTimeoutStatus` = 超时挂起，其余为系统错误码
+    static var lastKeychainStatus: OSStatus {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return lastStatusStorage
     }
 
-    /// 测试注入（自检不碰真实 Key 文件）
-    static var keyFileURLOverride: URL?
+    private static func recordStatus(_ status: OSStatus) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        lastStatusStorage = status
+    }
 
-    private static var effectiveKeyFileURL: URL {
-        keyFileURLOverride ?? keyFileURL
+    /// 最近一次钥匙串结果的可读文案（诊断输出用）
+    static var lastKeychainStatusDescription: String {
+        let status = lastKeychainStatus
+        if status == keychainTimeoutStatus { return "超时挂起（ACL 失配，见提交 4ec2fe5）" }
+        if status == errSecSuccess { return "成功" }
+        let msg = SecCopyErrorMessageString(status, nil) as String? ?? "未知错误"
+        return "OSStatus \(status)（\(msg)）"
+    }
+
+    private static func cachedKey() -> String? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return sessionKey
+    }
+
+    private static func setCachedKey(_ key: String?) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        sessionKey = key
+    }
+
+    private static func markKeychainReadFailed() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        keychainReadFailed = true
+    }
+
+    private static func shouldSkipKeychainRead() -> Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return keychainReadFailed
+    }
+
+    private static func resetKeychainReadFailure() {
+        stateLock.lock(); defer { stateLock.unlock() }
+        keychainReadFailed = false
+    }
+
+    /// 自检注入：模拟"新进程启动"——清空会话缓存与读失败标记，**不动**钥匙串与文件
+    static func resetSessionStateForTesting() {
+        setCachedKey(nil)
+        resetKeychainReadFailure()
+    }
+
+    /// 旧版明文 Key 文件（v1.35 及以前遗留）：**只读 + 删除，永不写入**
+    private static var legacyKeyFileURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("MacClean", isDirectory: true).appendingPathComponent("ai.key")
+    }
+
+    private static var effectiveLegacyKeyFileURL: URL {
+        legacyKeyFileURLOverride ?? legacyKeyFileURL
     }
 
     static func loadAPIKey() -> String? {
-        // 1) 文件优先（MED#4：校验 0600 权限，宽松权限的 key 文件拒绝读取）
-        if keyFileURLOverride == nil, let attrs = try? FileManager.default.attributesOfItem(atPath: effectiveKeyFileURL.path),
-           let perms = attrs[.posixPermissions] as? NSNumber, perms.intValue != 0o600 {
-            // 权限不符：尝试纠正后仍不符则视为不可信，走迁移/回退
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                                   ofItemAtPath: effectiveKeyFileURL.path)
-            if let perms2 = try? FileManager.default.attributesOfItem(atPath: effectiveKeyFileURL.path)[.posixPermissions] as? NSNumber,
-               perms2.intValue != 0o600 {
-                return nil
+        if let cached = cachedKey() { return cached }
+
+        if !shouldSkipKeychainRead() {
+            if let k = keychainRead(), !k.isEmpty {
+                setCachedKey(k)
+                // 钥匙串已有可用 Key：清掉任何历史明文残留，否则它会一直躺在磁盘上
+                if legacyKeyFileExists() { removeLegacyKeyFile() }
+                return k
             }
         }
-        if let s = try? String(contentsOf: effectiveKeyFileURL, encoding: .utf8),
-           !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return s.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        // 2) 兼容迁移：尝试读旧钥匙串（可能因 ACL 挂起 → 后台线程 + 3s 超时保护）
-        let sem = DispatchSemaphore(value: 0)
-        var migrated: String?
-        DispatchQueue.global().async {
-            migrated = keychainLoad()
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 3)
-        if let m = migrated?.trimmingCharacters(in: .whitespacesAndNewlines), !m.isEmpty {
-            saveAPIKey(m)
-            keychainDelete()
-            return m
+
+        // 一次性迁移：旧明文文件 → 钥匙串。
+        // 只有写入成功才删除明文（safe-fail：宁可暂时留文件，也不丢凭据）。
+        if let legacy = readLegacyKeyFile(), !legacy.isEmpty {
+            if keychainWrite(legacy) {
+                removeLegacyKeyFile()
+            }
+            setCachedKey(legacy)
+            return legacy
         }
         return nil
     }
 
-    static func saveAPIKey(_ key: String) {
+    /// 返回是否成功持久化到钥匙串。
+    /// `false` = 仅本次会话可用，下次启动需重新输入（调用方应告知用户）。
+    @discardableResult
+    static func saveAPIKey(_ key: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        // LOW-MED：先写临时文件并设 0600，再原子替换——避免"先 0644 后改权限"的窗口期
-        let url = effectiveKeyFileURL
-        let tmp = url.appendingPathExtension("tmp")
-        try? FileManager.default.removeItem(at: tmp)
-        do {
-            try trimmed.write(to: tmp, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tmp.path)
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-        } catch {
-            try? FileManager.default.removeItem(at: tmp)
-        }
-        // 异步清理旧钥匙串条目（避免潜在 ACL 阻塞）
-        DispatchQueue.global().async { Self.keychainDelete() }
+        guard !trimmed.isEmpty else { return false }
+        setCachedKey(trimmed)
+        removeLegacyKeyFile()          // 不再写明文，顺手清掉历史残留
+        resetKeychainReadFailure()     // 用户显式保存 → 允许重试一次钥匙串
+        return keychainWrite(trimmed)
     }
 
     static func clearAPIKey() {
-        try? FileManager.default.removeItem(at: effectiveKeyFileURL)
+        setCachedKey(nil)
+        removeLegacyKeyFile()
         keychainDelete()
+    }
+
+    // MARK: 旧明文文件（只读 + 删除）
+
+    /// 旧明文 Key 文件当前是否仍存在（迁移诊断用）
+    static var legacyKeyFileStillPresent: Bool { legacyKeyFileExists() }
+
+    private static func legacyKeyFileExists() -> Bool {
+        FileManager.default.fileExists(atPath: effectiveLegacyKeyFileURL.path)
+    }
+
+    private static func readLegacyKeyFile() -> String? {
+        guard let s = try? String(contentsOf: effectiveLegacyKeyFileURL, encoding: .utf8) else { return nil }
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func removeLegacyKeyFile() {
+        try? FileManager.default.removeItem(at: effectiveLegacyKeyFileURL)
+    }
+
+    // MARK: 钥匙串（全部带超时兜底，避免 ACL 失配时挂起）
+
+    private static var service: String { keychainServiceOverride ?? keychainService }
+
+    private static func runGuarded<T>(_ fallback: T, _ body: @escaping () -> T) -> (value: T, timedOut: Bool) {
+        let sem = DispatchSemaphore(value: 0)
+        var result = fallback
+        DispatchQueue.global().async {
+            result = body()
+            sem.signal()
+        }
+        let finished = sem.wait(timeout: .now() + keychainTimeout) == .success
+        return (finished ? result : fallback, !finished)
+    }
+
+    private static func keychainRead() -> String? {
+        let (value, timedOut) = runGuarded(nil) { keychainLoad() }
+        if timedOut {
+            recordStatus(keychainTimeoutStatus)
+            markKeychainReadFailed()
+            return nil
+        }
+        // 只有"真错误"（如 -50 / ACL 拒绝）才短路后续读取；
+        // errSecItemNotFound 是正常的"尚未配置"，不能当成故障
+        if value == nil, lastKeychainStatus != errSecItemNotFound {
+            markKeychainReadFailed()
+        }
+        return value
+    }
+
+    private static func keychainWrite(_ key: String) -> Bool {
+        let (ok, timedOut) = runGuarded(false) { keychainSave(key) }
+        if timedOut { recordStatus(keychainTimeoutStatus) }
+        return ok
+    }
+
+    private static func keychainDelete() {
+        let (_, timedOut) = runGuarded(false) { keychainDeleteSync() }
+        if timedOut { recordStatus(keychainTimeoutStatus) }
     }
 
     private static func keychainLoad() -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: keychainAccount,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        recordStatus(status)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
-    private static func keychainDelete() {
-        let deleteQuery: [String: Any] = [
+    /// 先 Add；已存在则 Update（避免产生重复条目）
+    private static func keychainSave(_ key: String) -> Bool {
+        let base: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: keychainAccount,
         ]
-        SecItemDelete(deleteQuery as CFDictionary)
+        let value: [String: Any] = [kSecValueData as String: Data(key.utf8)]
+        let addStatus = SecItemAdd(base.merging(value) { _, new in new } as CFDictionary, nil)
+        if addStatus == errSecSuccess { recordStatus(addStatus); return true }
+        if addStatus == errSecDuplicateItem {
+            let updateStatus = SecItemUpdate(base as CFDictionary, value as CFDictionary)
+            recordStatus(updateStatus)
+            return updateStatus == errSecSuccess
+        }
+        recordStatus(addStatus)
+        return false
+    }
+
+    private static func keychainDeleteSync() -> Bool {
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: keychainAccount,
+        ]
+        let status = SecItemDelete(deleteQuery as CFDictionary)
+        recordStatus(status)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 }
 

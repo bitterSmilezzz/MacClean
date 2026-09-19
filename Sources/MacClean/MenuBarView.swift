@@ -290,6 +290,8 @@ struct MenuBarView: View {
             Button {
                 if app.totalSelected > 0 {
                     app.cleanSelectedAcrossCategories(permanently: false)
+                } else if app.smartRecommendedCount > 0 {
+                    app.quickCleanSmartRecommendations()
                 } else {
                     app.quickCleanSafeItems()
                 }
@@ -297,7 +299,16 @@ struct MenuBarView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "trash")
                         .font(.system(size: 11, weight: .medium))
-                    Text(app.totalSelected > 0 ? "清理选中 (\(app.totalSelected.byteStringCN))" : "安全速清")
+                    let labelText: String = {
+                        if app.totalSelected > 0 {
+                            return "清理选中 (\(app.totalSelected.byteStringCN))"
+                        } else if app.smartRecommendedBytes > 0 {
+                            return "清理推荐 (\(app.smartRecommendedBytes.byteStringCN))"
+                        } else {
+                            return "安全速清"
+                        }
+                    }()
+                    Text(labelText)
                         .font(Typo.rowStrong)
                 }
                 .frame(maxWidth: .infinity)

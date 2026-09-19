@@ -145,6 +145,54 @@ final class AppState: ObservableObject {
         return totals
     }
 
+    // MARK: - 智能清理推荐
+
+    /// 智能精选推荐项：仅限 safe、未在白名单中、且推荐等级属于 high 或 medium 的高价值项
+    var smartRecommendedItems: [CleanItem] {
+        searchableItems.filter { item in
+            guard item.recommendation.isSafe else { return false }
+            guard !whitelist.isWhitelisted(path: item.path) else { return false }
+            let tier = item.recommendationScore.tier
+            return tier == .high || tier == .medium
+        }
+    }
+
+    /// 智能精选推荐总大小
+    var smartRecommendedBytes: Int64 {
+        smartRecommendedItems.reduce(0) { $0 + $1.size }
+    }
+
+    /// 智能精选推荐项目数
+    var smartRecommendedCount: Int {
+        smartRecommendedItems.count
+    }
+
+    /// 一键勾选所有智能推荐项
+    func selectSmartRecommendations() {
+        for st in categories {
+            for i in 0..<st.items.count {
+                let item = st.items[i]
+                if item.recommendation.isSafe && !whitelist.isWhitelisted(path: item.path) {
+                    let tier = item.recommendationScore.tier
+                    st.items[i].isSelected = (tier == .high || tier == .medium)
+                } else {
+                    st.items[i].isSelected = false
+                }
+            }
+        }
+        objectWillChange.send()
+    }
+
+    /// 一键取消所有勾选
+    func clearAllSelections() {
+        for st in categories {
+            for i in 0..<st.items.count {
+                st.items[i].isSelected = false
+            }
+        }
+        objectWillChange.send()
+    }
+
     func scan(_ cat: CleanCategory) {
         scan(cat, resetMeasurementSession: true)
     }
@@ -580,6 +628,15 @@ final class AppState: ObservableObject {
             }
         }
         cleanSelectedAcrossCategories(permanently: false)
+    }
+
+    /// 智能推荐清理：仅清理经过加权评分评定为「高价值/安全精选」的推荐项
+    func quickCleanSmartRecommendations() {
+        guard !isCleaning else { return }
+        selectSmartRecommendations()
+        if totalSelectedCount > 0 {
+            cleanSelectedAcrossCategories(permanently: false)
+        }
     }
 
     /// 记录一次清理历史（Mole `mo history` 思路）

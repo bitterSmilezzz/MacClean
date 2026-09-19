@@ -348,6 +348,23 @@ struct CategoryDetailView: View {
 
             // 三巡：过滤无匹配（filtered 为空）时隐藏，避免空集 allSatisfy=true 误显示"取消全选"
             if st.isScanned && !st.items.isEmpty && !filtered.isEmpty {
+                let smartItems = filtered.filter { $0.recommendation.isSafe && ($0.recommendationScore.tier == .high || $0.recommendationScore.tier == .medium) }
+                if !smartItems.isEmpty && smartItems.count < filtered.filter({ $0.recommendation.isSafe }).count {
+                    Button {
+                        selectSmartInVisible(visible: filtered)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10))
+                            Text("仅选推荐 (\(smartItems.count))")
+                        }
+                        .font(Typo.row)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(Accent.tint)
+                    .help("仅勾选长期闲置、高收益的精选推荐项")
+                }
+
                 Button {
                     toggleAllVisible(visible: filtered)
                 } label: {
@@ -430,6 +447,16 @@ struct CategoryDetailView: View {
             for item in visible {
                 st.setSelected(item.id, false)
             }
+        }
+    }
+
+    /// 仅勾选当前可见的智能推荐项（评分高、高价值安全项）
+    private func selectSmartInVisible(visible: [CleanItem]) {
+        let smartIDs = Set(visible.filter {
+            $0.recommendation.isSafe && ($0.recommendationScore.tier == .high || $0.recommendationScore.tier == .medium)
+        }.map(\.id))
+        for item in visible {
+            st.setSelected(item.id, smartIDs.contains(item.id))
         }
     }
 
@@ -545,8 +572,15 @@ struct CategoryDetailView: View {
                             .padding(.horizontal, 4)
 
                             // 原生分组容器（组内各行由精细分割线隔开）
+                            let displayItems = group.kind == .safe ? groupItems.sorted { a, b in
+                                if a.recommendationScore.tier != b.recommendationScore.tier {
+                                    return a.recommendationScore.tier > b.recommendationScore.tier
+                                }
+                                return a.recommendationScore.totalScore > b.recommendationScore.totalScore
+                            } : groupItems
+
                             VStack(spacing: 0) {
-                                ForEach(Array(groupItems.enumerated()), id: \.element.id) { index, item in
+                                ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
                                     if index > 0 {
                                         Divider()
                                             .overlay(Surface.hairline.opacity(0.35))
@@ -730,6 +764,7 @@ struct ItemRowView: View {
                 // 一枚徽标，一个结论。历史上这里是"风险徽标 + 使用频率徽标"两枚并列，
                 // 于是必然出现「安全」和「频繁使用中」互相打架的组合。
                 VerdictBadge(recommendation: item.recommendation)
+                SmartRecommendationBadge(tier: item.recommendationScore.tier)
                 if let aiReview {
                     ReviewBadge(verdict: aiReview.verdict)
                 }
@@ -738,7 +773,7 @@ struct ItemRowView: View {
         }
     }
 
-    /// 展开后显示路径、结论依据、最近写入、AI 理由与备注
+    /// 展开后显示路径、结论依据、智能推荐打分、最近写入、AI 理由与备注
     @ViewBuilder
     private var expandedDetail: some View {
         Text(item.path)
@@ -751,6 +786,17 @@ struct ItemRowView: View {
             .font(Typo.caption)
             .foregroundColor(Ink.secondary)
             .fixedSize(horizontal: false, vertical: true)
+        let score = item.recommendationScore
+        if score.tier == .high || score.tier == .medium {
+            HStack(spacing: 4) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 10))
+                    .foregroundColor(Accent.tint)
+                Text("智能推荐评分 \(Int(score.totalScore)) 分 · \(score.summary)")
+                    .font(Typo.caption)
+                    .foregroundColor(Accent.tint)
+            }
+        }
         if let lastUsed = item.lastUsed {
             Text("最近写入：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
                 .font(Typo.caption)
@@ -917,6 +963,30 @@ struct VerdictBadge: View {
                     .fill(Signal.tint(for: recommendation.kind).opacity(0.13))
             )
             .accessibilityLabel("结论：\(recommendation.label)")
+    }
+}
+
+/// 智能清理推荐徽标（仅在属于 high 或 medium 推荐级别时展示）
+struct SmartRecommendationBadge: View {
+    let tier: RecommendationTier
+
+    var body: some View {
+        if tier == .high || tier == .medium {
+            HStack(spacing: 3) {
+                Image(systemName: tier == .high ? "sparkles" : "hand.thumbsup.fill")
+                    .font(.system(size: 8))
+                Text(tier == .high ? "首选推荐" : "建议清理")
+                    .font(Typo.micro)
+            }
+            .foregroundColor(tier == .high ? Accent.tint : Ink.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                    .fill(tier == .high ? Accent.tint.opacity(0.12) : Surface.hairline.opacity(0.6))
+            )
+            .accessibilityLabel("智能推荐：\(tier.title)")
+        }
     }
 }
 

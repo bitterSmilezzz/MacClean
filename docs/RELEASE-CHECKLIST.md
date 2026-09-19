@@ -94,7 +94,9 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 - [ ] 新增路径判定时**未使用 `standardizingPath`**——其行为依赖路径是否真实存在
       （`/private/var/db` 存在则被改成 `/var/db`，虚构路径则不变），
       会使同一目录出现两种形态导致判定失效。改用 `FileSystem.normalizePath`
-- [ ] API Key 不落盘、不进日志、不进 git（Keychain 存储）
+- [ ] API Key 不落盘、不进日志、不进 git（只写系统钥匙串；钥匙串不可用时仅存内存）
+      验证：`swift run MacClean --selftest` 中「API Key 存储」套件全过，
+      且 `~/Library/Application Support/MacClean/ai.key` 不存在
 - [ ] 无 `print` 输出密钥/路径敏感信息
 
 ## 4. 分发

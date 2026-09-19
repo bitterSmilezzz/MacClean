@@ -1,0 +1,40 @@
+# .agentignore — 数据采集 Agent 摄入排除清单
+#
+# ⚠️ 重要：这**不是**一个被自动执行的机制。
+#    实测 DSH 源码中 `agentignore` 出现 0 次——DSH 只通过 packages/fs/fs-sandbox
+#    的文件策略（read-only / workspace-write / danger-full-access）限制访问，
+#    并不读取本文件。其他 Agent 是否支持同名约定需各自确认。
+#
+#    因此本文件的定位是**文档与配置依据**，不是护栏。真正生效的两层是：
+#      1. 项目自带的 `.gitignore`（已覆盖 .build/ .swiftpm/ dist/ *.zip *.dmg 等；
+#         本文件相对它只多出 *.pkg、*.tmp、.git/ 三项）
+#      2. 你为 Agent 配置的工作区 / 沙箱策略
+#
+# 用途：本工作区会交给「收集数据用于训练模型 + 共享数据」的 Agent。
+# 下列路径不应被读取、采集、上传或写入任何数据集。
+#
+# 注意：本文件只约束工作区内的路径。工作区外的硬边界（真实密钥、
+# 钥匙串、其他凭据目录）见 docs/SENSITIVE-DATA-AUDIT.md 第 5.1 节。
+
+# ── 构建产物：含本机绝对路径（实测 4591 处 /Users/<用户名>/...）──
+.build/
+.build-wmo/
+.build-agent*/
+.build-main/
+.swiftpm/
+
+# ── 发布产物：二进制内嵌编译期绝对路径（实测 679 处）──
+dist/
+*.zip
+*.dmg
+*.pkg
+
+# ── 本机/编辑器状态 ──
+.DS_Store
+*.log
+*.tmp
+
+# ── 版本库元数据 ──
+# git 操作（status/diff/log/commit）正常可用；但 .git 内部对象
+# 不应作为训练语料摄入——仓库历史在 GitHub 上公开可获取。
+.git/

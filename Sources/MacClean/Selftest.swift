@@ -80,6 +80,10 @@ enum Selftest {
         suiteOrphans()
         // 清理撤销与回滚（v1.35.0）
         suiteUndo()
+        // 智能清理推荐引擎（v1.36.0）
+        suiteSmartRecommendation()
+        // API Key 存储（钥匙串优先 + 内存回退，绝不落盘）
+        suiteAIKeyStorage()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

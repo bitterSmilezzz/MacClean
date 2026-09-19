@@ -137,11 +137,15 @@ open /Applications/MacClean.app
 侧边 AI 助手可针对任意清理项提问（用途/可否删除/是否在用）。首次使用：
 
 1. 点 AI 面板右上 **⚙️**（或空态「去配置 AI 接口」按钮）
-2. 默认已填 opencode go 网关（`https://opencode.ai/zen/go/v1` + `deepseek-v4-flash`），只需粘贴你的 API Key（存系统钥匙串）
+2. 默认已填 opencode go 网关（`https://opencode.ai/zen/go/v1` + `deepseek-v4-flash`），只需粘贴你的 API Key
+   - Key **只写系统钥匙串，不落盘**；钥匙串不可用时仅保留在本次会话内存中，重启后需重新输入
+   - 本 App 为 ad-hoc 签名，**重新构建会更换签名身份**导致钥匙串 ACL 失配，此时需重新粘贴一次 Key
 3. 点「测试连接」验证 → 保存
 4. 扫描后点任意条目旁的 ✨ 按钮提问
 
 也支持任何 OpenAI 兼容端点（DeepSeek 官方：`https://api.deepseek.com` + `deepseek-chat`）。
+
+> ⚠️ **隐私提示**：AI 助手会把清理项的**文件名与完整路径**发送到你配置的端点（默认是第三方网关 `https://opencode.ai/zen/go/v1`）。不希望本机文件路径离开设备时，请勿开启 AI 助手。
 
 ## 测试策略（零打断方案）
 

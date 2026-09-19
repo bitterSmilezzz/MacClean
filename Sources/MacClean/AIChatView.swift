@@ -540,7 +540,10 @@ struct AISettingsView: View {
                     cfg.model = model.trimmingCharacters(in: .whitespaces)
                     cfg.enabled = true
                     cfg.save()
-                    AIConfig.saveAPIKey(apiKey.trimmingCharacters(in: .whitespaces))
+                    let persisted = AIConfig.saveAPIKey(apiKey.trimmingCharacters(in: .whitespaces))
+                    testResult = persisted
+                        ? (true, "配置已保存，API Key 存入系统钥匙串")
+                        : (false, "API Key 未写入钥匙串：本次可用，重启后需重新输入")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(baseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -914,14 +917,16 @@ struct AISettingsView: View {
             do {
                 let reply = try await AIService.testConnection(baseURL: url, apiKey: key, model: mdl)
                 await MainActor.run {
-                    testResult = (true, "连接成功，模型回复：\(reply.prefix(30))")
-                    isTesting = false
                     var cfg = AIConfig.load()
                     cfg.baseURL = url
                     cfg.model = mdl
                     cfg.enabled = true
                     cfg.save()
-                    AIConfig.saveAPIKey(key)
+                    let persisted = AIConfig.saveAPIKey(key)
+                    testResult = persisted
+                        ? (true, "连接成功，模型回复：\(reply.prefix(30))")
+                        : (false, "连接成功，但 API Key 未写入钥匙串：本次可用，重启后需重新输入")
+                    isTesting = false
                 }
             } catch {
                 await MainActor.run {

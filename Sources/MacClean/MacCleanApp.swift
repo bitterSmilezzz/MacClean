@@ -10,6 +10,25 @@ struct MacCleanApp: App {
         if CommandLine.arguments.contains("--selftest") {
             exit(Selftest.run())
         }
+        // 一次性迁移：旧明文 Key 文件 → 系统钥匙串（swift run MacClean --keymigrate）
+        // v1.35 及以前 Key 存 ~/Library/Application Support/MacClean/ai.key（明文）；
+        // 现在只写钥匙串。本模式让老用户无需启动 GUI 即可完成迁移，成功即删除明文文件。
+        if CommandLine.arguments.contains("--keymigrate") {
+            setvbuf(stdout, nil, _IONBF, 0)
+            print("== MacClean API Key 迁移（旧明文文件 → 系统钥匙串）==")
+            guard let key = AIConfig.loadAPIKey(), !key.isEmpty else {
+                print("未发现 Key：钥匙串与旧明文文件均为空，无需迁移")
+                exit(0)
+            }
+            print("apiKey: 已读取（长度 \(key.count)）")
+            if AIConfig.legacyKeyFileStillPresent {
+                print("⚠️ 钥匙串写入失败：\(AIConfig.lastKeychainStatusDescription)")
+                print("   明文文件已保留以免丢失凭据；启动 App 后会自动重试迁移")
+                exit(3)
+            }
+            print("✅ 明文文件已清除，Key 现仅存于系统钥匙串")
+            exit(0)
+        }
         // AI 链路无头诊断：--aitest [baseURL] [model]
         // 用真实配置+钥匙串复现完整请求链路，定位"发消息不回"
         if CommandLine.arguments.contains("--aitest") {

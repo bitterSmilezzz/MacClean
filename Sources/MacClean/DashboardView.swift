@@ -21,6 +21,11 @@ struct DashboardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
                 heroPanel
+
+                if app.smartRecommendedCount > 0 {
+                    smartRecommendationGroup
+                }
+
                 storageGroup
                 categoryGroup
 
@@ -218,6 +223,62 @@ struct DashboardView: View {
             return base
         }
         return "\(app.scannedCount)/\(CleanCategory.allCases.count) 个分类已扫描"
+    }
+
+    // MARK: - 智能推荐精选
+
+    private var smartRecommendationGroup: some View {
+        GroupBox(title: "智能精选推荐") {
+            HStack(spacing: Space.md) {
+                IconSlot(systemName: "sparkles", size: 14, color: Accent.tint, width: 20)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: Space.xs) {
+                        Text("\(app.smartRecommendedCount) 项高价值无损数据建议优先清理")
+                            .font(Typo.rowStrong)
+                            .foregroundStyle(Ink.primary)
+                        Text("预计释放 \(app.smartRecommendedBytes.byteStringCN)")
+                            .font(.mcNumeric(12, weight: .semibold))
+                            .foregroundStyle(Accent.tint)
+                    }
+                    Text("基于文件本质安全性、长期闲置天数和空间释放收益综合加权评估")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.secondary)
+                }
+
+                Spacer(minLength: Space.sm)
+
+                let isAllSmartSelected = !app.smartRecommendedItems.isEmpty && app.smartRecommendedItems.allSatisfy(\.isSelected)
+
+                HStack(spacing: Space.xs) {
+                    Button {
+                        if isAllSmartSelected {
+                            app.clearAllSelections()
+                        } else {
+                            app.selectSmartRecommendations()
+                        }
+                    } label: {
+                        Text(isAllSmartSelected ? "取消推荐勾选" : "勾选推荐项")
+                            .font(Typo.row)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+
+                    Button {
+                        app.selectSmartRecommendations()
+                        showCleanSheet = true
+                    } label: {
+                        Label("清理推荐", systemImage: "trash")
+                            .font(Typo.rowStrong)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(app.isCleaning)
+                }
+            }
+            .padding(.horizontal, Space.sm)
+            .padding(.vertical, 8)
+        }
     }
 
     // MARK: - 存储
