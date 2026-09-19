@@ -283,6 +283,79 @@ final class DuplicateState: ObservableObject {
         }
     }
 
+    /// 勾选较旧版本（每组保留修改时间最新的 1 份）
+    func selectOlderDuplicates() {
+        for gIndex in groups.indices {
+            guard groups[gIndex].items.count > 1 else { continue }
+            let sorted = groups[gIndex].items.sorted { a, b in
+                let dateA = a.modificationDate ?? Date.distantPast
+                let dateB = b.modificationDate ?? Date.distantPast
+                if dateA != dateB {
+                    return dateA > dateB
+                }
+                let aInDl = a.path.contains("/Downloads/")
+                let bInDl = b.path.contains("/Downloads/")
+                if aInDl != bInDl { return !aInDl }
+                return a.path.count < b.path.count
+            }
+            guard let newest = sorted.first else { continue }
+            for iIndex in groups[gIndex].items.indices {
+                let item = groups[gIndex].items[iIndex]
+                groups[gIndex].items[iIndex].isSelected = (item.id != newest.id)
+            }
+        }
+    }
+
+    /// 勾选较新版本（每组保留最早创建/修改的历史版本 1 份）
+    func selectNewerDuplicates() {
+        for gIndex in groups.indices {
+            guard groups[gIndex].items.count > 1 else { continue }
+            let sorted = groups[gIndex].items.sorted { a, b in
+                let dateA = a.modificationDate ?? Date.distantPast
+                let dateB = b.modificationDate ?? Date.distantPast
+                if dateA != dateB {
+                    return dateA < dateB
+                }
+                let aInDl = a.path.contains("/Downloads/")
+                let bInDl = b.path.contains("/Downloads/")
+                if aInDl != bInDl { return !aInDl }
+                return a.path.count < b.path.count
+            }
+            guard let oldest = sorted.first else { continue }
+            for iIndex in groups[gIndex].items.indices {
+                let item = groups[gIndex].items[iIndex]
+                groups[gIndex].items[iIndex].isSelected = (item.id != oldest.id)
+            }
+        }
+    }
+
+    /// 勾选下载目录副本（若组内存在非下载目录的文件，优先保留非下载目录，勾选下载目录中的副本）
+    func selectDownloadsDuplicates() {
+        let dlPrefix = CleanPaths.expand("~/Downloads")
+        for gIndex in groups.indices {
+            guard groups[gIndex].items.count > 1 else { continue }
+            let items = groups[gIndex].items
+            let nonDownloads = items.filter { item in
+                let p = CleanPaths.expand(item.path)
+                return !p.hasPrefix(dlPrefix)
+            }
+            if !nonDownloads.isEmpty {
+                for iIndex in groups[gIndex].items.indices {
+                    let p = CleanPaths.expand(groups[gIndex].items[iIndex].path)
+                    groups[gIndex].items[iIndex].isSelected = p.hasPrefix(dlPrefix)
+                }
+            } else {
+                let sorted = items.sorted {
+                    ($0.modificationDate ?? Date.distantPast) > ($1.modificationDate ?? Date.distantPast)
+                }
+                let keepID = sorted.first?.id
+                for iIndex in groups[gIndex].items.indices {
+                    groups[gIndex].items[iIndex].isSelected = (groups[gIndex].items[iIndex].id != keepID)
+                }
+            }
+        }
+    }
+
     /// 取消全部勾选
     func deselectAll() {
         for gIndex in groups.indices {

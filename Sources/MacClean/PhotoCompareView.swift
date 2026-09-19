@@ -158,6 +158,8 @@ struct PhotoCompareSheet: View {
                     .keyboardShortcut(.rightArrow, modifiers: [])
                 Button("") { keepBoth() }
                     .keyboardShortcut("0", modifiers: [])
+                Button("") { applyRecommendation() }
+                    .keyboardShortcut(.return, modifiers: [])
             }
             .opacity(0)
             .frame(width: 0, height: 0)
@@ -244,8 +246,8 @@ struct PhotoCompareSheet: View {
     private var recommendationStrip: some View {
         GroupBox {
             GroupedRow(isLast: true) {
-                HStack(alignment: .top, spacing: Space.sm) {
-                    IconSlot(systemName: "checkmark.seal", size: 13, weight: .medium,
+                HStack(alignment: .center, spacing: Space.sm) {
+                    IconSlot(systemName: "checkmark.seal.fill", size: 14, weight: .medium,
                              color: Accent.tint, width: 18)
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -260,6 +262,18 @@ struct PhotoCompareSheet: View {
                     }
 
                     Spacer(minLength: Space.sm)
+
+                    if let choice = comparison?.recommendedChoice, (choice == .left || choice == .right) {
+                        Button {
+                            applyRecommendation()
+                        } label: {
+                            Label("一键采纳推荐", systemImage: "wand.and.stars")
+                                .font(Typo.rowStrong)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("photoCompareApplyRecButton")
+                    }
 
                     if let sim = comparison?.similarity {
                         VStack(alignment: .trailing, spacing: 1) {
@@ -488,9 +502,15 @@ struct PhotoCompareSheet: View {
                 .foregroundStyle(isWinner ? Ink.primary : Ink.secondary)
 
             if isWinner, let hint {
-                Text(hint)
+                Text("[\(hint)]")
                     .font(Typo.micro)
                     .foregroundStyle(Accent.tint)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(Accent.softer)
+                    )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -505,11 +525,21 @@ struct PhotoCompareSheet: View {
     // MARK: - 底部控制与快捷键说明
     private var footerView: some View {
         HStack(spacing: Space.sm) {
-            Text("1 / ← 保留左图 · 2 / → 保留右图 · 0 均保留 · Esc 关闭")
+            Text("1/← 保留左 · 2/→ 保留右 · 0 均保留 · ↵ 采纳推荐 · Esc 关闭")
                 .font(Typo.caption)
                 .foregroundStyle(Ink.tertiary)
 
             Spacer()
+
+            if let choice = comparison?.recommendedChoice, (choice == .left || choice == .right) {
+                Button {
+                    applyRecommendation()
+                } label: {
+                    Label("采纳推荐", systemImage: "wand.and.stars")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
 
             Button {
                 keepBoth()
@@ -549,6 +579,19 @@ struct PhotoCompareSheet: View {
             self.comparison = PhotoComparisonResult.compare(photoA: mA, photoB: mB)
         } else {
             self.comparison = nil
+        }
+    }
+
+    /// 一键采纳系统推荐选项
+    func applyRecommendation() {
+        guard let choice = comparison?.recommendedChoice else { return }
+        switch choice {
+        case .left:
+            keepOnlyA()
+        case .right:
+            keepOnlyB()
+        default:
+            break
         }
     }
 

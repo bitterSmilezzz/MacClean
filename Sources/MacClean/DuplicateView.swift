@@ -20,6 +20,7 @@ struct DuplicateView: View {
     @State private var showSettingsPopover = false
     @State private var showDirectoryTreeSheet = false
     @State private var comparingGroup: DuplicateGroup? = nil
+    @State private var comparingFileGroup: DuplicateGroup? = nil
     @State private var quickLookURL: URL?
     @State private var showHud = false
     @State private var hudMessage = ""
@@ -80,6 +81,11 @@ struct DuplicateView: View {
                 comparingGroup = nil
             }
         }
+        .sheet(item: $comparingFileGroup) { grp in
+            FileCompareSheet(group: grp, dupState: dup) {
+                comparingFileGroup = nil
+            }
+        }
     }
 
     // MARK: - 顶栏
@@ -136,13 +142,23 @@ struct DuplicateView: View {
         .help("导出重复/相似大文件排查清单为 CSV 或 Markdown 格式")
     }
 
-    /// 批量选择菜单：智能勾选副本 / 取消勾选。
+    /// 批量选择菜单：智能勾选副本 / 较旧副本 / 较新副本 / 下载目录 / 取消勾选。
     private var batchSelectMenu: some View {
         Menu {
-            Button("智能勾选副本") {
+            Button("智能推荐勾选副本") {
                 dup.autoSelectDuplicates()
             }
-            Button("取消勾选") {
+            Button("勾选较旧版本（保留最新）") {
+                dup.selectOlderDuplicates()
+            }
+            Button("勾选较新版本（保留最早）") {
+                dup.selectNewerDuplicates()
+            }
+            Button("勾选下载目录副本（保留文稿/工作区）") {
+                dup.selectDownloadsDuplicates()
+            }
+            Divider()
+            Button("取消所有勾选") {
                 dup.deselectAll()
             }
         } label: {
@@ -152,7 +168,7 @@ struct DuplicateView: View {
         .menuStyle(.button)
         .buttonStyle(.borderless)
         .fixedSize()
-        .help("智能勾选：每组自动保留最早或主副本，仅勾选其余多余副本")
+        .help("支持智能推荐、按修改时间先后（保留最新/最早）、按下载目录等维度批量勾选")
     }
 
     /// 目录树入口；已应用目录筛选时改用警示色提示。
@@ -319,6 +335,9 @@ struct DuplicateView: View {
                         },
                         onCompare: { grp in
                             comparingGroup = grp
+                        },
+                        onCompareFiles: { grp in
+                            comparingFileGroup = grp
                         }
                     )
                 }
@@ -413,6 +432,7 @@ struct DuplicateGroupCard: View {
     let group: DuplicateGroup
     var onPreview: ((URL) -> Void)? = nil
     var onCompare: ((DuplicateGroup) -> Void)? = nil
+    var onCompareFiles: ((DuplicateGroup) -> Void)? = nil
     private var dup: DuplicateState { app.duplicateState }
 
     private var isImageGroup: Bool {
@@ -427,7 +447,7 @@ struct DuplicateGroupCard: View {
 
             ForEach(Array(group.items.enumerated()), id: \.element.id) { idx, item in
                 GroupedRow(isLast: idx == group.items.count - 1, padding: 5) {
-                    DuplicateFileRow(group: group, item: item, onPreview: onPreview, onCompare: onCompare)
+                    DuplicateFileRow(group: group, item: item, onPreview: onPreview, onCompare: onCompare, onCompareFiles: onCompareFiles)
                 }
             }
         }
@@ -463,6 +483,18 @@ struct DuplicateGroupCard: View {
                 .buttonStyle(.plain)
                 .pressable()
                 .help("双栏对比组内照片视觉细节与 EXIF 快门曝光参数")
+            } else if !isImageGroup && group.items.count >= 2 {
+                Button {
+                    onCompareFiles?(group)
+                } label: {
+                    Label("双栏比对文件", systemImage: "arrow.left.and.right.square")
+                        .font(Typo.caption)
+                        .foregroundStyle(Accent.tint)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .pressable()
+                .help("双栏并排比对两份副本的属性差异、首部内容与快捷决策")
             }
 
             Text(countText)
@@ -555,6 +587,7 @@ struct DuplicateFileRow: View {
     let item: DuplicateFileItem
     var onPreview: ((URL) -> Void)? = nil
     var onCompare: ((DuplicateGroup) -> Void)? = nil
+    var onCompareFiles: ((DuplicateGroup) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: Space.xs) {
@@ -687,6 +720,14 @@ struct DuplicateFileRow: View {
                 onCompare?(group)
             } label: {
                 Label("双栏对比照片与 EXIF 参数", systemImage: "square.split.2x1")
+            }
+
+            Divider()
+        } else if !ImageHash.isImageFile(path: item.path) && group.items.count >= 2 {
+            Button {
+                onCompareFiles?(group)
+            } label: {
+                Label("双栏比对文件差异与首部内容", systemImage: "arrow.left.and.right.square")
             }
 
             Divider()
