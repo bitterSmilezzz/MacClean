@@ -24,6 +24,9 @@ struct MenuBarView: View {
 
             Hairline()
 
+            // 清理成效反馈横幅（v1.45.0）
+            cleanFeedbackBanner
+
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(spacing: Space.sm) {
                     // 1. 磁盘用量
@@ -58,6 +61,64 @@ struct MenuBarView: View {
             // 浮窗关掉 → 回到"标签需要什么就给什么"的最低档位
             sysMonitor.apply(mode: MenuBarLabelView.requiredPollingMode(
                 displayMode: app.diskMonitor.config.menuBarDisplayMode))
+        }
+    }
+
+    // MARK: - 清理成效反馈横幅
+    @ViewBuilder
+    private var cleanFeedbackBanner: some View {
+        if let summary = app.lastCleanSummary, !summary.isEmpty {
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.positive)
+
+                    Text(summary)
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.primary)
+                        .lineLimit(2)
+
+                    Spacer(minLength: Space.xxs)
+
+                    if let snap = app.lastCleanResult, let sessionID = snap.undoSessionID, snap.mode.contains("废纸篓") {
+                        Button {
+                            withAnimation(Motion.micro) {
+                                let res = UndoManagerStore.restore(sessionID: sessionID)
+                                app.refreshDisk()
+                                app.lastCleanSummary = "已撤销：\(res.summary)"
+                                app.lastCleanResult = nil
+                            }
+                        } label: {
+                            Text("撤销")
+                                .font(Typo.section)
+                                .foregroundStyle(Accent.tint)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("撤销本次清理")
+                    }
+
+                    Button {
+                        withAnimation(Motion.micro) {
+                            app.lastCleanSummary = nil
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Ink.tertiary)
+                            .frame(width: 14, height: 14)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("关闭清理反馈")
+                }
+            }
+            .padding(.horizontal, Space.sm)
+            .padding(.vertical, 6)
+            .background(Signal.positive.opacity(0.12))
+            .overlay(alignment: .bottom) { Hairline() }
+            .motionSafeTransition(.move(edge: .top).combined(with: .opacity))
+            .accessibilityIdentifier("menuBarCleanFeedbackBanner")
         }
     }
 
@@ -429,10 +490,16 @@ struct MenuBarLabelView: View {
         }
     }
 
+    private var isLowSpaceWarning: Bool {
+        app.diskMonitor.config.lowSpaceAlertEnabled
+            && app.diskAvailable < Int64(app.diskMonitor.config.lowSpaceThresholdGB) * 1024 * 1024 * 1024
+    }
+
     var body: some View {
         HStack(spacing: 3) {
-            Image(systemName: "internaldrive")
+            Image(systemName: isLowSpaceWarning ? "exclamationmark.circle.fill" : "internaldrive")
                 .font(.system(size: 12, weight: .medium))
+                .foregroundColor(isLowSpaceWarning ? Signal.caution : nil)
 
             switch app.diskMonitor.config.menuBarDisplayMode {
             case .iconOnly:

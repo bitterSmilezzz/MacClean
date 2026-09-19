@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 /// 菜单栏助手常驻图标显示模式
 enum MenuBarDisplayMode: String, Codable, CaseIterable, Identifiable {
@@ -96,6 +97,9 @@ final class DiskMonitor: ObservableObject {
     @Published var currentAvailableGB: Double = 0
 
     private var timer: AnyCancellable?
+    private var sleepObserver: AnyCancellable?
+    private var wakeObserver: AnyCancellable?
+    private(set) var isSleeping: Bool = false
     weak var app: AppState?
 
     // MARK: - 低空间告警的节流状态
@@ -115,6 +119,34 @@ final class DiskMonitor: ObservableObject {
     init() {
         self.config = DiskMonitorConfig.load()
         setupTimer()
+        setupSleepWakeObservers()
+    }
+
+    private func setupSleepWakeObservers() {
+        sleepObserver = NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)
+            .sink { [weak self] _ in
+                self?.handleWillSleep()
+            }
+        wakeObserver = NotificationCenter.default.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in
+                self?.handleDidWake()
+            }
+    }
+
+    /// 系统即将休眠：挂起巡检定时器
+    func handleWillSleep() {
+        guard !isSleeping else { return }
+        isSleeping = true
+        timer?.cancel()
+        timer = nil
+    }
+
+    /// 系统已唤醒：恢复巡检定时器并触发一次磁盘刷新
+    func handleDidWake() {
+        guard isSleeping else { return }
+        isSleeping = false
+        setupTimer()
+        app?.refreshDisk()
     }
 
     /// 重新设定定时器调度
@@ -124,7 +156,7 @@ final class DiskMonitor: ObservableObject {
     }
 
     private func setupTimer() {
-        guard config.autoScanEnabled else { return }
+        guard config.autoScanEnabled, !isSleeping else { return }
         let interval = max(1, Double(config.scanIntervalHours) * 3600)
         timer = Timer.publish(every: interval, on: .main, in: .common)
             .autoconnect()

@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import Combine
 import SwiftUI
+import AppKit
 
 /// 内存压力分级
 enum MemoryPressureLevel: String, Codable {
@@ -92,6 +93,8 @@ struct MemoryStats: Equatable {
 ///  - `.foreground`：菜单栏浮窗打开着，用户在盯着看 → 3 秒（与原行为一致）；
 ///  - `.background`：浮窗关着，但标签上显示磁盘/内存数值 → 15 秒；
 ///  - `.dormant`：浮窗关着且标签只有图标 → 根本不轮询（图标不会变）。
+///
+/// **休眠/唤醒感知（v1.45.0）**：系统合盖或休眠时挂起定时器，唤醒时自动恢复并立即刷新。
 final class SystemMonitor: ObservableObject {
     static let shared = SystemMonitor()
 
@@ -117,11 +120,47 @@ final class SystemMonitor: ObservableObject {
     @Published var memory: MemoryStats = MemoryStats.current()
 
     private var timer: AnyCancellable?
+    private var sleepObserver: AnyCancellable?
+    private var wakeObserver: AnyCancellable?
     private(set) var mode: PollingMode = .dormant
+    private(set) var isSleeping: Bool = false
+    private var preSleepMode: PollingMode?
 
     init() {
         refresh()
         apply(mode: .dormant)
+        setupSleepWakeObservers()
+    }
+
+    private func setupSleepWakeObservers() {
+        sleepObserver = NotificationCenter.default.publisher(for: NSWorkspace.willSleepNotification)
+            .sink { [weak self] _ in
+                self?.handleWillSleep()
+            }
+        wakeObserver = NotificationCenter.default.publisher(for: NSWorkspace.didWakeNotification)
+            .sink { [weak self] _ in
+                self?.handleDidWake()
+            }
+    }
+
+    /// 系统即将休眠：挂起轮询定时器
+    func handleWillSleep() {
+        guard !isSleeping else { return }
+        isSleeping = true
+        preSleepMode = mode
+        timer?.cancel()
+        timer = nil
+    }
+
+    /// 系统已唤醒：恢复休眠前轮询档位并立即刷新
+    func handleDidWake() {
+        guard isSleeping else { return }
+        isSleeping = false
+        refresh()
+        let targetMode = preSleepMode ?? mode
+        preSleepMode = nil
+        mode = .dormant
+        apply(mode: targetMode)
     }
 
     func refresh() {
@@ -130,6 +169,10 @@ final class SystemMonitor: ObservableObject {
 
     /// 切换轮询档位。重复设置同一档位是幂等的，不会重建定时器。
     func apply(mode newMode: PollingMode) {
+        guard !isSleeping else {
+            preSleepMode = newMode
+            return
+        }
         guard newMode != mode || timer == nil else { return }
         mode = newMode
         timer?.cancel()
