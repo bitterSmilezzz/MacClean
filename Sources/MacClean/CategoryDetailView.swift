@@ -10,6 +10,8 @@ struct CategoryDetailView: View {
     @State private var permanentMode = false
     @State private var filterQuery = ""
     @State private var selectedTypeFilter: LargeFileTypeFilter = .all
+    @State private var selectedAgeFilter: LargeFileAgeFilter = .all
+    @State private var selectedSortOrder: LargeFileSortOrder = .recommended
     @State private var activeDirectoryFilter: String? = nil
     @State private var showDirectoryTreeSheet = false
     @State private var showHud = false
@@ -18,7 +20,7 @@ struct CategoryDetailView: View {
 
     private var st: CategoryState { app.state(for: category) }
 
-    /// 过滤后的列表（支持文本子串匹配、大文件类型细分与目录树分支筛选，大小写不敏感）。
+    /// 过滤后的列表（支持文本子串匹配、大文件类型细分、闲置时间跨度、排序机制与目录树分支筛选，大小写不敏感）。
     ///
     /// **一次 body 求值只算一次**：此前它是无缓存的计算属性，一帧里被引用约 12 次
     /// （分组循环里就占 4 次），每次都重跑一遍全量过滤。实测 548 项 + 目录筛选时
@@ -29,6 +31,9 @@ struct CategoryDetailView: View {
         if category == .largeFiles && selectedTypeFilter != .all {
             result = result.filter { selectedTypeFilter.matches(item: $0) }
         }
+        if category == .largeFiles && selectedAgeFilter != .all {
+            result = result.filter { selectedAgeFilter.matches(item: $0) }
+        }
         if category == .largeFiles, let dirFilter = activeDirectoryFilter, !dirFilter.isEmpty {
             let expDir = CleanPaths.expand(dirFilter)
             result = result.filter { item in
@@ -37,11 +42,25 @@ struct CategoryDetailView: View {
             }
         }
         let q = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return result }
-        return result.filter {
-            $0.name.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-                || $0.path.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        if !q.isEmpty {
+            result = result.filter {
+                $0.name.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                    || $0.path.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
         }
+        if category == .largeFiles {
+            switch selectedSortOrder {
+            case .recommended:
+                break
+            case .sizeDescending:
+                result.sort { $0.size > $1.size }
+            case .ageOldest:
+                result.sort { ($0.modificationDate ?? Date.distantPast) < ($1.modificationDate ?? Date.distantPast) }
+            case .ageNewest:
+                result.sort { ($0.modificationDate ?? Date.distantPast) > ($1.modificationDate ?? Date.distantPast) }
+            }
+        }
+        return result
     }
 
     var body: some View {
@@ -400,6 +419,18 @@ struct CategoryDetailView: View {
                 .accessibilityLabel("用 AI 对已扫描结果逐项二次判断：可删 / 谨慎 / 不建议删")
 
                 Menu {
+                    if category == .largeFiles {
+                        Button { exportLargeFilesCSV(items: filtered) } label: {
+                            Label("导出大文件 CSV 表格（含闲置分析）…", systemImage: "tablecells")
+                        }
+                        Button { exportLargeFilesReport(items: filtered) } label: {
+                            Label("导出大文件分布洞察报告 (Markdown)…", systemImage: "doc.text")
+                        }
+                        Button { exportLargeFilesMoveScript(items: filtered) } label: {
+                            Label("生成外接盘迁移脚本 (Shell)…", systemImage: "terminal")
+                        }
+                        Divider()
+                    }
                     Button { exportItemsCSV(items: filtered) } label: {
                         Label("导出为 CSV 表格…", systemImage: "tablecells")
                     }
@@ -477,6 +508,39 @@ struct CategoryDetailView: View {
         let content = HistoryExporter.generateItemsReport(items: items, categoryTitle: category.title)
         let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_\(category.id)_Report", ext: "md")
         HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "md") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
+    }
+
+    private func exportLargeFilesCSV(items: [CleanItem]) {
+        let content = HistoryExporter.generateLargeFilesCSV(items: items)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_LargeFiles", ext: "csv")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "csv") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
+    }
+
+    private func exportLargeFilesReport(items: [CleanItem]) {
+        let content = HistoryExporter.generateLargeFilesReport(items: items)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_LargeFiles_Report", ext: "md")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "md") { ok, name in
+            if ok, let name {
+                hudMessage = "已成功导出 \(name)"
+                showHud = true
+            }
+        }
+    }
+
+    private func exportLargeFilesMoveScript(items: [CleanItem]) {
+        let content = HistoryExporter.generateLargeFilesMoveScript(items: items)
+        let filename = HistoryExporter.makeDefaultFilename(prefix: "MacClean_MoveLargeFiles", ext: "sh")
+        HistoryExporter.exportWithSavePanel(content: content, defaultFilename: filename, fileExtension: "sh") { ok, name in
             if ok, let name {
                 hudMessage = "已成功导出 \(name)"
                 showHud = true
@@ -767,6 +831,18 @@ struct ItemRowView: View {
                 SmartRecommendationBadge(tier: item.recommendationScore.tier)
                 if let aiReview {
                     ReviewBadge(verdict: aiReview.verdict)
+                }
+                if item.category == .largeFiles, let mtime = item.modificationDate {
+                    let days = HistoryExporter.idleDays(for: mtime)
+                    Text(days >= 365 ? "闲置 \(days / 365) 年" : "闲置 \(days) 天")
+                        .font(Typo.micro)
+                        .foregroundStyle(days >= 180 ? Signal.caution : Ink.tertiary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .fill(days >= 180 ? Signal.caution.opacity(0.12) : Surface.sunken)
+                        )
                 }
             }
             if isExpanded { expandedDetail }
@@ -1076,13 +1152,40 @@ enum LargeFileTypeFilter: String, CaseIterable, Identifiable {
 }
 
 extension CategoryDetailView {
-    /// 大文件类型细分过滤栏
+    /// 大文件类型细分与时间/排序过滤栏
     var largeFileTypeFilterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.xxs) {
                 ForEach(LargeFileTypeFilter.allCases, id: \.self) { filter in
                     typeFilterChip(filter)
                 }
+
+                Rectangle()
+                    .fill(Surface.hairline.opacity(0.6))
+                    .frame(width: 0.5, height: 14)
+                    .padding(.horizontal, Space.xxs)
+
+                // 闲置时间过滤 Picker
+                Picker("闲置时间", selection: $selectedAgeFilter) {
+                    ForEach(LargeFileAgeFilter.allCases) { age in
+                        Text(age.rawValue).tag(age)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .frame(width: 105)
+                .accessibilityIdentifier("largeFileAgePicker")
+
+                // 排序 Picker
+                Picker("排序", selection: $selectedSortOrder) {
+                    ForEach(LargeFileSortOrder.allCases) { sort in
+                        Text(sort.rawValue).tag(sort)
+                    }
+                }
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .frame(width: 120)
+                .accessibilityIdentifier("largeFileSortPicker")
 
                 Rectangle()
                     .fill(Surface.hairline.opacity(0.6))
@@ -1156,4 +1259,46 @@ extension CategoryDetailView {
         .buttonStyle(.plain)
         .accessibilityIdentifier("largeFilesDirectoryTreeButton")
     }
+}
+
+// MARK: - 大文件闲置时间过滤
+
+enum LargeFileAgeFilter: String, CaseIterable, Identifiable {
+    case all = "全部时间"
+    case withinMonth = "30天内活跃"
+    case oneToThreeMonths = "1-3个月"
+    case threeToSixMonths = "3-6个月"
+    case sixMonthsToOneYear = "半年至1年"
+    case overOneYear = "1年以上闲置"
+
+    var id: String { rawValue }
+
+    func matches(item: CleanItem) -> Bool {
+        let days = HistoryExporter.idleDays(for: item.modificationDate)
+        switch self {
+        case .all:
+            return true
+        case .withinMonth:
+            return days < 30
+        case .oneToThreeMonths:
+            return days >= 30 && days < 90
+        case .threeToSixMonths:
+            return days >= 90 && days < 180
+        case .sixMonthsToOneYear:
+            return days >= 180 && days < 365
+        case .overOneYear:
+            return days >= 365
+        }
+    }
+}
+
+// MARK: - 大文件排序方式
+
+enum LargeFileSortOrder: String, CaseIterable, Identifiable {
+    case recommended = "推荐排序"
+    case sizeDescending = "体积从大到小"
+    case ageOldest = "修改时间最旧优先"
+    case ageNewest = "修改时间最新优先"
+
+    var id: String { rawValue }
 }

@@ -213,6 +213,145 @@ enum HistoryExporter {
         return report
     }
 
+    // MARK: - 大文件洞察与迁移脚本导出
+
+    /// 计算文件闲置天数（距今）
+    static func idleDays(for date: Date?) -> Int {
+        guard let date = date else { return 0 }
+        let days = Calendar.current.dateComponents([.day], from: date, to: Date()).day ?? 0
+        return max(0, days)
+    }
+
+    /// 生成大文件专用 CSV（含闲置天数与细分类型）
+    static func generateLargeFilesCSV(items: [CleanItem]) -> String {
+        var csv = "\u{FEFF}" // UTF-8 BOM
+        csv += "文件名,大小,字节数,最后修改时间,闲置天数,细分类型,处置结论,结论依据,路径\n"
+        for item in items {
+            let name = escapeCSV(item.name)
+            let sizeStr = escapeCSV(item.size.byteStringCN)
+            let mtime = item.modificationDate
+            let mtimeStr = mtime.map { dateFormatter.string(from: $0) } ?? "未知"
+            let days = idleDays(for: mtime)
+            let typeKind = LargeFileTypeFilter.allCases.first(where: { $0 != .all && $0.matches(item: item) })?.rawValue ?? "其他"
+            let rec = item.recommendation
+            let verdict = escapeCSV(rec.label)
+            let reason = escapeCSV(rec.reason)
+            let path = escapeCSV(item.path)
+            csv += "\(name),\(sizeStr),\(item.size),\(mtimeStr),\(days),\(typeKind),\(verdict),\(reason),\(path)\n"
+        }
+        return csv
+    }
+
+    /// 生成大文件深度分析与分布报告 (Markdown)
+    static func generateLargeFilesReport(items: [CleanItem]) -> String {
+        let nowStr = dateFormatter.string(from: Date())
+        let totalBytes = items.reduce(Int64(0)) { $0 + $1.size }
+        var report = """
+        # MacClean 大文件排查与分布洞察报告
+        导出时间：\(nowStr)
+        大文件总数：\(items.count) 项
+        总占用容量：\(totalBytes.byteStringCN) (\(totalBytes) 字节)
+
+        ## 1. 细分类型容量分布
+        """
+
+        // 按类型聚合
+        for filter in LargeFileTypeFilter.allCases where filter != .all {
+            let matched = items.filter { filter.matches(item: $0) }
+            guard !matched.isEmpty else { continue }
+            let bytes = matched.reduce(Int64(0)) { $0 + $1.size }
+            let percent = totalBytes > 0 ? Double(bytes) / Double(totalBytes) * 100.0 : 0
+            report += "\n- **\(filter.rawValue)**：\(matched.count) 项，共 \(bytes.byteStringCN)（\(String(format: "%.1f", percent))%）"
+        }
+
+        report += "\n\n## 2. 闲置时间跨度分布\n"
+        let idleOverYear = items.filter { idleDays(for: $0.modificationDate) >= 365 }
+        let idleHalfYear = items.filter { let d = idleDays(for: $0.modificationDate); return d >= 180 && d < 365 }
+        let idleThreeMonths = items.filter { let d = idleDays(for: $0.modificationDate); return d >= 90 && d < 180 }
+        let idleRecent = items.filter { idleDays(for: $0.modificationDate) < 90 }
+
+        let yearBytes = idleOverYear.reduce(Int64(0)) { $0 + $1.size }
+        let halfYearBytes = idleHalfYear.reduce(Int64(0)) { $0 + $1.size }
+        let threeMonBytes = idleThreeMonths.reduce(Int64(0)) { $0 + $1.size }
+        let recentBytes = idleRecent.reduce(Int64(0)) { $0 + $1.size }
+
+        report += "- **闲置 1 年以上（极度陈旧，建议清理或归档）**：\(idleOverYear.count) 项，\(yearBytes.byteStringCN)\n"
+        report += "- **闲置 6 个月 - 1 年**：\(idleHalfYear.count) 项，\(halfYearBytes.byteStringCN)\n"
+        report += "- **闲置 3 - 6 个月**：\(idleThreeMonths.count) 项，\(threeMonBytes.byteStringCN)\n"
+        report += "- **最近 3 个月内活跃**：\(idleRecent.count) 项，\(recentBytes.byteStringCN)\n"
+
+        report += "\n## 3. Top 20 最大文件清单\n"
+        report += "| 排名 | 文件名 | 大小 | 闲置天数 | 处置建议 | 路径 |\n"
+        report += "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+
+        let top20 = items.sorted { $0.size > $1.size }.prefix(20)
+        for (idx, item) in top20.enumerated() {
+            let name = item.name.replacingOccurrences(of: "|", with: "\\|")
+            let path = item.path.replacingOccurrences(of: "|", with: "\\|")
+            let days = idleDays(for: item.modificationDate)
+            report += "| #\(idx + 1) | \(name) | \(item.size.byteStringCN) | \(days) 天 | \(item.recommendation.label) | `\(path)` |\n"
+        }
+
+        return report
+    }
+
+    /// 生成安全迁移至外接盘或归档目录的 Bash 脚本
+    static func generateLargeFilesMoveScript(items: [CleanItem], defaultDest: String = "/Volumes/ExternalDisk/MacCleanArchive") -> String {
+        let nowStr = dateFormatter.string(from: Date())
+        let totalBytes = items.reduce(Int64(0)) { $0 + $1.size }
+        var script = """
+        #!/bin/bash
+        # ==============================================================================
+        # MacClean 大文件外接盘迁移与归档脚本
+        # 生成时间: \(nowStr)
+        # 待迁移文件: \(items.count) 个，预计释放本地容量: \(totalBytes.byteStringCN)
+        # ==============================================================================
+        set -euo pipefail
+
+        DEST_DIR="${1:-\(defaultDest)}"
+
+        echo "==> 目标迁移目录: $DEST_DIR"
+        if [ ! -d "$DEST_DIR" ]; then
+            echo "==> 目标目录不存在，正在创建..."
+            mkdir -p "$DEST_DIR"
+        fi
+
+        echo "==> 准备开始迁移 \(items.count) 个大文件..."
+        SUCCESS_COUNT=0
+        FAILED_COUNT=0
+
+        """
+
+        for item in items {
+            let p = item.path.replacingOccurrences(of: "\"", with: "\\\"")
+            let size = item.size.byteStringCN
+            script += """
+            SRC="\(p)"
+            if [ -e "$SRC" ]; then
+                echo "--> 正在迁移 (\(size)): $(basename "$SRC")..."
+                if rsync -avP --remove-source-files "$SRC" "$DEST_DIR/"; then
+                    SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+                else
+                    echo "❌ 迁移失败: $SRC" >&2
+                    FAILED_COUNT=$((FAILED_COUNT + 1))
+                fi
+            else
+                echo "⚠️ 跳过不存在的文件: $SRC"
+            fi
+
+            """
+        }
+
+        script += """
+        echo "=============================================================================="
+        echo "==> 大文件迁移完成！成功: $SUCCESS_COUNT 项，失败: $FAILED_COUNT 项"
+        echo "==> 释放本地空间: \(totalBytes.byteStringCN)"
+        echo "=============================================================================="
+        """
+
+        return script
+    }
+
     private static func escapeCSV(_ str: String) -> String {
         if str.contains(",") || str.contains("\"") || str.contains("\n") {
             let escaped = str.replacingOccurrences(of: "\"", with: "\"\"")

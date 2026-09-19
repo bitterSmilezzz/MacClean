@@ -92,6 +92,8 @@ enum Selftest {
         suiteSpaceVisualizerDeep()
         // 重复文件与相似图片清理体验升级 (v1.41.0)
         suiteDuplicateDeep()
+        // 大文件排查与分类洞察增强 (v1.42.0)
+        suiteLargeFilesDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

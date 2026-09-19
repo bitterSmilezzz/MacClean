@@ -242,6 +242,11 @@ struct CleanItem: Identifiable, Equatable {
     var lastUsed: Date? { use.lastUsed }
     /// 使用频率（转发，兼容既有调用）
     var usage: UsageLevel { use.level }
+    /// 修改或最近使用时间（优先取 lastUsed，若无则从文件系统按需查询）
+    var modificationDate: Date? {
+        if let lu = use.lastUsed { return lu }
+        return FileSystem.modificationDate(path)
+    }
 
     /// **唯一**的结论推导入口。
     ///
@@ -345,15 +350,19 @@ struct CleanItem: Identifiable, Equatable {
 extension CleanItem {
     init(name: String, path: String, paths: [String]? = nil, size: Int64, rule: String,
          category: CleanCategory, note: String = "", permanentDelete: Bool = false,
-         use: UseState = .unknown) {
+         modificationDate: Date? = nil, use: UseState = .unknown) {
         let r = CleanupRules.rule(rule)
+        var actualUse = use
+        if let mtime = modificationDate, actualUse.lastUsed == nil {
+            actualUse.lastUsed = mtime
+        }
         // 规则编号写错时退到 .userData（→ 需确认）而不是 .losslessCache：
         // 失败要往"更保守"的方向倒，绝不能因为一个笔误把东西标成可安全删除。
         self.init(name: name, path: path, paths: paths, size: size,
                   nature: r?.nature ?? .userData,
                   consequence: r?.consequence ?? "",
                   category: category, note: note, permanentDelete: permanentDelete,
-                  use: use)
+                  use: actualUse)
     }
 }
 
