@@ -20,12 +20,12 @@ extension Selftest {
         //   ③ README 写「23 条」而文档实际 32 条、代码 35 条。
         // 下列自检把这类不一致变成可自动发现的失败。
 
-        check("清理规则：登记条数与分类分布一致（6 大类 45 条）") {
-            // 41 → 45：v1.37.0 新增开发者深层残留 D16(CocoaPods)、D17(Docker)、D18(Cargo Git)、D19(Gradle Daemon/Wrapper)
-            guard CleanupRules.count == 45 else { return false }
+        check("清理规则：登记条数与分类分布一致（6 大类 49 条）") {
+            // 45 → 49：v1.43.0 新增开发工具与容器深度清理 D20(JetBrains)、D21(DeviceSupport)、D22(Previews)、D23(Docker VM)
+            guard CleanupRules.count == 49 else { return false }
             // 顺序对应 CleanCategory.allCases：C / L / D / A / T / B
             let byCategory = CleanCategory.allCases.map { CleanupRules.rules(in: $0).count }
-            return byCategory == [7, 6, 19, 3, 5, 5]
+            return byCategory == [7, 6, 23, 3, 5, 5]
         }
 
         // MARK: - 结论一致性不变量

@@ -94,6 +94,8 @@ enum Selftest {
         suiteDuplicateDeep()
         // 大文件排查与分类洞察增强 (v1.42.0)
         suiteLargeFilesDeep()
+        // 专业开发工具与容器深度清理 (v1.43.0)
+        suiteDevToolsDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

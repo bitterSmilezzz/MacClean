@@ -293,6 +293,9 @@ struct CleanItem: Identifiable, Equatable {
 
         case .inferredUnused:
             // "看起来没用了"是推断而非事实，所以永远不自动给安全结论
+            if running {
+                return Recommendation(kind: .inUse, reason: "\(owner) 正在运行。\(consequence)")
+            }
             return Recommendation(kind: .review, reason: consequence)
 
         case .losslessCache:

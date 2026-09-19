@@ -16,7 +16,8 @@ final class Scanner {
         "A1", "A2", "A3", "B1", "B2", "B3", "B4", "B5",
         "C1", "C2", "C3", "C4", "C5", "C6", "C7", "D1",
         "D10", "D11", "D12", "D13", "D14", "D15", "D16",
-        "D17", "D18", "D19", "D2", "D3",
+        "D17", "D18", "D19", "D2", "D20", "D21", "D22",
+        "D23", "D3",
         "D4", "D5", "D6", "D7", "D8", "D9", "L1", "L2",
         "L3", "L4", "L5", "L6", "T1", "T2", "T3", "T4",
         "T5",
@@ -691,6 +692,10 @@ final class Scanner {
         items += scanD17DockerCache()
         items += scanD18CargoGit()
         items += scanD19GradleDaemonAndWrapper()
+        items += scanD20JetBrains()
+        items += scanD21XcodeDeviceSupport(xcodeRunning: xcodeRunning)
+        items += scanD22XcodePreviews(xcodeRunning: xcodeRunning)
+        items += scanD23DockerVm()
 
         return items.sorted { $0.size > $1.size }
     }
@@ -1037,6 +1042,156 @@ final class Scanner {
                         name: "Gradle Wrapper (\((dist as NSString).lastPathComponent))",
                         path: dist, size: sz, rule: "D19", category: .devResidue,
                         note: "历史下载的 Gradle 发行包"))
+                }
+            }
+        }
+        return items
+    }
+
+    // D20: JetBrains 历史版本日志与索引缓存
+    private static func scanD20JetBrains() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let roots = [
+            CleanPaths.expand(CleanPaths.jetbrainsCaches),
+            CleanPaths.expand(CleanPaths.jetbrainsLogs)
+        ]
+        var seen = Set<String>()
+        for root in roots {
+            guard FileSystem.isDir(root) else { continue }
+            for dir in FileSystem.subdirs(of: root) {
+                guard !seen.contains(dir), FileSystem.isSafeToClean(dir) else { continue }
+                seen.insert(dir)
+                let name = (dir as NSString).lastPathComponent
+                let check = CleanPaths.isJetBrainsAppRunning(directoryName: name)
+                let size = FileSystem.size(at: dir)
+                if size > 0 {
+                    let mtime = FileSystem.modificationDate(dir)
+                    let usage = FileSystem.usage(of: dir)
+                    items.append(CleanItem(
+                        name: "JetBrains \(name)",
+                        path: dir,
+                        size: size,
+                        rule: "D20",
+                        category: .devResidue,
+                        note: "JetBrains 历史版本索引与运行日志",
+                        modificationDate: mtime,
+                        use: UseState(
+                            ownerIsRunning: check.isRunning,
+                            ownerName: check.appName,
+                            lastUsed: mtime ?? usage.lastUsed,
+                            level: usage.level,
+                            observedAt: Date()
+                        )
+                    ))
+                }
+            }
+        }
+        return items
+    }
+
+    // D21: Xcode iOS/watchOS/tvOS DeviceSupport 旧设备调试符号（>60 天未修改）
+    private static func scanD21XcodeDeviceSupport(xcodeRunning: Bool) -> [CleanItem] {
+        var items: [CleanItem] = []
+        let cutoff = Date().addingTimeInterval(-60 * 86400)
+        for rootPattern in CleanPaths.xcodeDeviceSupportRoots {
+            let root = CleanPaths.expand(rootPattern)
+            guard FileSystem.isDir(root) else { continue }
+            for dir in FileSystem.subdirs(of: root) {
+                guard FileSystem.isSafeToClean(dir) else { continue }
+                guard let mdate = FileSystem.modificationDate(dir), mdate < cutoff else { continue }
+                let size = FileSystem.size(at: dir)
+                if size > 0 {
+                    let name = (dir as NSString).lastPathComponent
+                    let usage = FileSystem.usage(of: dir)
+                    items.append(CleanItem(
+                        name: "DeviceSupport \(name)",
+                        path: dir,
+                        size: size,
+                        rule: "D21",
+                        category: .devResidue,
+                        note: "过时设备调试符号 (>60 天)",
+                        modificationDate: mdate,
+                        use: UseState(
+                            ownerIsRunning: xcodeRunning,
+                            ownerName: "Xcode",
+                            lastUsed: mdate,
+                            level: usage.level,
+                            observedAt: Date()
+                        )
+                    ))
+                }
+            }
+        }
+        return items
+    }
+
+    // D22: Xcode SwiftUI Previews 画布与模拟器预览缓存
+    private static func scanD22XcodePreviews(xcodeRunning: Bool) -> [CleanItem] {
+        var items: [CleanItem] = []
+        let previewsRoot = CleanPaths.expand(CleanPaths.xcodePreviews)
+        if FileSystem.isDir(previewsRoot), FileSystem.isSafeToClean(previewsRoot) {
+            for dir in FileSystem.subdirs(of: previewsRoot) {
+                guard FileSystem.isSafeToClean(dir) else { continue }
+                let size = FileSystem.size(at: dir)
+                if size > 0 {
+                    let name = (dir as NSString).lastPathComponent
+                    let mdate = FileSystem.modificationDate(dir)
+                    let usage = FileSystem.usage(of: dir)
+                    items.append(CleanItem(
+                        name: "SwiftUI Preview (\(name))",
+                        path: dir,
+                        size: size,
+                        rule: "D22",
+                        category: .devResidue,
+                        note: "Xcode SwiftUI 预览与临时模拟器缓存",
+                        modificationDate: mdate,
+                        use: UseState(
+                            ownerIsRunning: xcodeRunning,
+                            ownerName: "Xcode",
+                            lastUsed: mdate ?? usage.lastUsed,
+                            level: usage.level,
+                            observedAt: Date()
+                        )
+                    ))
+                }
+            }
+        }
+        return items
+    }
+
+    // D23: Docker 桌面虚拟机磁盘镜像与未用卷
+    private static func scanD23DockerVm() -> [CleanItem] {
+        var items: [CleanItem] = []
+        let dockerRunning = CleanPaths.runningBundleIDs.contains("com.docker.docker")
+            || CleanPaths.runningDisplayNames.contains("docker")
+        let vmDir = CleanPaths.expand(CleanPaths.dockerVmData)
+        if FileSystem.isDir(vmDir) {
+            let candidates = [
+                (vmDir as NSString).appendingPathComponent("Docker.raw"),
+                (vmDir as NSString).appendingPathComponent("Docker.qcow2")
+            ]
+            for file in candidates {
+                guard FileManager.default.fileExists(atPath: file), FileSystem.isSafeToClean(file) else { continue }
+                let size = FileSystem.size(at: file)
+                if size > 0 {
+                    let mdate = FileSystem.modificationDate(file)
+                    let usage = FileSystem.usage(of: file)
+                    items.append(CleanItem(
+                        name: (file as NSString).lastPathComponent,
+                        path: file,
+                        size: size,
+                        rule: "D23",
+                        category: .devResidue,
+                        note: "Docker Desktop 虚拟磁盘文件（包含本地镜像与容器）",
+                        modificationDate: mdate,
+                        use: UseState(
+                            ownerIsRunning: dockerRunning,
+                            ownerName: "Docker",
+                            lastUsed: mdate ?? usage.lastUsed,
+                            level: usage.level,
+                            observedAt: Date()
+                        )
+                    ))
                 }
             }
         }

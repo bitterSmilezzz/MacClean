@@ -90,6 +90,16 @@ enum CleanPaths {
     static let cargoGitDb = "~/.cargo/git/db"
     static let gradleDaemon = "~/.gradle/daemon"
     static let gradleWrapperDists = "~/.gradle/wrapper/dists"
+    // v1.43.0 新增：D20–D23 专业开发工具与容器深度清理
+    static let jetbrainsLogs = "~/Library/Logs/JetBrains"
+    static let jetbrainsCaches = "~/Library/Caches/JetBrains"
+    static let xcodeDeviceSupportRoots = [
+        "~/Library/Developer/Xcode/iOS DeviceSupport",
+        "~/Library/Developer/Xcode/watchOS DeviceSupport",
+        "~/Library/Developer/Xcode/tvOS DeviceSupport",
+    ]
+    static let xcodePreviews = "~/Library/Developer/Xcode/UserData/Previews"
+    static let dockerVmData = "~/Library/Containers/com.docker.docker/Data/vms/0/data"
     static let codeRoots = ["~/workspace", "~/projects", "~/dev", "~/code"]
 
     // MARK: 4. App 残留 A1–A4
@@ -258,6 +268,38 @@ enum CleanPaths {
     /// 便捷版：只关心"在不在跑"。
     static func ownerIsRunning(_ path: String) -> Bool {
         ownerApp(of: path)?.isRunning ?? false
+    }
+
+    /// 判断指定 JetBrains 目录名（如 IntelliJIdea2023.2 / PyCharm2024.1 / GoLand2023.1）对应的 IDE 是否正在运行
+    static func isJetBrainsAppRunning(directoryName: String) -> (isRunning: Bool, appName: String) {
+        let lower = directoryName.lowercased()
+        let productMap: [(keyword: String, bundleID: String, alias: String, displayName: String)] = [
+            ("intellij", "com.jetbrains.intellij", "idea", "IntelliJ IDEA"),
+            ("idea", "com.jetbrains.intellij", "idea", "IntelliJ IDEA"),
+            ("pycharm", "com.jetbrains.pycharm", "pycharm", "PyCharm"),
+            ("goland", "com.jetbrains.goland", "goland", "GoLand"),
+            ("webstorm", "com.jetbrains.webstorm", "webstorm", "WebStorm"),
+            ("clion", "com.jetbrains.clion", "clion", "CLion"),
+            ("rider", "com.jetbrains.rider", "rider", "Rider"),
+            ("datagrip", "com.jetbrains.datagrip", "datagrip", "DataGrip"),
+            ("rubymine", "com.jetbrains.rubymine", "rubymine", "RubyMine"),
+            ("phpstorm", "com.jetbrains.phpstorm", "phpstorm", "PhpStorm"),
+            ("rustrover", "com.jetbrains.rustrover", "rustrover", "RustRover"),
+            ("fleet", "com.jetbrains.fleet", "fleet", "Fleet"),
+            ("androidstudio", "com.google.android.studio", "studio", "Android Studio"),
+            ("studio", "com.google.android.studio", "studio", "Android Studio"),
+        ]
+        for item in productMap {
+            if lower.contains(item.keyword) {
+                let running = runningBundleIDs.contains(item.bundleID)
+                    || runningAppAliases.contains(item.alias)
+                    || runningDisplayNames.contains(normalize(item.displayName))
+                return (running, item.displayName)
+            }
+        }
+        let anyJetBrainsRunning = runningBundleIDs.contains(where: { $0.lowercased().contains("jetbrains") })
+            || runningDisplayNames.contains(where: { $0.lowercased().contains("jetbrains") || $0.lowercased().contains("idea") })
+        return (anyJetBrainsRunning, "JetBrains IDE")
     }
 
     // MARK: - v1.1 新增规则的路径（文档 §1.7 / §2.6 / §3.13–3.15 / §6.4）

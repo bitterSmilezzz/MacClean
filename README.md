@@ -19,7 +19,7 @@
 - **AI 再筛查与侧边问答**：
   - **逐项 AI 筛查**：扫描后一键启动 AI 二次审核，流式批量分析可清理性（可删/谨慎/不建议删）并给出明确理由；
   - **单项 ✨ 深度问答**：针对任一清理项提问——AI 判断用途、分析是否可删、检测当前占用进程（`lsof`），支持连续追问（OpenAI 兼容接口，配置本地安全存储）。
-- **6 大清理分类**（对应 [CLEANUP-RULES.md](docs/CLEANUP-RULES.md) 的 42 条固化规则，规则源头见 [CleanupRules.swift](Sources/MacClean/Rules/CleanupRules.swift)）：
+- **6 大清理分类**（对应 [CLEANUP-RULES.md](docs/CLEANUP-RULES.md) 的 49 条固化规则，规则源头见 [CleanupRules.swift](Sources/MacClean/Rules/CleanupRules.swift)）：
   用户缓存 · 日志与临时文件 · 开发残留 · App 残留 · 大文件与垃圾箱 · 浏览器与系统数据
   - **全分类原生 Quick Look 快速预览**：详情页中每个文件清理项与大文件均提供直观的「👁️ 快速查看」图标与右键菜单项，直接调用 macOS 原生 Quick Look 预览图片、音视频、文档与压缩归档，确认内容后再决定清理；
   - **大文件细分类型深度解析与快捷过滤**：支持按「安装包 (dmg/pkg)」、「压缩包 (zip/tar/7z)」、「音视频 (mov/mp4/mp3)」、「RAW相机与设计原稿 (cr2/cr3/nef/arw/dng/psd/blend/c4d)」、「虚拟机与镜像 (iso/img/vdi/vmdk/parallels)」、「项目归档与开发包 (xcarchive/apk/node_modules)」、「模拟器与备份」和「其他」共 8 大细分类型精准识别，统计与批量全选自动对齐当前可见类型；

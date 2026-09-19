@@ -92,12 +92,22 @@
 | **D17** | **Docker 构建缓存与日志** | `~/.docker/buildx/cache` 与容器守护运行日志 | 可重建缓存 | trash |
 | **D18** | **Cargo Git 源码检出库** | `~/.cargo/git/checkouts` 与 `~/.cargo/git/db` | 可重建缓存 | trash |
 | **D19** | **Gradle 守护日志与旧 Wrapper** | `~/.gradle/daemon/*/*.log` 与 `~/.gradle/wrapper/dists` | 历史产物 | trash |
+| **D20** | **JetBrains 历史版本日志与索引缓存** | `~/Library/Caches/JetBrains/*` 与 `~/Library/Logs/JetBrains/*` | 对应 IDE 未运行 | 可重建缓存 | trash |
+| **D21** | **Xcode DeviceSupport 过时设备调试符号** | `~/Library/Developer/Xcode/* DeviceSupport/*` | 超过 60 天未修改且 Xcode 未运行 | 历史产物 | trash |
+| **D22** | **Xcode SwiftUI Previews 画布与模拟器缓存** | `~/Library/Developer/Xcode/UserData/Previews/*` | Xcode 未运行 | 需重新生成 | trash |
+| **D23** | **Docker 桌面虚拟机磁盘镜像与未用卷** | `~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw` | Docker 虚拟磁盘（包含本地容器与镜像） | 推断未用 | trash（需确认） |
 
 > **D13/D14 实测依据（v1.1）**：Clang 模块缓存 1.2 GB、Node 编译缓存 103 MB，均为自动重建的编译中间产物。
 >
 > **D15 实测依据（v1.1）**：`@deepseek-ai/dsh.old-0.1.2-*` ×3 与 `dsh.global-retired-20260906` 共 1.06 GB
 > 废弃副本。**风险级为 review 而非 safe** —— 该命名可能出自人工重命名，需用户确认。
 > 放行约束见 §8.2。
+>
+> **D20–D23 实测依据（v1.43.0）**：
+> - **JetBrains (D20)**：IntelliJ / PyCharm / GoLand / WebStorm 历史版本往往残留多个年度的索引缓存（单个 3–8 GB），运行中对应的 IDE 会动态标记为「使用中」；
+> - **Xcode DeviceSupport (D21)**：真机调试符号包单版本 2–5 GB，超过 60 天未更新的旧版本支持包安全回收；
+> - **SwiftUI Previews (D22)**：动态预览缓存与临时模拟器容器，Xcode 退出后可无损重建；
+> - **Docker.raw (D23)**：Docker Desktop 虚拟磁盘镜像为增长型大文件，删除将重置环境，严格保持「需确认（review）」不变量。
 >
 > **⚠️ 构建产物删除前置条件**：删 `.build` / `android/app/build` 等目录前，必须确认
 > ①无编译进程在跑（`.lock` 文件的 mtime）；②无进程持有句柄（`lsof +D <dir>`）；
