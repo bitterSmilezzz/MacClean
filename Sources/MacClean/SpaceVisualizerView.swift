@@ -71,6 +71,8 @@ struct SpaceVisualizerView: View {
     @State var hoveredNode: SpaceNode? = nil
     @State var isExpandingDir: Bool = false
     @State var quickLookURL: URL? = nil
+    @State private var showToast: Bool = false
+    @State private var toastMessage: String = ""
 
     init(app: AppState? = nil) {
         let initialRoot: SpaceNode
@@ -94,6 +96,11 @@ struct SpaceVisualizerView: View {
             // MARK: - 面包屑路径条
             breadcrumbBar
 
+            if colorMode == .age {
+                Hairline()
+                ageLegendBar
+            }
+
             Hairline()
 
             // MARK: - 主图表画布区 (Treemap / Sunburst)
@@ -114,6 +121,7 @@ struct SpaceVisualizerView: View {
         }
         .background(Surface.window)
         .quickLookPreview($quickLookURL)
+        .toast(isPresented: $showToast, text: toastMessage)
         .onAppear {
             reloadHierarchy()
         }
@@ -146,10 +154,11 @@ struct SpaceVisualizerView: View {
             Picker("色彩编码", selection: $colorMode) {
                 Text("按类型").tag(ColorCodingMode.fileType)
                 Text("按分类").tag(ColorCodingMode.category)
+                Text("按闲置").tag(ColorCodingMode.age)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 140)
+            .frame(width: 210)
             .controlSize(.small)
             .accessibilityIdentifier("visualizerColorModePicker")
 
@@ -183,62 +192,95 @@ struct SpaceVisualizerView: View {
     // MARK: - 面包屑导航栏
     private var breadcrumbBar: some View {
         HStack(spacing: Space.xs) {
-            Button {
-                popToRoot()
-            } label: {
-                HStack(spacing: Space.xxs) {
-                    IconSlot(
-                        systemName: rootNode.icon ?? "internaldrive",
-                        size: 11,
-                        color: breadcrumbStack.isEmpty ? Ink.primary : Ink.secondary,
-                        width: 14
-                    )
-                    Text(rootNode.name)
-                        .font(breadcrumbStack.isEmpty ? Typo.rowStrong : Typo.row)
-                        .foregroundStyle(breadcrumbStack.isEmpty ? Ink.primary : Ink.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .pressable()
-
-            ForEach(breadcrumbStack.indices, id: \.self) { idx in
-                Image(systemName: "chevron.right")
-                    .font(Typo.micro)
-                    .foregroundStyle(Ink.quaternary)
-
-                Button {
-                    popTo(index: idx)
-                } label: {
-                    Text(breadcrumbStack[idx].name)
-                        .font(Typo.row)
-                        .foregroundStyle(Ink.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xs) {
+                    Button {
+                        popToRoot()
+                    } label: {
+                        HStack(spacing: Space.xxs) {
+                            IconSlot(
+                                systemName: rootNode.icon ?? "internaldrive",
+                                size: 11,
+                                color: breadcrumbStack.isEmpty ? Ink.primary : Ink.secondary,
+                                width: 14
+                            )
+                            Text(rootNode.name)
+                                .font(breadcrumbStack.isEmpty ? Typo.rowStrong : Typo.row)
+                                .foregroundStyle(breadcrumbStack.isEmpty ? Ink.primary : Ink.secondary)
+                        }
                         .contentShape(Rectangle())
+                    }
+                    .pressable()
+
+                    ForEach(breadcrumbStack.indices, id: \.self) { idx in
+                        Image(systemName: "chevron.right")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.quaternary)
+
+                        Button {
+                            popTo(index: idx)
+                        } label: {
+                            Text(breadcrumbStack[idx].name)
+                                .font(Typo.row)
+                                .foregroundStyle(Ink.secondary)
+                                .contentShape(Rectangle())
+                        }
+                        .pressable()
+                    }
+
+                    if !breadcrumbStack.isEmpty {
+                        Image(systemName: "chevron.right")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.quaternary)
+
+                        Text(currentNode.name)
+                            .font(Typo.rowStrong)
+                            .foregroundStyle(Ink.primary)
+                    }
+
+                    if isExpandingDir {
+                        HStack(spacing: Space.xxs) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("正在测算目录…")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.tertiary)
+                        }
+                        .padding(.leading, Space.xs)
+                    }
                 }
-                .pressable()
-            }
-
-            if !breadcrumbStack.isEmpty {
-                Image(systemName: "chevron.right")
-                    .font(Typo.micro)
-                    .foregroundStyle(Ink.quaternary)
-
-                Text(currentNode.name)
-                    .font(Typo.rowStrong)
-                    .foregroundStyle(Ink.primary)
-            }
-
-            if isExpandingDir {
-                HStack(spacing: Space.xxs) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("正在测算目录…")
-                        .font(Typo.caption)
-                        .foregroundStyle(Ink.tertiary)
-                }
-                .padding(.leading, Space.xs)
             }
 
             Spacer(minLength: Space.sm)
+
+            // 当前目录快捷动作：拷贝绝对路径与访达定位
+            if let currentPath = currentNode.path, !currentPath.isEmpty {
+                let exp = CleanPaths.expand(currentPath)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(exp, forType: .string)
+                    toastMessage = "已拷贝当前路径：\(exp)"
+                    showToast = true
+                } label: {
+                    Label("拷贝路径", systemImage: "doc.on.doc")
+                        .font(Typo.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("拷贝当前目录绝对路径")
+                .accessibilityIdentifier("visualizerBreadcrumbCopyButton")
+
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: exp)])
+                } label: {
+                    Label("访达定位", systemImage: "folder")
+                        .font(Typo.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("在访达中显示此目录")
+                .accessibilityIdentifier("visualizerBreadcrumbFinderButton")
+            }
 
             if !breadcrumbStack.isEmpty {
                 Button {
@@ -249,6 +291,7 @@ struct SpaceVisualizerView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
+                .accessibilityIdentifier("visualizerPopOneLevelButton")
             }
 
             HStack(spacing: Space.xxs) {
@@ -263,6 +306,38 @@ struct SpaceVisualizerView: View {
         }
         .padding(.horizontal, Space.gutter)
         .padding(.vertical, 7)
+    }
+
+    // MARK: - 闲置冷热动态色谱图例
+    private var ageLegendBar: some View {
+        HStack(spacing: Space.md) {
+            HStack(spacing: Space.xxs) {
+                IconSlot(systemName: "thermometer.medium", size: 10, color: Accent.tint, width: 12)
+                Text("闲置冷热度色谱：")
+                    .font(Typo.micro)
+                    .foregroundStyle(Ink.secondary)
+            }
+
+            ForEach(FileAgeLevel.allCases) { level in
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(level.color)
+                        .frame(width: 6, height: 6)
+                    Text(level.rawValue)
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.secondary)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            Text("💡 暖色/紫色代表长期沉睡死重大文件，可优先排查清理")
+                .font(Typo.micro)
+                .foregroundStyle(Ink.tertiary)
+        }
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, 4)
+        .background(Surface.group.opacity(0.6))
     }
 
     // MARK: - Treemap 矩形树图部分
@@ -469,11 +544,41 @@ struct SpaceVisualizerView: View {
                     .truncationMode(.middle)
             }
 
+            if let days = target.idleDays, let level = target.ageLevel {
+                Rectangle()
+                    .fill(Surface.hairline.opacity(0.6))
+                    .frame(width: 0.5, height: 14)
+
+                HStack(spacing: 3) {
+                    Image(systemName: level.icon)
+                        .font(Typo.micro)
+                        .foregroundStyle(level.color)
+                    Text(days == 0 ? "今天活跃" : "闲置 \(days) 天 (\(level.rawValue))")
+                        .font(Typo.caption)
+                        .foregroundStyle(level.color)
+                }
+            }
+
             Spacer(minLength: Space.sm)
 
-            // 动作：快捷预览与在访达中显示
+            // 动作：快捷预览、在访达中显示与拷贝路径
             if let p = target.path, !p.isEmpty {
                 let expanded = CleanPaths.expand(p)
+
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(expanded, forType: .string)
+                    toastMessage = "已拷贝路径：\(expanded)"
+                    showToast = true
+                } label: {
+                    Label("拷贝路径", systemImage: "doc.on.doc")
+                        .font(Typo.caption)
+                        .contentShape(Rectangle())
+                }
+                .pressable()
+                .foregroundStyle(Accent.tint)
+                .accessibilityIdentifier("visualizerInspectorCopyButton")
+
                 Button {
                     quickLookURL = URL(fileURLWithPath: expanded)
                 } label: {

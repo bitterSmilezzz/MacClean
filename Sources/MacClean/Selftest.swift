@@ -110,6 +110,8 @@ enum Selftest {
         suiteSystemDeepStorage()
         // 重复大文件并发流水线哈希与轻量指纹缓存 (v1.49.0)
         suiteFingerprintPipelineDeep()
+        // 空间透视层级面包屑与闲置冷热动态色谱 (v1.50.0)
+        suiteSpaceVisualizerDeep2()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

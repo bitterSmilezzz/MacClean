@@ -95,10 +95,51 @@ enum FileTypeKind: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+// MARK: - 文件闲置冷热度等级与色谱
+
+enum FileAgeLevel: String, CaseIterable, Identifiable, Codable {
+    case active = "30天内活跃"        // < 30 天
+    case warm = "1~3个月"             // 30 ~ 89 天
+    case cool = "3~6个月"             // 90 ~ 179 天
+    case cold = "半年至1年"           // 180 ~ 364 天
+    case frozen = "1年以上沉睡"       // >= 365 天
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .active: return "flame.fill"
+        case .warm: return "bolt.fill"
+        case .cool: return "leaf.fill"
+        case .cold: return "cube.fill"
+        case .frozen: return "snowflake"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .active: return Color(hex: 0x10B981)   // 翠绿 (活跃、鲜活)
+        case .warm: return Color(hex: 0x06B6D4)     // 青蓝 (常规)
+        case .cool: return Color(hex: 0xF59E0B)     // 琥珀黄 (温冷)
+        case .cold: return Color(hex: 0xF97316)     // 橙红 (陈旧)
+        case .frozen: return Color(hex: 0x8B5CF6)   // 紫罗兰 (极度冰冻沉睡)
+        }
+    }
+
+    static func infer(days: Int) -> FileAgeLevel {
+        if days < 30 { return .active }
+        if days < 90 { return .warm }
+        if days < 180 { return .cool }
+        if days < 365 { return .cold }
+        return .frozen
+    }
+}
+
 /// 空间透视色彩编码模式
 enum ColorCodingMode: String, CaseIterable, Identifiable {
     case fileType = "按文件类型"
     case category = "按清理分类"
+    case age = "按闲置时长"
 
     var id: String { rawValue }
 }
@@ -115,6 +156,7 @@ struct SpaceNode: Identifiable, Equatable {
     let icon: String?
     let category: CleanCategory?
     let fileTypeKind: FileTypeKind?
+    let modificationDate: Date?
     var children: [SpaceNode]
 
     init(
@@ -126,6 +168,7 @@ struct SpaceNode: Identifiable, Equatable {
         icon: String? = nil,
         category: CleanCategory? = nil,
         fileTypeKind: FileTypeKind? = nil,
+        modificationDate: Date? = nil,
         children: [SpaceNode] = []
     ) {
         self.id = id
@@ -136,6 +179,7 @@ struct SpaceNode: Identifiable, Equatable {
         self.icon = icon
         self.category = category
         self.fileTypeKind = fileTypeKind ?? (path.map { FileTypeKind.infer(path: $0, isDir: !children.isEmpty) })
+        self.modificationDate = modificationDate
         self.children = children
     }
 
@@ -145,6 +189,16 @@ struct SpaceNode: Identifiable, Equatable {
 
     var formattedSize: String {
         size.byteStringCN
+    }
+
+    var idleDays: Int? {
+        guard let d = modificationDate else { return nil }
+        return HistoryExporter.idleDays(for: d)
+    }
+
+    var ageLevel: FileAgeLevel? {
+        guard let days = idleDays else { return nil }
+        return FileAgeLevel.infer(days: days)
     }
 
     var isExpandableDir: Bool {
@@ -160,6 +214,8 @@ struct SpaceNode: Identifiable, Equatable {
             return color
         case .fileType:
             return fileTypeKind?.color ?? color
+        case .age:
+            return ageLevel?.color ?? color
         }
     }
 
@@ -360,7 +416,8 @@ enum SpaceHierarchyBuilder {
                 size: it.size,
                 color: ChartPalette.color(at: colorIdx),
                 icon: category.icon,
-                category: category
+                category: category,
+                modificationDate: it.modificationDate
             ))
         }
 
@@ -390,7 +447,7 @@ enum SpaceHierarchyBuilder {
         let children = FileSystem.children(of: expanded, keepHidden: false)
         guard !children.isEmpty else { return [] }
 
-        var items: [(name: String, path: String, size: Int64, isDir: Bool, kind: FileTypeKind)] = []
+        var items: [(name: String, path: String, size: Int64, isDir: Bool, kind: FileTypeKind, mtime: Date?)] = []
         for child in children {
             let name = (child as NSString).lastPathComponent
             guard !name.hasPrefix(".") else { continue }
@@ -399,7 +456,9 @@ enum SpaceHierarchyBuilder {
             let sz = FileSystem.size(at: child)
             if sz > 0 {
                 let kind = FileTypeKind.infer(path: child, isDir: subIsDir.boolValue)
-                items.append((name: name, path: child, size: sz, isDir: subIsDir.boolValue, kind: kind))
+                let attrs = try? FileManager.default.attributesOfItem(atPath: child)
+                let mtime = attrs?[.modificationDate] as? Date
+                items.append((name: name, path: child, size: sz, isDir: subIsDir.boolValue, kind: kind, mtime: mtime))
             }
         }
 
@@ -414,7 +473,20 @@ enum SpaceHierarchyBuilder {
             let it = items[i]
             topTotal += it.size
             let defaultColor = ChartPalette.color(at: i)
-            let nodeColor = (colorMode == .fileType) ? it.kind.color : defaultColor
+            let nodeColor: Color
+            switch colorMode {
+            case .fileType:
+                nodeColor = it.kind.color
+            case .category:
+                nodeColor = defaultColor
+            case .age:
+                if let mtime = it.mtime {
+                    let days = HistoryExporter.idleDays(for: mtime)
+                    nodeColor = FileAgeLevel.infer(days: days).color
+                } else {
+                    nodeColor = defaultColor
+                }
+            }
             let iconName = it.isDir ? (it.kind == .appOrBinary ? "app.dashed" : "folder.fill") : it.kind.icon
 
             result.append(SpaceNode(
@@ -425,6 +497,7 @@ enum SpaceHierarchyBuilder {
                 icon: iconName,
                 category: nil,
                 fileTypeKind: it.kind,
+                modificationDate: it.mtime,
                 children: []
             ))
         }
@@ -718,3 +791,40 @@ enum SunburstEngine {
         return sectors
     }
 }
+
+// MARK: - 面包屑层级导航控制器
+
+struct BreadcrumbNavigator: Equatable {
+    private(set) var stack: [SpaceNode] = []
+    private(set) var current: SpaceNode
+    let root: SpaceNode
+
+    init(root: SpaceNode) {
+        self.root = root
+        self.current = root
+    }
+
+    mutating func drillDown(into node: SpaceNode) {
+        guard !node.children.isEmpty else { return }
+        stack.append(current)
+        current = node
+    }
+
+    mutating func popOneLevel() {
+        guard let parent = stack.popLast() else { return }
+        current = parent
+    }
+
+    mutating func popTo(index: Int) {
+        guard stack.indices.contains(index) else { return }
+        let target = stack[index]
+        stack = Array(stack.prefix(index))
+        current = target
+    }
+
+    mutating func popToRoot() {
+        stack.removeAll()
+        current = root
+    }
+}
+
