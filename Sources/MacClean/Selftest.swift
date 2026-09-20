@@ -122,6 +122,8 @@ enum Selftest {
         suiteSpaceArchiveDeep()
         // 系统深度应用扩展与 QuickLook/Spotlight 插件残存治理 (v1.55.0)
         suitePluginExtensionDeep()
+        // 菜单栏常驻助手全局快捷键呼出与极速一键清理微面板 (v1.56.0)
+        suiteGlobalHotkeyDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

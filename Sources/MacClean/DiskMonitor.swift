@@ -50,6 +50,10 @@ struct DiskMonitorConfig: Codable, Equatable {
     /// 菜单栏助手显示模式
     var menuBarDisplayMode: MenuBarDisplayMode = .iconOnly
 
+    /// 全局快捷键呼出极速清理微面板 (v1.56.0)
+    var globalHotkeyEnabled: Bool = true
+    var globalHotkeyPreset: GlobalHotkeyPreset = .controlOptionSpace
+
     private static let key = "MacClean_DiskMonitorConfig"
 
     static func load() -> DiskMonitorConfig {
@@ -64,6 +68,7 @@ struct DiskMonitorConfig: Codable, Equatable {
         if let data = try? JSONEncoder().encode(self) {
             UserDefaults.standard.set(data, forKey: DiskMonitorConfig.key)
         }
+        GlobalHotkeyManager.shared.setEnabled(globalHotkeyEnabled, preset: globalHotkeyPreset)
     }
 
     /// 判断指定时间是否处于允许静默执行的时段内

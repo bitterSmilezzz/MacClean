@@ -486,62 +486,94 @@ struct MenuBarView: View {
     private var quickActions: some View {
         let isScanning = app.categories.contains(where: { $0.isScanning })
 
-        return HStack(spacing: Space.xs) {
-            // 全盘智能扫描：次要动作，bordered
-            Button {
-                app.scanAll()
-            } label: {
-                HStack(spacing: 5) {
-                    if isScanning {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.7)
-                            .frame(width: 12, height: 12)
-                    } else {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    Text(isScanning ? "扫描中…" : "全盘扫描")
-                        .font(Typo.row)
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: 28)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.bordered)
-            .disabled(isScanning)
-
-            // 一键清理或安全清理：唯一主操作
-            Button {
-                if app.totalSelected > 0 {
-                    app.cleanSelectedAcrossCategories(permanently: false)
-                } else if app.smartRecommendedCount > 0 {
-                    app.quickCleanSmartRecommendations()
-                } else {
-                    app.quickCleanSafeItems()
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .medium))
-                    let labelText: String = {
-                        if app.totalSelected > 0 {
-                            return "清理选中 (\(app.totalSelected.byteStringCN))"
-                        } else if app.smartRecommendedBytes > 0 {
-                            return "清理推荐 (\(app.smartRecommendedBytes.byteStringCN))"
+        return VStack(spacing: 6) {
+            HStack(spacing: Space.xs) {
+                // 全盘智能扫描：次要动作，bordered
+                Button {
+                    app.scanAll()
+                } label: {
+                    HStack(spacing: 5) {
+                        if isScanning {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.7)
+                                .frame(width: 12, height: 12)
                         } else {
-                            return "安全速清"
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 11, weight: .medium))
                         }
-                    }()
-                    Text(labelText)
-                        .font(Typo.rowStrong)
+                        Text(isScanning ? "扫描中…" : "全盘扫描")
+                            .font(Typo.row)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.bordered)
+                .disabled(isScanning)
+
+                // 一键清理或安全清理：唯一主操作
+                Button {
+                    if app.totalSelected > 0 {
+                        app.cleanSelectedAcrossCategories(permanently: false)
+                    } else if app.smartRecommendedCount > 0 {
+                        app.quickCleanSmartRecommendations()
+                    } else {
+                        app.quickCleanSafeItems()
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11, weight: .medium))
+                        let labelText: String = {
+                            if app.totalSelected > 0 {
+                                return "清理选中 (\(app.totalSelected.byteStringCN))"
+                            } else if app.smartRecommendedBytes > 0 {
+                                return "清理推荐 (\(app.smartRecommendedBytes.byteStringCN))"
+                            } else {
+                                return "安全速清"
+                            }
+                        }()
+                        Text(labelText)
+                            .font(Typo.rowStrong)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(app.isCleaning || (app.totalSelected == 0 && app.totalCleanable == 0))
+            }
+
+            // 极速清理微面板入口 (v1.56.0)
+            Button {
+                QuickCleanPanelController.shared.toggle(with: app)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Accent.tint)
+                    Text("极速清理微面板")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.primary)
+                    Spacer()
+                    Text(app.diskMonitor.config.globalHotkeyPreset.shortDisplay)
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1.5)
+                        .background(Surface.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                }
+                .padding(.horizontal, 8)
                 .frame(maxWidth: .infinity)
-                .frame(height: 28)
+                .frame(height: 24)
+                .background(Surface.group)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(app.isCleaning || (app.totalSelected == 0 && app.totalCleanable == 0))
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("menuBarQuickCleanPanelButton")
         }
     }
 

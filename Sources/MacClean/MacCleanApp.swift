@@ -276,6 +276,14 @@ struct MacCleanApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var appState: AppState?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if let app = appState {
+            GlobalHotkeyManager.shared.setup(with: app)
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag {
             for window in sender.windows {
@@ -321,6 +329,7 @@ struct ContentView: View {
         .onAppear {
             app.refreshDisk()
             NotificationManager.shared.requestAuthorization()
+            GlobalHotkeyManager.shared.setup(with: app)
         }
         .alert("磁盘空间不足", isPresented: $app.diskMonitor.showLowSpaceAlert) {
             Button("立即扫描全部分类", role: .none) {
