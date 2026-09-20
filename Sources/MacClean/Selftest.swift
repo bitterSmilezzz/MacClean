@@ -106,6 +106,8 @@ enum Selftest {
         suiteStartupItemsDeep()
         // 重复大文件 APFS 硬链接无损去重 (v1.47.0)
         suiteHardlinkDedupDeep()
+        // 系统底层存储深度治理 (v1.48.0)
+        suiteSystemDeepStorage()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

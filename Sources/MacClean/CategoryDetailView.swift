@@ -290,6 +290,10 @@ struct CategoryDetailView: View {
             appResidueFilterBar
         } else if category == .logsAndTemp && st.isScanned && !st.items.isEmpty {
             logsFilterBar
+        } else if category == .browserAndSystem {
+            SystemDeepStorageView()
+                .padding(.horizontal, Space.gutter)
+                .padding(.vertical, Space.xs)
         }
     }
 
