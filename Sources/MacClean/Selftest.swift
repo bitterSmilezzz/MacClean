@@ -116,6 +116,8 @@ enum Selftest {
         suiteMenuBarWidgetsDeep()
         // 网络与系统安全隐私数据深度体检 (v1.52.0)
         suiteNetworkPrivacyDeep()
+        // 已卸载应用深度偏好碎片智能反查 (v1.53.0)
+        suitePreferenceResidueDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

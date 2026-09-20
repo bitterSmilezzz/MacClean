@@ -33,9 +33,16 @@
   - **大文件闲置时间区间筛选与多维排序**：支持 6 级时间跨度分档（全部 / 30天内活跃 / 1-3个月 / 3-6个月 / 半年至1年 / 1年以上闲置），并提供「推荐排序」、「体积从大到小」、「修改时间最旧优先」与「修改时间最新优先」多维排序，列表中配备闲置天数动态徽标（如 `闲置 240 天`），精准锁定常年未动的陈旧沉睡大文件；
   - **大文件与清理项清单多格式导出及外接盘迁移脚本**：扫描后支持一键导出当前分类待清理项目为标准 CSV 表格或 Markdown 文本报告。针对超大文件，更支持一键生成带有安全校验断言的 `export_move_script.sh` 外接盘 Shell 迁移脚本（`rsync -avP --remove-source-files`），插上移动硬盘即可一键安全腾挪本地空间。
 - **电脑风险提醒**：独立于文件清理的敏感数据检查模块（SSH 私钥/目录权限过宽检测、明文密钥环境变量暴露排查、敏感命名文件扫描）。
-- **App 卸载器与孤儿残留排查（融合 Pearcleaner / PureMac 双模式）**：
+- **App 卸载器与孤儿残留排查（融合 Pearcleaner / PureMac 三段式全能体系）**：
   - **已安装应用全量卸载**：提取本机已安装应用的**真实高清官方图标**，智能关联扫描 Preferences、Caches、Containers、Application Support、Logs、LaunchAgents 等全部关联数据，清晰标明每一项用途并安全移入废纸篓；
-  - **全新「孤儿残留排查（Orphan Finder）」深度检索模式**：基于逆向反查机制，全盘遍历检索已从系统中卸载移除的遗留应用数据，涵盖沙盒容器 (`~/Library/Containers`)、共享组容器 (`~/Library/Group Containers`)、窗口恢复状态 (`Saved Application State`)、WebKit 缓存、HTTP 存储、自启代理项 (`LaunchAgents`) 及过期偏好设置 (`Preferences`)；
+  - **「孤儿残留排查（Orphan Finder）」深度检索模式**：基于逆向反查机制，全盘遍历检索已从系统中卸载移除的遗留应用数据，涵盖沙盒容器 (`~/Library/Containers`)、共享组容器 (`~/Library/Group Containers`)、窗口恢复状态 (`Saved Application State`)、WebKit 缓存、HTTP 存储、自启代理项 (`LaunchAgents`) 及过期偏好设置 (`Preferences`)；
+  - **全新「偏好碎片反查（Preference Residue Inspector v1.53.0 新增）」**：
+    - 针对 `~/Library/Preferences`、`~/Library/Preferences/ByHost` 及 `~/Library/SyncedPreferences` 的专属深度逆向匹配；
+    - 自动剥离 ByHost 机器硬件 UUID（正则规范匹配 36 位硬件标识符）与 `.plist` 后缀，精准还原原生 Bundle 标识；
+    - 结合系统核心硬白名单（`com.apple.` 等）与 `InstalledDatabase` 在用应用/运行态多重校验，绝不误伤系统核心组件；
+    - 严格执行 **7 天修改缓冲保护期**（7 天内修改的偏好配置绝不误报为孤儿），确保新装或刚启动应用稳定性；
+    - 智能推导应用显示名称（包含 ShipIt 更新组件识别、常用软件库与通用格式化）；
+    - 支持全选/过滤、安全清理（默认移入废纸篓，记录撤销快照）与彻底删除。
   - **多重安全护栏与白名单保护**：建立 Apple 系统服务与守护进程硬白名单、正在运行进程动态防护、以及已安装应用指纹（Bundle ID / 前缀 / 归一化名称 / 可执行名）多重校验，绝不误伤系统与在用软件；支持自动按应用聚类与批量安全清理。
 - **桌面级原生交互体验**：
   - **全局键盘快捷键体系**：

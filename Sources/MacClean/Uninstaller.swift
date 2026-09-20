@@ -107,6 +107,7 @@ final class UninstallerState: ObservableObject {
     public enum UninstallerTab: String, CaseIterable, Identifiable {
         case apps = "已安装应用"
         case orphans = "孤儿残留排查"
+        case preferences = "偏好碎片反查"
         public var id: String { rawValue }
     }
 
@@ -125,6 +126,12 @@ final class UninstallerState: ObservableObject {
     @Published var isScanningOrphans = false
     @Published var lastOrphanSummary: String?
     @Published var isCleaningOrphans = false
+
+    // MARK: - 偏好碎片反查状态 (v1.53.0)
+    @Published var preferenceItems: [OrphanPreferenceItem] = []
+    @Published var isScanningPreferences = false
+    @Published var lastPreferenceSummary: String?
+    @Published var isCleaningPreferences = false
 
     func loadApps() {
         // 三巡：置 isScanning 避免首次进入闪现"未发现可卸载 App"空态
@@ -307,6 +314,63 @@ final class UninstallerState: ObservableObject {
                 var parts = ["已清理 \(result.succeeded) 项孤儿残留，释放 \(result.releasedBytes.byteStringCN)"]
                 if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
                 self.lastOrphanSummary = parts.joined(separator: "，")
+            }
+        }
+        return true
+    }
+
+    // MARK: - 偏好碎片反查逻辑 (v1.53.0)
+
+    func loadPreferences() {
+        isScanningPreferences = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let items = PreferenceResidueInspector.shared.scanOrphanPreferences()
+            DispatchQueue.main.async {
+                self?.preferenceItems = items
+                self?.isScanningPreferences = false
+            }
+        }
+    }
+
+    func togglePreferenceItem(id: UUID, on: Bool) {
+        if let idx = preferenceItems.firstIndex(where: { $0.id == id }) {
+            preferenceItems[idx].isSelected = on
+        }
+    }
+
+    func setAllPreferencesSelected(_ on: Bool) {
+        preferenceItems = preferenceItems.map {
+            var item = $0
+            item.isSelected = on
+            return item
+        }
+    }
+
+    var selectedPreferencesCount: Int {
+        preferenceItems.filter(\.isSelected).count
+    }
+
+    var selectedPreferencesSize: Int64 {
+        preferenceItems.filter(\.isSelected).reduce(0) { $0 + $1.size }
+    }
+
+    var allPreferencesSelected: Bool {
+        !preferenceItems.isEmpty && preferenceItems.allSatisfy(\.isSelected)
+    }
+
+    func cleanSelectedPreferences(toTrash: Bool = true) -> Bool {
+        let targets = preferenceItems.filter(\.isSelected)
+        guard !targets.isEmpty, !isCleaningPreferences else { return false }
+        isCleaningPreferences = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let res = PreferenceResidueInspector.shared.cleanPreferences(items: targets, toTrash: toTrash)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isCleaningPreferences = false
+                let action = toTrash ? "移入废纸篓" : "彻底清除"
+                self.lastPreferenceSummary = "已安全\(action) \(res.successCount) 个已卸载偏好碎片，释放 \(res.freedBytes.byteStringCN)"
+                self.loadPreferences()
             }
         }
         return true
