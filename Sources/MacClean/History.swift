@@ -54,6 +54,30 @@ enum HistoryStore {
         guard let data = try? JSONEncoder().encode(records) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
+
+    /// 统计最近 7 天的每日清理释放量（用于菜单栏迷你回收趋势）
+    static func dailyFreedBytesLast7Days(records: [CleanRecord], relativeTo now: Date = Date()) -> [(dayLabel: String, bytes: Int64)] {
+        let calendar = Calendar.current
+        var result: [(dayLabel: String, bytes: Int64)] = []
+
+        for i in (0..<7).reversed() {
+            guard let targetDay = calendar.date(byAdding: .day, value: -i, to: now) else { continue }
+            let dayStart = calendar.startOfDay(for: targetDay)
+            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { continue }
+
+            let dayRecords = records.filter { $0.date >= dayStart && $0.date < dayEnd }
+            let total = dayRecords.reduce(0) { $0 + $1.bytes }
+            let label = i == 0 ? "今" : String(calendar.component(.day, from: targetDay))
+            result.append((dayLabel: label, bytes: total))
+        }
+        return result
+    }
+
+    /// 统计最近 7 天累计释放总字节数
+    static func totalFreedLast7Days(records: [CleanRecord], relativeTo now: Date = Date()) -> Int64 {
+        let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
+        return records.filter { $0.date >= sevenDaysAgo }.reduce(0) { $0 + $1.bytes }
+    }
 }
 
 // MARK: - 导航目的地

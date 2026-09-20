@@ -112,6 +112,8 @@ enum Selftest {
         suiteFingerprintPipelineDeep()
         // 空间透视层级面包屑与闲置冷热动态色谱 (v1.50.0)
         suiteSpaceVisualizerDeep2()
+        // 菜单栏常驻助手快捷小组件与状态指示深化 (v1.51.0)
+        suiteMenuBarWidgetsDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

@@ -17,6 +17,13 @@ struct MenuBarView: View {
     @StateObject private var sysMonitor = SystemMonitor.shared
     @Environment(\.openWindow) private var openWindow
 
+    @State var localSnapshots: [APFSSnapshot] = []
+    @State var danglingStartupItems: [StartupItem] = []
+    @State var isCleaningSnapshots: Bool = false
+    @State var isCleaningDangling: Bool = false
+    @State var recentTrend: [(dayLabel: String, bytes: Int64)] = []
+    @State var weekTotalFreed: Int64 = 0
+
     var body: some View {
         VStack(spacing: 0) {
             // 顶栏品牌与主操作
@@ -35,10 +42,16 @@ struct MenuBarView: View {
                     // 2. 内存用量与压力监控
                     memoryGroup
 
-                    // 3. 快捷操作
+                    // 3. 底层存储与后台守护体检（v1.51.0）
+                    systemToolsGroup
+
+                    // 4. 存储回收趋势微卡（v1.51.0）
+                    recoveryTrendGroup
+
+                    // 5. 快捷操作
                     quickActions
 
-                    // 4. 各分类快捷概览与直达
+                    // 6. 各分类快捷概览与直达
                     categoriesGroup
                 }
                 .padding(Space.sm)
@@ -49,11 +62,12 @@ struct MenuBarView: View {
             // 底栏
             footerView
         }
-        .frame(width: 320, height: 490)
+        .frame(width: 320, height: 530)
         .background(Surface.window)
         .onAppear {
             app.refreshDisk()
             sysMonitor.refresh()
+            refreshQuickStatus()
             // 用户在盯着看 → 用最快档位
             sysMonitor.apply(mode: .foreground)
         }
@@ -318,6 +332,156 @@ struct MenuBarView: View {
         }
     }
 
+    // MARK: - 底层存储与后台守护体检（v1.51.0）
+    private var systemToolsGroup: some View {
+        GroupBox(title: "底层存储与后台守护体检") {
+            // 1. APFS 本地时间机器快照
+            GroupedRow {
+                HStack(spacing: Space.xs) {
+                    IconSlot(systemName: "camera.badge.clock", size: 12, color: localSnapshots.isEmpty ? Signal.positive : Signal.caution, width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("APFS 本地快照")
+                            .font(Typo.row)
+                            .foregroundStyle(Ink.primary)
+                        Text(localSnapshots.isEmpty ? "无快照占用物理空间" : "发现 \(localSnapshots.count) 个快照霸占磁盘")
+                            .font(Typo.micro)
+                            .foregroundStyle(localSnapshots.isEmpty ? Ink.tertiary : Signal.caution)
+                    }
+
+                    Spacer(minLength: Space.xs)
+
+                    if !localSnapshots.isEmpty {
+                        Button {
+                            isCleaningSnapshots = true
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                let res = SystemDeepStorageInspector.deleteAllLocalSnapshots(snapshots: localSnapshots)
+                                DispatchQueue.main.async {
+                                    isCleaningSnapshots = false
+                                    app.refreshDisk()
+                                    withAnimation(Motion.micro) {
+                                        app.lastCleanSummary = "已一键释放 \(res.succeededCount) 个 APFS 本地快照"
+                                    }
+                                    refreshQuickStatus()
+                                }
+                            }
+                        } label: {
+                            if isCleaningSnapshots {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Label("释放", systemImage: "bolt.fill")
+                                    .font(Typo.micro)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isCleaningSnapshots)
+                        .accessibilityIdentifier("menuBarReleaseSnapshotsButton")
+                    }
+                }
+            }
+
+            // 2. 幽灵自启项
+            GroupedRow(isLast: true) {
+                HStack(spacing: Space.xs) {
+                    IconSlot(systemName: "bolt.horizontal.circle", size: 12, color: danglingStartupItems.isEmpty ? Signal.positive : Signal.caution, width: 16)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("后台启动项")
+                            .font(Typo.row)
+                            .foregroundStyle(Ink.primary)
+                        Text(danglingStartupItems.isEmpty ? "启动项正常，无幽灵残留" : "发现 \(danglingStartupItems.count) 个失效幽灵自启项")
+                            .font(Typo.micro)
+                            .foregroundStyle(danglingStartupItems.isEmpty ? Ink.tertiary : Signal.caution)
+                    }
+
+                    Spacer(minLength: Space.xs)
+
+                    if !danglingStartupItems.isEmpty {
+                        Button {
+                            isCleaningDangling = true
+                            DispatchQueue.global(qos: .userInitiated).async {
+                                let res = StartupItemManager.shared.cleanAllDangling(items: danglingStartupItems)
+                                DispatchQueue.main.async {
+                                    isCleaningDangling = false
+                                    withAnimation(Motion.micro) {
+                                        app.lastCleanSummary = "已清理 \(res.removedCount) 个幽灵自启项"
+                                    }
+                                    refreshQuickStatus()
+                                }
+                            }
+                        } label: {
+                            if isCleaningDangling {
+                                ProgressView().controlSize(.mini)
+                            } else {
+                                Label("清理", systemImage: "trash")
+                                    .font(Typo.micro)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .disabled(isCleaningDangling)
+                        .accessibilityIdentifier("menuBarCleanDanglingButton")
+                    } else {
+                        Button {
+                            openMainWindow(destination: .startupItems)
+                        } label: {
+                            Text("管理")
+                                .font(Typo.micro)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("menuBarSystemToolsGroup")
+    }
+
+    // MARK: - 存储回收趋势微卡（v1.51.0）
+    private var recoveryTrendGroup: some View {
+        GroupBox(title: "存储回收趋势") {
+            GroupedRow(isLast: true) {
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    HStack {
+                        Text("近 7 天累计减负")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                        Spacer()
+                        Text(weekTotalFreed > 0 ? weekTotalFreed.byteStringCN : "0 KB")
+                            .font(.mcNumeric(12, weight: .semibold))
+                            .foregroundStyle(weekTotalFreed > 0 ? Signal.positive : Ink.tertiary)
+                            .motionSafeNumericTransition()
+                    }
+
+                    // 迷你 7 天柱状趋势图
+                    let maxBytes = max(1, recentTrend.map(\.bytes).max() ?? 1)
+                    HStack(alignment: .bottom, spacing: 6) {
+                        ForEach(recentTrend.indices, id: \.self) { idx in
+                            let item = recentTrend[idx]
+                            let heightRatio = min(1.0, max(0.08, Double(item.bytes) / Double(maxBytes)))
+                            VStack(spacing: 3) {
+                                ZStack(alignment: .bottom) {
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(Surface.hairline.opacity(0.4))
+                                        .frame(width: 22, height: 28)
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(item.bytes > 0 ? Accent.tint : Signal.neutral.opacity(0.3))
+                                        .frame(width: 22, height: CGFloat(28 * heightRatio))
+                                }
+                                Text(item.dayLabel)
+                                    .font(Typo.micro)
+                                    .foregroundStyle(idx == recentTrend.count - 1 ? Accent.tint : Ink.quaternary)
+                            }
+                            .help("\(item.dayLabel): \(item.bytes.byteStringCN)")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .accessibilityIdentifier("menuBarRecoveryTrendGroup")
+    }
+
     // MARK: - 快捷操作
     private var quickActions: some View {
         let isScanning = app.categories.contains(where: { $0.isScanning })
@@ -392,6 +556,20 @@ struct MenuBarView: View {
                 }
             }
 
+            // 启动项管理入口
+            GroupedRow {
+                navRow(icon: "bolt.horizontal.circle", title: "启动项与后台守护") {
+                    openMainWindow(destination: .startupItems)
+                }
+            }
+
+            // 系统底层存储入口
+            GroupedRow {
+                navRow(icon: "internaldrive.badge.gearshape", title: "系统底层存储与快照") {
+                    openMainWindow(destination: .category(.browserAndSystem))
+                }
+            }
+
             // 重复文件入口
             GroupedRow {
                 navRow(icon: "doc.on.doc", title: "重复与相似大文件") {
@@ -404,6 +582,23 @@ struct MenuBarView: View {
                 navRow(icon: "app.dashed", title: "App 卸载器") {
                     openMainWindow(destination: .uninstaller)
                 }
+            }
+        }
+    }
+
+    func refreshQuickStatus() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let snaps = SystemDeepStorageInspector.listLocalSnapshots(volume: "/")
+            let startups = StartupItemManager.shared.scanAll().filter { $0.status.isDangling }
+            let history = HistoryStore.load()
+            let trend = HistoryStore.dailyFreedBytesLast7Days(records: history)
+            let weekTotal = HistoryStore.totalFreedLast7Days(records: history)
+
+            DispatchQueue.main.async {
+                self.localSnapshots = snaps
+                self.danglingStartupItems = startups
+                self.recentTrend = trend
+                self.weekTotalFreed = weekTotal
             }
         }
     }
