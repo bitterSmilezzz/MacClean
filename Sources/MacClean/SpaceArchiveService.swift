@@ -1,0 +1,352 @@
+import Foundation
+import AppKit
+
+// MARK: - 外接卷信息模型
+
+struct ExternalVolumeInfo: Identifiable, Equatable, Hashable {
+    let id: String           // 挂载路径
+    let name: String         // 卷宗名称
+    let path: String         // 挂载路径
+    let availableBytes: Int64
+    let totalBytes: Int64
+    let isRemovable: Bool
+
+    var formattedAvailable: String {
+        availableBytes.byteStringCN
+    }
+
+    var formattedTotal: String {
+        totalBytes.byteStringCN
+    }
+}
+
+// MARK: - 归档与迁移结果模型
+
+struct ArchiveResult: Equatable {
+    let success: Bool
+    let archivePath: String
+    let originalSize: Int64
+    let archiveSize: Int64
+    let savedBytes: Int64
+    let deletedOriginal: Bool
+    let errorMessage: String?
+
+    var ratioString: String {
+        guard originalSize > 0 else { return "100%" }
+        let pct = (Double(archiveSize) / Double(originalSize)) * 100.0
+        return String(format: "%.1f%%", pct)
+    }
+}
+
+struct MigrationResult: Equatable {
+    let success: Bool
+    let destinationPath: String
+    let migratedBytes: Int64
+    let deletedOriginal: Bool
+    let errorMessage: String?
+}
+
+// MARK: - 空间透视归档与迁移服务
+
+final class SpaceArchiveService {
+    static let shared = SpaceArchiveService()
+
+    private init() {}
+
+    // MARK: - 外接存储设备探测
+
+    /// 检测本机当前挂载的可用外接驱动器 / 卷宗
+    func detectExternalVolumes() -> [ExternalVolumeInfo] {
+        let keys: [URLResourceKey] = [
+            .volumeNameKey,
+            .volumeIsRemovableKey,
+            .volumeIsInternalKey,
+            .volumeAvailableCapacityKey,
+            .volumeTotalCapacityKey,
+            .volumeIsLocalKey
+        ]
+
+        let volumes = FileManager.default.mountedVolumeURLs(
+            includingResourceValuesForKeys: keys,
+            options: [.skipHiddenVolumes]
+        ) ?? []
+
+        var results: [ExternalVolumeInfo] = []
+
+        for url in volumes {
+            let path = url.path
+            // 排除根目录与系统内部保护分区
+            if path == "/" || path == "/System" { continue }
+
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            let name = values?.volumeName ?? (path as NSString).lastPathComponent
+            let isInternal = values?.volumeIsInternal ?? true
+            let isRemovable = values?.volumeIsRemovable ?? false
+            let available = Int64(values?.volumeAvailableCapacity ?? 0)
+            let total = Int64(values?.volumeTotalCapacity ?? 0)
+
+            // 过滤掉 Macintosh HD 内部数据宗卷与恢复卷
+            let lowerName = name.lowercased()
+            if lowerName.contains("macintosh hd") || lowerName.contains("update") || lowerName.contains("vm") || lowerName.contains("preboot") {
+                continue
+            }
+
+            // 优先接纳 /Volumes/ 下的独立外挂卷或被标记为可移动/非内部的存储
+            if path.hasPrefix("/Volumes/") || !isInternal || isRemovable {
+                results.append(ExternalVolumeInfo(
+                    id: path,
+                    name: name,
+                    path: path,
+                    availableBytes: available,
+                    totalBytes: total,
+                    isRemovable: isRemovable || !isInternal
+                ))
+            }
+        }
+
+        return results.sorted {
+            if $0.isRemovable != $1.isRemovable {
+                return $0.isRemovable && !$1.isRemovable
+            }
+            return $0.availableBytes > $1.availableBytes
+        }
+    }
+
+    // MARK: - 原位压缩归档
+
+    /// 将指定超大陈旧目录/文件原地打包压缩为 .zip
+    /// - Parameters:
+    ///   - sourcePath: 目标源路径
+    ///   - deleteOriginal: 压缩成功后是否将原件移入废纸篓（默认 true）
+    func archiveInPlace(sourcePath: String, deleteOriginal: Bool = true) -> ArchiveResult {
+        let expanded = CleanPaths.expand(sourcePath)
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: expanded) else {
+            return ArchiveResult(success: false, archivePath: "", originalSize: 0, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "源文件不存在")
+        }
+
+        // 路径安全判定（不可压缩根目录或关键系统目录）
+        guard isSafeToArchive(expanded) else {
+            return ArchiveResult(success: false, archivePath: "", originalSize: 0, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "该路径受系统核心保护，禁止归档")
+        }
+
+        if expanded.lowercased().hasSuffix(".zip") {
+            return ArchiveResult(success: false, archivePath: expanded, originalSize: 0, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "该文件本身已是 Zip 压缩包")
+        }
+
+        let originalSize = FileSystem.size(at: expanded)
+        guard originalSize > 0 else {
+            return ArchiveResult(success: false, archivePath: "", originalSize: 0, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "目标为空，无需归档")
+        }
+
+        // 推导目标 Zip 存储路径
+        let destZipPath = generateUniqueZipPath(for: expanded)
+
+        // 调用原生 ditto 打包（--sequesterRsrc 保留 resource forks 与扩展属性，--keepParent 维持顶层文件夹根名）
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", expanded, destZipPath]
+
+        let pipe = Pipe()
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return ArchiveResult(success: false, archivePath: "", originalSize: originalSize, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "启动 ditto 失败: \(error.localizedDescription)")
+        }
+
+        guard process.terminationStatus == 0, fm.fileExists(atPath: destZipPath) else {
+            let errData = pipe.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? "ditto 执行异常"
+            // 清理可能产生的半截压缩包
+            try? fm.removeItem(atPath: destZipPath)
+            return ArchiveResult(success: false, archivePath: "", originalSize: originalSize, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: errStr)
+        }
+
+        let archiveSize = FileSystem.size(at: destZipPath)
+        let savedBytes = max(0, originalSize - archiveSize)
+
+        var didDelete = false
+        if deleteOriginal {
+            do {
+                var resultingURL: NSURL?
+                try fm.trashItem(at: URL(fileURLWithPath: expanded), resultingItemURL: &resultingURL)
+                didDelete = true
+            } catch {
+                // 原件入废纸篓失败不影响压缩包已就绪事实
+                didDelete = false
+            }
+        }
+
+        return ArchiveResult(
+            success: true,
+            archivePath: destZipPath,
+            originalSize: originalSize,
+            archiveSize: archiveSize,
+            savedBytes: savedBytes,
+            deletedOriginal: didDelete,
+            errorMessage: nil
+        )
+    }
+
+    // MARK: - 外接盘文件安全迁移
+
+    /// 将指定超大文件/目录迁移至外接驱动器
+    func migrateToVolume(sourcePath: String, targetVolumePath: String, deleteOriginal: Bool = true) -> MigrationResult {
+        let expanded = CleanPaths.expand(sourcePath)
+        let fm = FileManager.default
+
+        guard fm.fileExists(atPath: expanded) else {
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "源路径不存在")
+        }
+
+        guard fm.fileExists(atPath: targetVolumePath) else {
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "目标外接卷未就绪或已拔出")
+        }
+
+        guard isSafeToArchive(expanded) else {
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "系统受保护关键文件禁止迁移")
+        }
+
+        let sourceSize = FileSystem.size(at: expanded)
+        let fileName = (expanded as NSString).lastPathComponent
+        let destPath = (targetVolumePath as NSString).appendingPathComponent(fileName)
+
+        // 检查外接卷剩余容量
+        let volAttrs = try? fm.attributesOfFileSystem(forPath: targetVolumePath)
+        if let freeSize = volAttrs?[.systemFreeSize] as? Int64, freeSize < sourceSize {
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "外接卷剩余空间不足（需要 \(sourceSize.byteStringCN)，仅剩 \(freeSize.byteStringCN)）")
+        }
+
+        // 使用 ditto 保真复制
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        process.arguments = ["--sequesterRsrc", expanded, destPath]
+
+        let pipe = Pipe()
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "执行复制失败: \(error.localizedDescription)")
+        }
+
+        guard process.terminationStatus == 0, fm.fileExists(atPath: destPath) else {
+            let errData = pipe.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? "ditto 复制未成功"
+            try? fm.removeItem(atPath: destPath)
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: errStr)
+        }
+
+        var didDelete = false
+        if deleteOriginal {
+            do {
+                var resultingURL: NSURL?
+                try fm.trashItem(at: URL(fileURLWithPath: expanded), resultingItemURL: &resultingURL)
+                didDelete = true
+            } catch {
+                didDelete = false
+            }
+        }
+
+        return MigrationResult(
+            success: true,
+            destinationPath: destPath,
+            migratedBytes: sourceSize,
+            deletedOriginal: didDelete,
+            errorMessage: nil
+        )
+    }
+
+    // MARK: - 迁移脚本生成
+
+    /// 生成自动化外接盘迁移 Shell 脚本
+    func generateMigrationScript(for sourcePath: String, targetVolumePath: String? = nil) -> String {
+        let expanded = CleanPaths.expand(sourcePath)
+        let fileName = (expanded as NSString).lastPathComponent
+        let defaultDest = targetVolumePath ?? "/Volumes/YourExternalDrive"
+        let nowStr = DateFormatter.localizedString(from: Date(), dateStyle: .medium, timeStyle: .short)
+        let size = FileSystem.size(at: expanded).byteStringCN
+
+        return """
+        #!/bin/bash
+        # ==============================================================================
+        # MacClean 空间透视超大文件/目录外接盘安全迁移脚本
+        # 源目标: \(fileName) (\(size))
+        # 生成时间: \(nowStr)
+        # ==============================================================================
+        set -euo pipefail
+
+        SRC="\(expanded)"
+        DEST_VOL="${1:-\(defaultDest)}"
+
+        echo "==> 检查源文件存在性..."
+        if [ ! -e "$SRC" ]; then
+            echo "❌ 错误: 源路径不存在: $SRC" >&2
+            exit 1
+        fi
+
+        echo "==> 检查目标存储就绪状态: $DEST_VOL"
+        if [ ! -d "$DEST_VOL" ]; then
+            echo "❌ 错误: 目标外接卷未挂载: $DEST_VOL" >&2
+            echo "💡 提示: 请插入外接移动硬盘，并传入挂载路径，例如: $0 /Volumes/MyPassport" >&2
+            exit 1
+        fi
+
+        echo "==> 开始通过 rsync 安全腾挪原件并释放本地空间..."
+        if rsync -avP --remove-source-files "$SRC" "$DEST_VOL/"; then
+            echo "=============================================================================="
+            echo "✅ 迁移成功！本地占用已释放 (\(size))"
+            echo "📁 目标位置: $DEST_VOL/\(fileName)"
+            echo "=============================================================================="
+        else
+            echo "❌ 迁移过程中出现异常，已保留本地原文件。" >&2
+            exit 2
+        fi
+        """
+    }
+
+    // MARK: - 辅助与安全校验
+
+    private func isSafeToArchive(_ path: String) -> Bool {
+        // 禁止对系统只读/关键根目录进行归档打包
+        let dangerousRoots = [
+            "/", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc",
+            "/var", "/Volumes", "/Network", "/cores"
+        ]
+
+        let norm = (path as NSString).standardizingPath
+        for r in dangerousRoots {
+            if norm == r { return false }
+        }
+
+        // 禁止压缩用户主目录本身
+        if norm == NSHomeDirectory() { return false }
+
+        // 禁止压缩软链自身
+        if FileSystem.isSymlink(norm) { return false }
+
+        return true
+    }
+
+    private func generateUniqueZipPath(for sourcePath: String) -> String {
+        let fm = FileManager.default
+        let baseZip = sourcePath + ".zip"
+        if !fm.fileExists(atPath: baseZip) {
+            return baseZip
+        }
+
+        let dateStr = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let candidate = "\(sourcePath) (Archived \(dateStr)).zip"
+        if !fm.fileExists(atPath: candidate) {
+            return candidate
+        }
+
+        return "\(sourcePath) (\(UUID().uuidString.prefix(6))).zip"
+    }
+}

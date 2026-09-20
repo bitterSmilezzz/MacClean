@@ -208,6 +208,37 @@ struct SpaceNode: Identifiable, Equatable {
         return FileManager.default.fileExists(atPath: expanded, isDirectory: &isDir) && isDir.boolValue
     }
 
+    /// 判定该节点是否具有物理路径且存在
+    var isPhysicalItem: Bool {
+        guard let p = path, !p.isEmpty else { return false }
+        let expanded = CleanPaths.expand(p)
+        return FileManager.default.fileExists(atPath: expanded)
+    }
+
+    /// 判定该节点是否可作为超大/陈旧文件进行原位归档压缩或外接盘迁移
+    var canArchiveOrMigrate: Bool {
+        guard isPhysicalItem, let p = path else { return false }
+        let norm = (CleanPaths.expand(p) as NSString).standardizingPath
+
+        // 排除系统核心根目录与关键根目录
+        let forbidden = ["/", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/var", "/Volumes"]
+        if forbidden.contains(norm) || norm == NSHomeDirectory() {
+            return false
+        }
+        // 本身已经是 zip 的无需再归档
+        if norm.lowercased().hasSuffix(".zip") {
+            return false
+        }
+        // 体积门槛：> 10 MB 适合归档与迁移
+        return size >= 10 * 1024 * 1024
+    }
+
+    /// 是否为沉睡冷文件（半年以上未修改）
+    var isColdOrFrozen: Bool {
+        guard let level = ageLevel else { return false }
+        return level == .cold || level == .frozen
+    }
+
     func displayColor(for mode: ColorCodingMode) -> Color {
         switch mode {
         case .category:

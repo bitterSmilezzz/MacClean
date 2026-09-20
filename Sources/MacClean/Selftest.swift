@@ -118,6 +118,8 @@ enum Selftest {
         suiteNetworkPrivacyDeep()
         // 已卸载应用深度偏好碎片智能反查 (v1.53.0)
         suitePreferenceResidueDeep()
+        // 空间透视超大陈旧冷文件原位归档压缩与外接盘迁移 (v1.54.0)
+        suiteSpaceArchiveDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

@@ -74,6 +74,16 @@ struct SpaceVisualizerView: View {
     @State private var showToast: Bool = false
     @State private var toastMessage: String = ""
 
+    @State var isArchiving: Bool = false
+    @State var isMigrating: Bool = false
+    @State var showArchiveConfirm: Bool = false
+    @State var showMigrationSheet: Bool = false
+    @State var nodeToArchive: SpaceNode? = nil
+    @State var nodeToMigrate: SpaceNode? = nil
+    @State var detectedVolumes: [ExternalVolumeInfo] = []
+    @State var selectedVolume: ExternalVolumeInfo? = nil
+    @State var deleteOriginalAfterMigrate: Bool = true
+
     init(app: AppState? = nil) {
         let initialRoot: SpaceNode
         if let appState = app {
@@ -122,6 +132,24 @@ struct SpaceVisualizerView: View {
         .background(Surface.window)
         .quickLookPreview($quickLookURL)
         .toast(isPresented: $showToast, text: toastMessage)
+        .confirmationDialog("原位归档压缩", isPresented: $showArchiveConfirm, titleVisibility: .visible) {
+            Button("压缩并移入废纸篓 (释放空间)") {
+                if let node = nodeToArchive {
+                    performArchive(node: node, deleteOriginal: true)
+                }
+            }
+            Button("仅压缩保留原件") {
+                if let node = nodeToArchive {
+                    performArchive(node: node, deleteOriginal: false)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将「\(nodeToArchive?.name ?? "")」(\(nodeToArchive?.formattedSize ?? "")) 原地压缩为 .zip 归档文件。选择移入废纸篓可立即释放物理空间。")
+        }
+        .sheet(isPresented: $showMigrationSheet) {
+            migrationSheetView
+        }
         .onAppear {
             reloadHierarchy()
         }
@@ -600,6 +628,34 @@ struct SpaceVisualizerView: View {
                 .pressable()
                 .foregroundStyle(Accent.tint)
                 .accessibilityIdentifier("visualizerFinderButton")
+
+                if target.canArchiveOrMigrate {
+                    Button {
+                        nodeToArchive = target
+                        showArchiveConfirm = true
+                    } label: {
+                        Label("原位归档", systemImage: "archivebox")
+                            .font(Typo.caption)
+                            .contentShape(Rectangle())
+                    }
+                    .pressable()
+                    .foregroundStyle(Accent.tint)
+                    .accessibilityIdentifier("visualizerArchiveButton")
+
+                    Button {
+                        nodeToMigrate = target
+                        detectedVolumes = SpaceArchiveService.shared.detectExternalVolumes()
+                        selectedVolume = detectedVolumes.first
+                        showMigrationSheet = true
+                    } label: {
+                        Label("外接盘迁移", systemImage: "externaldrive.badge.plus")
+                            .font(Typo.caption)
+                            .contentShape(Rectangle())
+                    }
+                    .pressable()
+                    .foregroundStyle(Accent.tint)
+                    .accessibilityIdentifier("visualizerMigrateButton")
+                }
             }
 
             if let cat = target.category {
@@ -688,6 +744,39 @@ struct SpaceVisualizerView: View {
             } label: {
                 Label("加入白名单排除", systemImage: "shield.slash")
             }
+
+            if node.canArchiveOrMigrate {
+                Divider()
+
+                Button {
+                    nodeToArchive = node
+                    showArchiveConfirm = true
+                } label: {
+                    Label("原位压缩归档 (.zip)", systemImage: "archivebox")
+                }
+                .accessibilityIdentifier("contextMenuArchiveButton")
+
+                Button {
+                    nodeToMigrate = node
+                    detectedVolumes = SpaceArchiveService.shared.detectExternalVolumes()
+                    selectedVolume = detectedVolumes.first
+                    showMigrationSheet = true
+                } label: {
+                    Label("迁移至外接驱动器...", systemImage: "externaldrive.badge.plus")
+                }
+                .accessibilityIdentifier("contextMenuMigrateButton")
+
+                Button {
+                    let script = SpaceArchiveService.shared.generateMigrationScript(for: expanded)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(script, forType: .string)
+                    toastMessage = "已复制外接盘迁移 Shell 脚本至剪贴板"
+                    showToast = true
+                } label: {
+                    Label("拷贝外接盘迁移 Shell 脚本", systemImage: "terminal")
+                }
+                .accessibilityIdentifier("contextMenuCopyScriptButton")
+            }
         }
     }
 
@@ -752,5 +841,210 @@ struct SpaceVisualizerView: View {
         }
         self.rootNode = newRoot
         self.currentNode = newRoot
+    }
+
+    // MARK: - 原位归档与外接盘迁移操作逻辑 (v1.54.0)
+
+    func performArchive(node: SpaceNode, deleteOriginal: Bool) {
+        guard let p = node.path, !isArchiving else { return }
+        isArchiving = true
+        toastMessage = "正在原位归档压缩「\(node.name)」..."
+        showToast = true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let res = SpaceArchiveService.shared.archiveInPlace(sourcePath: p, deleteOriginal: deleteOriginal)
+            DispatchQueue.main.async {
+                self.isArchiving = false
+                if res.success {
+                    let freed = res.savedBytes.byteStringCN
+                    let ratio = res.ratioString
+                    let trashNote = res.deletedOriginal ? "，原件已移入废纸篓" : ""
+                    self.toastMessage = "归档完成！释放 \(freed) 空间（压缩比 \(ratio)\(trashNote)）"
+                    self.showToast = true
+                    self.reloadHierarchy()
+                } else {
+                    self.toastMessage = "归档未完成: \(res.errorMessage ?? "未知错误")"
+                    self.showToast = true
+                }
+            }
+        }
+    }
+
+    func performMigration(node: SpaceNode, targetVolume: String, deleteOriginal: Bool) {
+        guard let p = node.path, !isMigrating else { return }
+        isMigrating = true
+        showMigrationSheet = false
+        toastMessage = "正在迁移「\(node.name)」至外接驱动器..."
+        showToast = true
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let res = SpaceArchiveService.shared.migrateToVolume(sourcePath: p, targetVolumePath: targetVolume, deleteOriginal: deleteOriginal)
+            DispatchQueue.main.async {
+                self.isMigrating = false
+                if res.success {
+                    let trashNote = res.deletedOriginal ? "，本地原件已移入废纸篓释放空间" : ""
+                    self.toastMessage = "迁移成功！已将 \(res.migratedBytes.byteStringCN) 腾挪至外接存储\(trashNote)"
+                    self.showToast = true
+                    self.reloadHierarchy()
+                } else {
+                    self.toastMessage = "迁移未完成: \(res.errorMessage ?? "未知错误")"
+                    self.showToast = true
+                }
+            }
+        }
+    }
+
+    // MARK: - 外接盘迁移弹窗 Sheet (v1.54.0)
+
+    private var migrationSheetView: some View {
+        VStack(spacing: Space.md) {
+            HStack(spacing: Space.sm) {
+                Image(systemName: "externaldrive.badge.plus")
+                    .font(.system(size: 20))
+                    .foregroundStyle(Accent.tint)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("迁移超大文件/目录至外接存储")
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
+                    Text("安全腾挪本地原件，释放本机硬盘容量")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    showMigrationSheet = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(Ink.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Hairline()
+
+            if let node = nodeToMigrate {
+                GroupBox {
+                    HStack(spacing: Space.sm) {
+                        Image(systemName: node.icon ?? "folder.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Accent.tint)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(node.name)
+                                .font(Typo.rowStrong)
+                                .foregroundStyle(Ink.primary)
+                                .lineLimit(1)
+                            Text(node.path ?? "")
+                                .font(Typo.micro)
+                                .foregroundStyle(Ink.quaternary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+
+                        Spacer()
+
+                        Text(node.formattedSize)
+                            .font(.mcNumeric(14, weight: .semibold))
+                            .foregroundStyle(Ink.primary)
+                    }
+                    .padding(Space.xs)
+                }
+
+                if detectedVolumes.isEmpty {
+                    VStack(spacing: Space.sm) {
+                        Image(systemName: "externaldrive.badge.questionmark")
+                            .font(.system(size: 28))
+                            .foregroundStyle(Ink.tertiary)
+                            .padding(.top, Space.xs)
+
+                        Text("未检测到已挂载的外接磁盘或 U 盘")
+                            .font(Typo.rowStrong)
+                            .foregroundStyle(Ink.secondary)
+
+                        Text("请插入外接移动硬盘后点「重新检测」，或一键复制自动化迁移 Shell 脚本在终端执行。")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, Space.sm)
+
+                        HStack(spacing: Space.sm) {
+                            Button {
+                                detectedVolumes = SpaceArchiveService.shared.detectExternalVolumes()
+                                selectedVolume = detectedVolumes.first
+                            } label: {
+                                Label("重新检测外接卷", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.regular)
+                            .accessibilityIdentifier("rescanVolumesButton")
+
+                            Button {
+                                let script = SpaceArchiveService.shared.generateMigrationScript(for: node.path ?? "")
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(script, forType: .string)
+                                toastMessage = "已复制迁移 Shell 脚本至剪贴板"
+                                showToast = true
+                                showMigrationSheet = false
+                            } label: {
+                                Label("拷贝 Shell 迁移脚本", systemImage: "terminal")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.regular)
+                            .accessibilityIdentifier("copyMigrationScriptButton")
+                        }
+                        .padding(.top, Space.xs)
+                    }
+                    .padding(.vertical, Space.sm)
+                } else {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Text("选择目标外接卷：")
+                            .font(Typo.row)
+                            .foregroundStyle(Ink.secondary)
+
+                        Picker("外接卷", selection: $selectedVolume) {
+                            ForEach(detectedVolumes) { vol in
+                                Text("\(vol.name) (可用 \(vol.formattedAvailable))").tag(Optional(vol))
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .accessibilityIdentifier("migrationVolumePicker")
+
+                        Toggle("迁移完成后将本地原件移入废纸篓（释放空间）", isOn: $deleteOriginalAfterMigrate)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.primary)
+                            .padding(.top, 4)
+
+                        HStack {
+                            Spacer()
+
+                            Button("取消") {
+                                showMigrationSheet = false
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                if let vol = selectedVolume {
+                                    performMigration(node: node, targetVolume: vol.path, deleteOriginal: deleteOriginalAfterMigrate)
+                                }
+                            } label: {
+                                Label("开始迁移", systemImage: "arrow.right.circle.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("startMigrationButton")
+                            .disabled(isMigrating || selectedVolume == nil)
+                        }
+                        .padding(.top, Space.xs)
+                    }
+                }
+            }
+        }
+        .padding(Space.md)
+        .frame(width: 460)
+        .background(Surface.window)
+        .accessibilityIdentifier("migrationSheet")
     }
 }
