@@ -17,6 +17,7 @@ struct CategoryDetailView: View {
     @State private var selectedDevFilter: DevResidueFilterKind = .all
     @State private var showProjectInspector = false
     @State private var showCrashReportInspector = false
+    @State private var showFontCacheInspector = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -293,7 +294,25 @@ struct CategoryDetailView: View {
                 }
             }
         } else if category == .appResidue && st.isScanned && !st.items.isEmpty {
-            appResidueFilterBar
+            VStack(spacing: 0) {
+                appResidueFilterBar
+                if showFontCacheInspector {
+                    FontCacheInspectorCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showFontCacheInspector = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
         } else if category == .logsAndTemp && st.isScanned && !st.items.isEmpty {
             VStack(spacing: 0) {
                 logsFilterBar
@@ -1484,40 +1503,79 @@ extension CategoryDetailView {
 
     /// 应用残留细分过滤栏
     var appResidueFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.xxs) {
-                ForEach(AppResidueFilterKind.allCases) { filter in
-                    let isSelected = selectedAppResidueFilter == filter
-                    let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xxs) {
+                    ForEach(AppResidueFilterKind.allCases) { filter in
+                        let isSelected = selectedAppResidueFilter == filter
+                        let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
 
-                    Button {
-                        withAnimation(Motion.micro) { selectedAppResidueFilter = filter }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(filter.rawValue)
-                                .font(isSelected ? Typo.rowStrong : Typo.row)
-                            Text("\(count)")
-                                .font(.mcNumeric(10))
-                                .opacity(0.65)
+                        Button {
+                            withAnimation(Motion.micro) { selectedAppResidueFilter = filter }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(filter.rawValue)
+                                    .font(isSelected ? Typo.rowStrong : Typo.row)
+                                Text("\(count)")
+                                    .font(.mcNumeric(10))
+                                    .opacity(0.65)
+                            }
+                            .padding(.horizontal, Space.xs)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                                    .fill(isSelected ? Accent.tint : Color.clear)
+                            )
+                            .foregroundStyle(isSelected ? Color.white : Ink.secondary)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, Space.xs)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                                .fill(isSelected ? Accent.tint : Color.clear)
-                        )
-                        .foregroundStyle(isSelected ? Color.white : Ink.secondary)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("appResidueFilter_\(filter.id)")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("appResidueFilter_\(filter.id)")
                 }
+                .padding(.horizontal, Space.gutter)
+                .padding(.vertical, Space.xs)
             }
-            .padding(.horizontal, Space.gutter)
-            .padding(.vertical, Space.xs)
+
+            Spacer(minLength: 4)
+
+            fontCacheInspectorChip
+                .padding(.trailing, Space.gutter)
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// 字体与渲染缓存治理卡片开关胶囊
+    private var fontCacheInspectorChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showFontCacheInspector.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "textformat.size")
+                    .font(.system(size: 10))
+                Text("字体与缓存")
+                    .font(Typo.micro)
+                if showFontCacheInspector {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 9))
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .fill(showFontCacheInspector ? Accent.tint.opacity(0.15) : Surface.sunken)
+            )
+            .foregroundStyle(showFontCacheInspector ? Accent.tint : Ink.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("fontCacheInspectorChipButton")
     }
 
     /// 日志与临时细分过滤栏

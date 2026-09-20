@@ -132,6 +132,8 @@ enum Selftest {
         suiteBatteryDeep()
         // 应用程序多语言本地化资源包瘦身深度治理 (v1.60.0)
         suiteAppLocalizationDeep()
+        // 字体缓存与孤儿系统字体残存治理 (v1.61.0)
+        suiteFontCacheDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
