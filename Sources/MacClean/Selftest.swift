@@ -148,6 +148,8 @@ enum Selftest {
         suiteLoginItemDeep()
         // 系统多显示器色彩描述与 ICC Profile 残存治理 (v1.68.0)
         suiteColorSyncDeep()
+        // Spotlight 废弃索引与搜索数据库深度重建治理 (v1.69.0)
+        suiteSpotlightDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

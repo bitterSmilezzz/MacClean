@@ -23,6 +23,7 @@ struct CategoryDetailView: View {
     @State private var showCLICacheOptimizer = false
     @State private var showQuickLookPurger = false
     @State private var showColorSyncOptimizer = false
+    @State private var showSpotlightOptimizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -439,9 +440,28 @@ struct CategoryDetailView: View {
                 }
             }
         } else if category == .browserAndSystem {
-            SystemDeepStorageView()
-                .padding(.horizontal, Space.gutter)
-                .padding(.vertical, Space.xs)
+            VStack(spacing: 0) {
+                browserAndSystemFilterBar
+                if showSpotlightOptimizer {
+                    SpotlightOptimizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showSpotlightOptimizer = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                SystemDeepStorageView()
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+            }
         }
     }
 
@@ -1972,6 +1992,58 @@ extension CategoryDetailView {
         .buttonStyle(.plain)
         .accessibilityIdentifier("cliCacheOptimizerToggle")
         .help("展开/收起终端与命令行开发工具缓存治理面板")
+    }
+
+    /// 浏览器与系统存储治理工具栏
+    var browserAndSystemFilterBar: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 4) {
+                Image(systemName: "internaldrive")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Ink.secondary)
+                Text("系统与存储深度治理")
+                    .font(Typo.row)
+                    .foregroundStyle(Ink.secondary)
+            }
+            .padding(.horizontal, Space.gutter)
+            .padding(.vertical, Space.xs)
+
+            Spacer()
+
+            spotlightOptimizerChip
+                .padding(.trailing, Space.gutter)
+        }
+        .background(Surface.window)
+        .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// Spotlight 废弃索引与搜索数据库深度重建开关胶囊
+    private var spotlightOptimizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showSpotlightOptimizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 10))
+                Text("Spotlight 索引")
+                    .font(Typo.micro)
+                if showSpotlightOptimizer {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showSpotlightOptimizer ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showSpotlightOptimizer ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("spotlightOptimizerToggle")
+        .help("展开/收起 Spotlight 废弃索引与搜索数据库深度重建面板")
     }
 }
 
