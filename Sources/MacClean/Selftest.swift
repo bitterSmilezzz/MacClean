@@ -138,6 +138,8 @@ enum Selftest {
         suiteDownloadsOrganizerDeep()
         // 剪贴板历史与大文件临时缓冲区治理 (v1.63.0)
         suiteClipboardDeep()
+        // 屏幕截图与录屏归档助手深度治理 (v1.64.0)
+        suiteScreenshotsOrganizerDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

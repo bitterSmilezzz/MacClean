@@ -19,6 +19,7 @@ struct CategoryDetailView: View {
     @State private var showCrashReportInspector = false
     @State private var showFontCacheInspector = false
     @State private var showDownloadsOrganizer = false
+    @State private var showScreenshotsOrganizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -298,6 +299,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showDownloadsOrganizer = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showScreenshotsOrganizer {
+                    ScreenshotsOrganizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showScreenshotsOrganizer = false
                             }
                         },
                         onTriggerClean: {
@@ -1422,6 +1439,8 @@ extension CategoryDetailView {
 
                 downloadsOrganizerChip
 
+                screenshotsOrganizerChip
+
                 if let dirFilter = activeDirectoryFilter {
                     DirectoryFilterBadge(path: dirFilter) {
                         activeDirectoryFilter = nil
@@ -1464,6 +1483,37 @@ extension CategoryDetailView {
         .buttonStyle(.plain)
         .accessibilityIdentifier("downloadsOrganizerToggle")
         .help("展开/收起系统 ~/Downloads 目录时效归档与治理面板")
+    }
+
+    /// 截屏与录屏归档助手开关胶囊
+    private var screenshotsOrganizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showScreenshotsOrganizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "camera.viewfinder")
+                    .font(.system(size: 10))
+                Text("截屏归档")
+                    .font(Typo.micro)
+                if showScreenshotsOrganizer {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 9))
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showScreenshotsOrganizer ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showScreenshotsOrganizer ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("screenshotsOrganizerToggle")
+        .help("展开/收起屏幕截图与录屏归档助手面板")
     }
 
     /// 类型筛选片。选中态用强调色实底，未选中态不加底色也不加边框。

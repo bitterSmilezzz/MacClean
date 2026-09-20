@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 APP_NAME="MacClean"
 BUILD_DIR=".build/release"
 APP_DIR="dist/$APP_NAME.app"
-VERSION="1.63.0"
+VERSION="1.64.0"
 
 # ---- 构建 SDK 选择（无 Xcode 的纯 CLT 环境必读）----
 # macOS 26.x 起 SwiftUI 的 @State 等属性包装器由宏实现，宏插件 `SwiftUIMacros`
