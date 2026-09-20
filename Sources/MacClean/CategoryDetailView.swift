@@ -18,6 +18,7 @@ struct CategoryDetailView: View {
     @State private var showProjectInspector = false
     @State private var showCrashReportInspector = false
     @State private var showFontCacheInspector = false
+    @State private var showDownloadsOrganizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -285,6 +286,22 @@ struct CategoryDetailView: View {
                             withAnimation(Motion.standard) {
                                 showPivotCard = false
                             }
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showDownloadsOrganizer {
+                    DownloadsOrganizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showDownloadsOrganizer = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
                         }
                     )
                     .padding(.horizontal, Space.gutter)
@@ -1403,6 +1420,8 @@ extension CategoryDetailView {
 
                 directoryTreeChip
 
+                downloadsOrganizerChip
+
                 if let dirFilter = activeDirectoryFilter {
                     DirectoryFilterBadge(path: dirFilter) {
                         activeDirectoryFilter = nil
@@ -1414,6 +1433,37 @@ extension CategoryDetailView {
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// 下载目录时效治理开关胶囊
+    private var downloadsOrganizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showDownloadsOrganizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 10))
+                Text("下载治理")
+                    .font(Typo.micro)
+                if showDownloadsOrganizer {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 9))
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showDownloadsOrganizer ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showDownloadsOrganizer ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("downloadsOrganizerToggle")
+        .help("展开/收起系统 ~/Downloads 目录时效归档与治理面板")
     }
 
     /// 类型筛选片。选中态用强调色实底，未选中态不加底色也不加边框。

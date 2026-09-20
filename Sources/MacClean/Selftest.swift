@@ -134,6 +134,8 @@ enum Selftest {
         suiteAppLocalizationDeep()
         // 字体缓存与孤儿系统字体残存治理 (v1.61.0)
         suiteFontCacheDeep()
+        // 下载目录智能时效归档与按类型治理 (v1.62.0)
+        suiteDownloadsOrganizerDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
