@@ -24,6 +24,7 @@ struct CategoryDetailView: View {
     @State private var showQuickLookPurger = false
     @State private var showColorSyncOptimizer = false
     @State private var showSpotlightOptimizer = false
+    @State private var showAudioHALOptimizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -355,6 +356,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showColorSyncOptimizer = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showAudioHALOptimizer {
+                    AudioHALOptimizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showAudioHALOptimizer = false
                             }
                         },
                         onTriggerClean: {
@@ -1713,6 +1730,7 @@ extension CategoryDetailView {
             HStack(spacing: Space.xs) {
                 fontCacheInspectorChip
                 colorSyncOptimizerChip
+                audioHALOptimizerChip
             }
             .padding(.trailing, Space.gutter)
         }
@@ -1782,6 +1800,38 @@ extension CategoryDetailView {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("colorSyncOptimizerChipButton")
+    }
+
+    /// 系统音频 HAL 插件与残存驱动治理卡片开关胶囊
+    private var audioHALOptimizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showAudioHALOptimizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "speaker.wave.3.fill")
+                    .font(.system(size: 10))
+                Text("音频驱动")
+                    .font(Typo.micro)
+                if showAudioHALOptimizer {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 9))
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .fill(showAudioHALOptimizer ? Accent.tint.opacity(0.15) : Surface.sunken)
+            )
+            .foregroundStyle(showAudioHALOptimizer ? Accent.tint : Ink.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("audioHALOptimizerChipButton")
     }
 
     /// 日志与临时细分过滤栏

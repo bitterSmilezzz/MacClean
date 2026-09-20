@@ -150,6 +150,8 @@ enum Selftest {
         suiteColorSyncDeep()
         // Spotlight 废弃索引与搜索数据库深度重建治理 (v1.69.0)
         suiteSpotlightDeep()
+        // 系统音频 HAL 插件与残存驱动排查治理 (v1.70.0)
+        suiteAudioHALDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
