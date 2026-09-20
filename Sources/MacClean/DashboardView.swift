@@ -27,6 +27,7 @@ struct DashboardView: View {
                 }
 
                 storageGroup
+                BatteryInsightCard()
                 categoryGroup
 
                 if app.riskScanned || app.isRiskScanning {

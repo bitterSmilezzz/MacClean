@@ -128,6 +128,8 @@ enum Selftest {
         suiteDevProjectDeep()
         // 系统核心转储与废弃诊断报告智能排查与治理 (v1.58.0)
         suiteDiagnosticReportDeep()
+        // 系统电池健康度与充放电循环深度体检 (v1.59.0)
+        suiteBatteryDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

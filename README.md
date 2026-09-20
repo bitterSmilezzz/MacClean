@@ -90,7 +90,16 @@
     - **当前活动网络强制白名单保护**：通过 `getairportnetwork` 实时锁定当前连接网络（绿标高亮），批量清理时绝对跳过，杜绝误操作断网；
     - **高危开放网络一键批量清除**：一键清除所有公共/无密码开放 Wi-Fi，防范 Evil Twin 伪热点嗅探与静默自动重连风险；
     - **单项移除与全量历史轨迹收敛**：支持单项删除特定网络或一键清空全部历史记录，收敛无线探测广播指纹（Probe Requests）；
-  - **风险扫描器联动与双栏原生治理面板 (`RiskView` + `NetworkPrivacyView`)**：
+- **系统电池健康度与充放电循环深度体检（v1.59.0 重磅新增）**：
+  - **原生 IOKit 零开销电源遥测引擎 (`BatteryMonitor`)**：
+    - 直接对接系统 `AppleSmartBattery` 注册表，免特权、零开销提取精准电池物理层数据；
+    - **真实电池健康度精算**：比对原厂设计容量 (`DesignCapacity`) 与实际当前最大容量 (`AppleRawMaxCapacity`)，计算真实健康度百分比；
+    - **充放电物理状态透视**：提取充放电循环次数 (`CycleCount`)、电池摄氏温度 (`Temperature`)、电压毫伏 (`Voltage`) 与充放电电流 (`Amperage`)，精准推导实时功耗瓦特数（`wattage`）；
+    - **电源状态与可用时间**：实时识别充电中、已连接电源、纯电池供电状态，动态计算预计充满时间与剩余可用时间；
+    - **跨机型优雅降级**：对 Mac mini、Mac Studio、Mac Pro 等桌面设备自动识别为「桌面台式 Mac（交流供电）」，无任何多余报错或资源浪费；
+  - **概览仪表盘原生集成 (`BatteryInsightCard` + `DashboardView`)**：
+    - 在 Dashboard 存储概览下方无缝挂载电池体检微卡片，三档健康状态语义色阶（良好 / 轻度损耗 / 建议维护）一目了然；
+    - 呈现循环计数、实际容量 vs 设计容量、实时功率与温度指标紧凑网格，支持一键实时刷新。
 - **系统核心转储与废弃诊断报告智能排查与治理（v1.58.0 重磅新增）**：
   - **诊断报告与核心转储深度探测引擎 (`DiagnosticReportScanner`)**：
     - 全面扫描系统与用户级诊断报告根目录：`~/Library/Logs/DiagnosticReports`、`~/Library/Logs/DiagnosticReports/Retired`、`~/Library/Application Support/CrashReporter` 与 `/Library/Logs/DiagnosticReports`；
