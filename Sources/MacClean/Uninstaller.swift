@@ -108,6 +108,7 @@ final class UninstallerState: ObservableObject {
         case apps = "已安装应用"
         case orphans = "孤儿残留排查"
         case preferences = "偏好碎片反查"
+        case extensions = "插件与扩展治理"
         public var id: String { rawValue }
     }
 
@@ -132,6 +133,12 @@ final class UninstallerState: ObservableObject {
     @Published var isScanningPreferences = false
     @Published var lastPreferenceSummary: String?
     @Published var isCleaningPreferences = false
+
+    // MARK: - 插件与扩展治理状态 (v1.55.0)
+    @Published var pluginItems: [PluginExtensionItem] = []
+    @Published var isScanningPlugins = false
+    @Published var lastPluginSummary: String?
+    @Published var isCleaningPlugins = false
 
     func loadApps() {
         // 三巡：置 isScanning 避免首次进入闪现"未发现可卸载 App"空态
@@ -371,6 +378,83 @@ final class UninstallerState: ObservableObject {
                 let action = toTrash ? "移入废纸篓" : "彻底清除"
                 self.lastPreferenceSummary = "已安全\(action) \(res.successCount) 个已卸载偏好碎片，释放 \(res.freedBytes.byteStringCN)"
                 self.loadPreferences()
+            }
+        }
+        return true
+    }
+
+    // MARK: - 插件与扩展治理操作逻辑 (v1.55.0)
+
+    func loadPlugins() {
+        isScanningPlugins = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let items = PluginExtensionInspector.shared.scan()
+            DispatchQueue.main.async {
+                self?.pluginItems = items
+                self?.isScanningPlugins = false
+            }
+        }
+    }
+
+    func togglePluginItem(id: UUID, on: Bool) {
+        guard let idx = pluginItems.firstIndex(where: { $0.id == id }) else { return }
+        var list = pluginItems
+        list[idx].isSelected = on
+        pluginItems = list
+    }
+
+    func setAllPluginsSelected(_ on: Bool, safeOnly: Bool = true) {
+        pluginItems = pluginItems.map { item in
+            var copy = item
+            if safeOnly {
+                if item.isSafeToClean {
+                    copy.isSelected = on
+                } else {
+                    copy.isSelected = false
+                }
+            } else {
+                if item.status != .system {
+                    copy.isSelected = on
+                }
+            }
+            return copy
+        }
+    }
+
+    var selectedPluginItems: [PluginExtensionItem] {
+        pluginItems.filter { $0.isSelected }
+    }
+
+    var selectedPluginCount: Int {
+        selectedPluginItems.count
+    }
+
+    var selectedPluginSize: Int64 {
+        selectedPluginItems.reduce(0) { $0 + $1.size }
+    }
+
+    var allPluginsSelected: Bool {
+        let safeItems = pluginItems.filter { $0.isSafeToClean }
+        return !safeItems.isEmpty && safeItems.allSatisfy { $0.isSelected }
+    }
+
+    func cleanSelectedPlugins(permanently: Bool) -> Bool {
+        let items = selectedPluginItems
+        guard !items.isEmpty, !isCleaningPlugins else { return false }
+        isCleaningPlugins = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let res = PluginExtensionInspector.shared.clean(items: items, permanently: permanently)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isCleaningPlugins = false
+                let action = permanently ? "彻底删除" : "移入废纸篓"
+                var summary = "已安全\(action) \(res.succeeded) 项扩展残留，释放 \(res.releasedBytes.byteStringCN)"
+                if res.hadQuickLook {
+                    summary += "（已自动刷新 QuickLook 缓存）"
+                }
+                self.lastPluginSummary = summary
+                self.loadPlugins()
             }
         }
         return true

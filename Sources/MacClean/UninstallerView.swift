@@ -6,9 +6,13 @@ struct UninstallerView: View {
     @State private var searchText = ""
     @State private var orphanSearchText = ""
     @State private var preferenceSearchText = ""
+    @State private var pluginSearchText = ""
+    @State private var selectedPluginKind: PluginExtensionKind? = nil
+    @State private var selectedPluginStatus: PluginExtensionStatus? = nil
     @State private var confirmPermanent = false
     @State private var confirmPermanentOrphans = false
     @State private var confirmPermanentPreferences = false
+    @State private var confirmPermanentPlugins = false
 
     private var uninstaller: UninstallerState { app.uninstaller }
 
@@ -34,6 +38,23 @@ struct UninstallerView: View {
             $0.appName.localizedCaseInsensitiveContains(preferenceSearchText) ||
             $0.bundleID.localizedCaseInsensitiveContains(preferenceSearchText) ||
             $0.fileName.localizedCaseInsensitiveContains(preferenceSearchText)
+        }
+    }
+
+    private var filteredPlugins: [PluginExtensionItem] {
+        var list = uninstaller.pluginItems
+        if let kind = selectedPluginKind {
+            list = list.filter { $0.kind == kind }
+        }
+        if let status = selectedPluginStatus {
+            list = list.filter { $0.status == status }
+        }
+        guard !pluginSearchText.isEmpty else { return list }
+        return list.filter {
+            $0.name.localizedCaseInsensitiveContains(pluginSearchText) ||
+            ($0.bundleID?.localizedCaseInsensitiveContains(pluginSearchText) == true) ||
+            ($0.hostAppName?.localizedCaseInsensitiveContains(pluginSearchText) == true) ||
+            $0.path.localizedCaseInsensitiveContains(pluginSearchText)
         }
     }
 
@@ -65,6 +86,8 @@ struct UninstallerView: View {
                 }
             case .preferences:
                 preferencePanel
+            case .extensions:
+                pluginsPanel
             }
         }
         .background(Surface.window)
@@ -72,6 +95,7 @@ struct UninstallerView: View {
             if uninstaller.apps.isEmpty { uninstaller.loadApps() }
             if uninstaller.orphanApps.isEmpty { uninstaller.loadOrphans() }
             if uninstaller.preferenceItems.isEmpty { uninstaller.loadPreferences() }
+            if uninstaller.pluginItems.isEmpty { uninstaller.loadPlugins() }
         }
         .confirmationDialog("彻底删除不可恢复", isPresented: $confirmPermanent, titleVisibility: .visible) {
             Button("彻底删除所选", role: .destructive) {
@@ -97,6 +121,14 @@ struct UninstallerView: View {
         } message: {
             Text("将彻底删除 \(uninstaller.selectedPreferencesCount) 个偏好碎片（\(uninstaller.selectedPreferencesSize.byteStringCN)），此操作无法恢复。建议优先使用「移入废纸篓」。")
         }
+        .confirmationDialog("彻底删除插件与扩展", isPresented: $confirmPermanentPlugins, titleVisibility: .visible) {
+            Button("彻底删除所选", role: .destructive) {
+                _ = uninstaller.cleanSelectedPlugins(permanently: true)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将彻底删除 \(uninstaller.selectedPluginCount) 个插件与扩展（\(uninstaller.selectedPluginSize.byteStringCN)），此操作无法恢复。建议优先使用「移入废纸篓」。")
+        }
     }
 
     // MARK: - Header
@@ -121,7 +153,7 @@ struct UninstallerView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 330)
+            .frame(width: 440)
             .accessibilityIdentifier("uninstallerTabPicker")
 
             Spacer()
@@ -170,6 +202,21 @@ struct UninstallerView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .accessibilityIdentifier("refreshPreferencesButton")
+            case .extensions:
+                if !uninstaller.pluginItems.isEmpty {
+                    Text("\(filteredPlugins.count) 个扩展项")
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(Ink.tertiary)
+                }
+
+                Button {
+                    uninstaller.loadPlugins()
+                } label: {
+                    Label("重新扫描", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .accessibilityIdentifier("refreshPluginsButton")
             }
         }
         .padding(.horizontal, Space.gutter)
@@ -797,6 +844,239 @@ struct UninstallerView: View {
             Hairline()
         }
     }
+
+    // MARK: - 插件与系统扩展治理视图 (v1.55.0)
+
+    @ViewBuilder
+    private var pluginsPanel: some View {
+        if uninstaller.isScanningPlugins {
+            VStack(spacing: Space.sm) {
+                ProgressView().controlSize(.large)
+                Text("正在深度排查 QuickLook、Spotlight 与系统扩展残留…")
+                    .font(Typo.body)
+                    .foregroundStyle(Ink.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("pluginLoadingView")
+        } else if uninstaller.pluginItems.isEmpty {
+            EmptyState(
+                icon: "puzzlepiece.extension",
+                title: "未发现可疑的插件与扩展残留",
+                message: "系统扩展目录保持纯净，所有组件均正常归属在用应用或受安全保护。",
+                actionTitle: "重新扫描",
+                action: { uninstaller.loadPlugins() }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("pluginEmptyView")
+        } else {
+            VStack(spacing: 0) {
+                pluginsToolbar
+                Hairline()
+                pluginsListView
+                pluginsFooter
+            }
+            .accessibilityIdentifier("pluginPanel")
+        }
+    }
+
+    private var pluginsToolbar: some View {
+        VStack(spacing: Space.xs) {
+            HStack(spacing: Space.sm) {
+                SearchField(placeholder: "搜索插件名称、Bundle ID 或宿主 App…", text: $pluginSearchText, width: 280)
+
+                Spacer()
+
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.shield")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Signal.positive)
+                    Text("系统内置组件受保护 · 优先清理孤儿与损坏项")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Surface.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+                Text("共 \(filteredPlugins.count) 项 · \(filteredPlugins.reduce(0) { $0 + $1.size }.byteStringCN)")
+                    .font(.mcNumeric(11))
+                    .foregroundStyle(Ink.tertiary)
+            }
+
+            // 过滤胶囊条（按种类与健康状态）
+            HStack(spacing: Space.xs) {
+                // 种类过滤器
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Button {
+                            selectedPluginKind = nil
+                        } label: {
+                            Text("全部类型")
+                                .font(Typo.micro)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(selectedPluginKind == nil ? Accent.tint.opacity(0.15) : Surface.sunken)
+                                .foregroundStyle(selectedPluginKind == nil ? Accent.tint : Ink.secondary)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+
+                        ForEach(PluginExtensionKind.allCases) { kind in
+                            Button {
+                                selectedPluginKind = (selectedPluginKind == kind) ? nil : kind
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: kind.icon)
+                                        .font(.system(size: 9))
+                                    Text(kind.shortTitle)
+                                }
+                                .font(Typo.micro)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(selectedPluginKind == kind ? Accent.tint.opacity(0.15) : Surface.sunken)
+                                .foregroundStyle(selectedPluginKind == kind ? Accent.tint : Ink.secondary)
+                                .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Spacer()
+
+                // 状态过滤器
+                HStack(spacing: 6) {
+                    Button {
+                        selectedPluginStatus = (selectedPluginStatus == .orphan) ? nil : .orphan
+                    } label: {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color.red).frame(width: 5, height: 5)
+                            Text("仅孤儿残留")
+                        }
+                        .font(Typo.micro)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(selectedPluginStatus == .orphan ? Color.red.opacity(0.15) : Surface.sunken)
+                        .foregroundStyle(selectedPluginStatus == .orphan ? Color.red : Ink.secondary)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        selectedPluginStatus = (selectedPluginStatus == .broken) ? nil : .broken
+                    } label: {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color.orange).frame(width: 5, height: 5)
+                            Text("仅损坏项")
+                        }
+                        .font(Typo.micro)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(selectedPluginStatus == .broken ? Color.orange.opacity(0.15) : Surface.sunken)
+                        .foregroundStyle(selectedPluginStatus == .broken ? Color.orange : Ink.secondary)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.xs)
+        .background(Surface.group)
+    }
+
+    private var pluginsListView: some View {
+        ScrollView {
+            if filteredPlugins.isEmpty {
+                VStack(spacing: Space.sm) {
+                    Text("无匹配结果")
+                        .font(Typo.body)
+                        .foregroundStyle(Ink.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
+            } else {
+                GroupBox {
+                    ForEach(Array(filteredPlugins.enumerated()), id: \.element.id) { index, item in
+                        GroupedRow(isLast: index == filteredPlugins.count - 1) {
+                            PluginExtensionRow(item: item)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if item.status != .system {
+                                        uninstaller.togglePluginItem(id: item.id, on: !item.isSelected)
+                                    }
+                                }
+                        }
+                    }
+                }
+                .padding(.horizontal, Space.gutter)
+                .padding(.vertical, Space.md)
+            }
+        }
+    }
+
+    private var pluginsFooter: some View {
+        HStack(spacing: Space.md) {
+            if let summary = uninstaller.lastPluginSummary {
+                HStack(spacing: Space.xxs) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.positive)
+                    Text(summary)
+                        .font(Typo.body)
+                        .foregroundStyle(Ink.secondary)
+                }
+            }
+
+            Spacer()
+
+            Button(uninstaller.allPluginsSelected ? "取消全部勾选" : "全选可清理项") {
+                uninstaller.setAllPluginsSelected(!uninstaller.allPluginsSelected, safeOnly: true)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .accessibilityIdentifier("pluginSelectAllButton")
+
+            VStack(alignment: .trailing, spacing: 0) {
+                Text("已选 \(uninstaller.selectedPluginCount) 项")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                    .motionSafeNumericTransition()
+                Text(uninstaller.selectedPluginSize.byteStringCN)
+                    .font(.mcNumeric(17, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
+            }
+
+            Button {
+                confirmPermanentPlugins = true
+            } label: {
+                Label("彻底删除", systemImage: "trash.slash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .tint(Signal.critical)
+            .accessibilityIdentifier("pluginPermanentButton")
+            .disabled(uninstaller.selectedPluginCount == 0 || uninstaller.isCleaningPlugins)
+
+            Button {
+                _ = uninstaller.cleanSelectedPlugins(permanently: false)
+            } label: {
+                Label("移入废纸篓", systemImage: "trash")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("pluginTrashButton")
+            .disabled(uninstaller.selectedPluginCount == 0 || uninstaller.isCleaningPlugins)
+        }
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Hairline()
+        }
+    }
 }
 
 // MARK: - 孤儿应用与条目组件
@@ -1170,6 +1450,149 @@ struct OrphanPreferenceRow: View {
                 app.addPathToWhitelist(item.path, comment: item.appName)
             } label: {
                 Label("加入白名单排除（不再反查）", systemImage: "shield.slash")
+            }
+        }
+    }
+}
+
+// MARK: - 插件与系统扩展列表行组件 (v1.55.0)
+
+struct PluginExtensionRow: View {
+    @EnvironmentObject private var app: AppState
+    let item: PluginExtensionItem
+
+    private var uninstaller: UninstallerState { app.uninstaller }
+
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            if item.status == .system {
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Ink.quaternary)
+            } else {
+                Button(action: {
+                    uninstaller.togglePluginItem(id: item.id, on: !item.isSelected)
+                }) {
+                    Image(systemName: item.isSelected ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 13))
+                        .foregroundStyle(item.isSelected ? Accent.tint : Ink.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Image(systemName: item.kind.icon)
+                .font(.system(size: 15))
+                .foregroundStyle(item.status == .orphan ? Color.red : (item.status == .broken ? Color.orange : Accent.tint))
+                .frame(width: 22, height: 22)
+                .background(Surface.sunken)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: Space.xs) {
+                    Text(item.name)
+                        .font(Typo.rowStrong)
+                        .foregroundStyle(Ink.primary)
+                        .lineLimit(1)
+
+                    if let ver = item.version, !ver.isEmpty {
+                        Text("v\(ver)")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+
+                    Text(item.kind.shortTitle)
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(Surface.sunken)
+                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+
+                    HStack(spacing: 2) {
+                        Image(systemName: item.status.icon)
+                            .font(.system(size: 9))
+                        Text(item.status.rawValue)
+                    }
+                    .font(Typo.micro)
+                    .foregroundStyle(item.status.badgeColor)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(item.status.badgeColor.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+
+                    if !item.isUserDomain {
+                        Text("全局 /Library")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.quaternary)
+                    }
+                }
+
+                HStack(spacing: Space.xs) {
+                    if let host = item.hostAppName {
+                        Text("归属宿主: \(host)")
+                            .font(Typo.micro)
+                            .foregroundStyle(item.status == .orphan ? Color.red.opacity(0.8) : Ink.secondary)
+                        Text("·")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.quaternary)
+                    }
+
+                    if let bid = item.bundleID {
+                        Text(bid)
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.tertiary)
+                        Text("·")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.quaternary)
+                    }
+
+                    Text(item.path)
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.quaternary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer(minLength: Space.xs)
+
+            Text(item.size.byteStringCN)
+                .font(.mcNumeric(12, weight: .medium))
+                .foregroundStyle(Ink.primary)
+        }
+        .contentShape(Rectangle())
+        .rowHover()
+        .contextMenu {
+            Button {
+                let url = URL(fileURLWithPath: item.path)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } label: {
+                Label("在访达中显示", systemImage: "folder")
+            }
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(item.path, forType: .string)
+            } label: {
+                Label("拷贝路径", systemImage: "doc.on.doc")
+            }
+
+            if item.status != .system {
+                Divider()
+
+                Button {
+                    uninstaller.togglePluginItem(id: item.id, on: !item.isSelected)
+                } label: {
+                    Label(item.isSelected ? "取消选择" : "勾选清理", systemImage: item.isSelected ? "xmark.circle" : "checkmark.circle")
+                }
+            }
+
+            Divider()
+
+            Button {
+                app.addPathToWhitelist(item.path, comment: item.name)
+            } label: {
+                Label("加入白名单排除（不再扫描）", systemImage: "shield.slash")
             }
         }
     }

@@ -120,6 +120,8 @@ enum Selftest {
         suitePreferenceResidueDeep()
         // 空间透视超大陈旧冷文件原位归档压缩与外接盘迁移 (v1.54.0)
         suiteSpaceArchiveDeep()
+        // 系统深度应用扩展与 QuickLook/Spotlight 插件残存治理 (v1.55.0)
+        suitePluginExtensionDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
