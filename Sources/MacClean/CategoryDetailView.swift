@@ -25,6 +25,7 @@ struct CategoryDetailView: View {
     @State private var showColorSyncOptimizer = false
     @State private var showSpotlightOptimizer = false
     @State private var showAudioHALOptimizer = false
+    @State private var showPrinterDriverOptimizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -464,6 +465,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showSpotlightOptimizer = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showPrinterDriverOptimizer {
+                    PrinterDriverOptimizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showPrinterDriverOptimizer = false
                             }
                         },
                         onTriggerClean: {
@@ -2060,8 +2077,11 @@ extension CategoryDetailView {
 
             Spacer()
 
-            spotlightOptimizerChip
-                .padding(.trailing, Space.gutter)
+            HStack(spacing: Space.xs) {
+                spotlightOptimizerChip
+                printerDriverOptimizerChip
+            }
+            .padding(.trailing, Space.gutter)
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
@@ -2094,6 +2114,35 @@ extension CategoryDetailView {
         .buttonStyle(.plain)
         .accessibilityIdentifier("spotlightOptimizerToggle")
         .help("展开/收起 Spotlight 废弃索引与搜索数据库深度重建面板")
+    }
+
+    /// 废弃打印机驱动与 PPD 描述文件治理开关胶囊
+    private var printerDriverOptimizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showPrinterDriverOptimizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "printer.fill")
+                    .font(.system(size: 10))
+                Text("打印机驱动")
+                    .font(Typo.micro)
+                if showPrinterDriverOptimizer {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showPrinterDriverOptimizer ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showPrinterDriverOptimizer ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("printerDriverOptimizerToggle")
+        .help("展开/收起废弃打印机驱动与 PPD 描述文件治理面板")
     }
 }
 

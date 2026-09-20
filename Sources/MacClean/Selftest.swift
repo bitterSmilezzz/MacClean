@@ -152,6 +152,8 @@ enum Selftest {
         suiteSpotlightDeep()
         // 系统音频 HAL 插件与残存驱动排查治理 (v1.70.0)
         suiteAudioHALDeep()
+        // 废弃打印机驱动与 PPD 描述文件治理 (v1.71.0)
+        suitePrinterDriverDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
