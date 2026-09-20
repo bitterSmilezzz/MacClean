@@ -108,6 +108,8 @@ enum Selftest {
         suiteHardlinkDedupDeep()
         // 系统底层存储深度治理 (v1.48.0)
         suiteSystemDeepStorage()
+        // 重复大文件并发流水线哈希与轻量指纹缓存 (v1.49.0)
+        suiteFingerprintPipelineDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

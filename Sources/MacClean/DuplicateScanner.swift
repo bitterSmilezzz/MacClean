@@ -109,6 +109,7 @@ final class DuplicateState: ObservableObject {
     @Published var scanProgressMessage = ""
     @Published var progressFraction: Double = 0
     @Published var lastSummary: String?
+    @Published var cacheStatsSummary: String? = nil
 
     /// 扫描范围根目录（默认从 DirectoryScopeManager 同步，也可直接自定义）
     @Published var searchPaths: [String] = DirectoryScopeManager.shared.searchRoots
@@ -227,6 +228,8 @@ final class DuplicateState: ObservableObject {
         scanProgressMessage = "正在枚举文件…"
         progressFraction = 0.05
         lastSummary = nil
+        cacheStatsSummary = nil
+        FileFingerprintCache.shared.resetStats()
 
         let paths = searchPaths.map { CleanPaths.expand($0) }
         let minSize = minSizeBytes
@@ -255,6 +258,13 @@ final class DuplicateState: ObservableObject {
                     self.progressFraction = 1.0
                     let totalFiles = resultGroups.reduce(0) { $0 + $1.items.count }
                     self.scanProgressMessage = "扫描完成，发现 \(resultGroups.count) 组重复文件（共 \(totalFiles) 个副本）"
+                    let hits = FileFingerprintCache.shared.hitsCount
+                    let saved = FileFingerprintCache.shared.savedBytes
+                    if hits > 0 {
+                        self.cacheStatsSummary = "⚡ 已命中指纹缓存 \(hits) 项，节省 \(saved.byteStringCN) 磁盘读取"
+                    } else {
+                        self.cacheStatsSummary = nil
+                    }
                 } else {
                     self.scanProgressMessage = "已停止扫描（保留上次结果）"
                     self.lastSummary = "扫描已停止。"
@@ -507,51 +517,102 @@ enum DuplicateScanner {
         var resultGroups: [DuplicateGroup] = []
         var exactMatchedPaths: Set<String> = []
 
-        // 第二阶段：多级自适应采样与并行哈希校验
+        // 第二阶段：多级自适应采样与并行流水线哈希校验（深度融合指纹缓存）
         let potentialDuplicateSets = sizeMap.filter { $0.value.count >= 2 }
         let totalSets = max(1, potentialDuplicateSets.count)
         var processedSets = 0
+        let cache = FileFingerprintCache.shared
 
         for (size, paths) in potentialDuplicateSets {
             processedSets += 1
             let frac = 0.1 + (Double(processedSets) / Double(totalSets)) * 0.5
-            progress(frac, "正在比对特征 (\(processedSets)/\(totalSets))…")
+            progress(frac, "正在并发比对特征 (\(processedSets)/\(totalSets))…")
 
-            // 1. 头 8KB 快速初筛
+            // 1. 头 8KB 并发初筛（带指纹缓存）
             var partialMap: [String: [String]] = [:]
-            for p in paths {
-                if isCancelled() { return [] }
-                if let headerHash = calculatePartialHash(at: p, length: 8192) {
-                    partialMap[headerHash, default: []].append(p)
+            let partialLock = NSLock()
+
+            DispatchQueue.concurrentPerform(iterations: paths.count) { idx in
+                if isCancelled() { return }
+                let p = paths[idx]
+                let mtime = FileSystem.modificationDate(p)
+                let headerHash: String?
+
+                if let cached = cache.get(path: p, size: size, mtime: mtime)?.headerHash {
+                    headerHash = cached
+                } else if let computed = calculatePartialHash(at: p, length: 8192) {
+                    cache.put(path: p, size: size, mtime: mtime, headerHash: computed)
+                    headerHash = computed
+                } else {
+                    headerHash = nil
+                }
+
+                if let h = headerHash {
+                    partialLock.lock()
+                    partialMap[h, default: []].append(p)
+                    partialLock.unlock()
                 }
             }
 
-            // 2. 对头部相同的候选集合，做「头+尾+中」稀疏采样校验（过滤头同尾异的假阳性大文件）
+            if isCancelled() { return [] }
+
+            // 2. 对头部相同的候选集合，并发「头+尾+中」稀疏采样校验（带指纹缓存）
             for (_, sameHeaderPaths) in partialMap where sameHeaderPaths.count >= 2 {
                 let filteredSubgroups: [[String]]
                 if size > 8192 {
                     var sampledMap: [String: [String]] = [:]
-                    for p in sameHeaderPaths {
-                        if isCancelled() { return [] }
-                        if let sHash = calculateSampledHash(at: p, fileSize: size) {
-                            sampledMap[sHash, default: []].append(p)
+                    let sampledLock = NSLock()
+
+                    DispatchQueue.concurrentPerform(iterations: sameHeaderPaths.count) { idx in
+                        if isCancelled() { return }
+                        let p = sameHeaderPaths[idx]
+                        let mtime = FileSystem.modificationDate(p)
+                        let sHash: String?
+
+                        if let cached = cache.get(path: p, size: size, mtime: mtime)?.sampledHash {
+                            sHash = cached
+                        } else if let computed = calculateSampledHash(at: p, fileSize: size) {
+                            cache.put(path: p, size: size, mtime: mtime, sampledHash: computed)
+                            sHash = computed
+                        } else {
+                            sHash = nil
+                        }
+
+                        if let s = sHash {
+                            sampledLock.lock()
+                            sampledMap[s, default: []].append(p)
+                            sampledLock.unlock()
                         }
                     }
+
                     filteredSubgroups = sampledMap.values.filter { $0.count >= 2 }
                 } else {
                     filteredSubgroups = [sameHeaderPaths]
                 }
 
+                if isCancelled() { return [] }
+
                 for sameSamplePaths in filteredSubgroups {
-                    // 3. 并行全量 SHA-256 计算（带自适应大缓冲与零拷贝）
+                    // 3. 并行全量 SHA-256 计算（带指纹缓存与自适应大缓冲）
                     var fullHashMap: [String: [DuplicateFileItem]] = [:]
                     let mapLock = NSLock()
 
                     DispatchQueue.concurrentPerform(iterations: sameSamplePaths.count) { i in
                         if isCancelled() { return }
                         let p = sameSamplePaths[i]
-                        guard let fullHash = calculateFullSHA256(at: p) else { return }
                         let mtime = FileSystem.modificationDate(p)
+                        let fullHash: String?
+
+                        if let cached = cache.get(path: p, size: size, mtime: mtime)?.fullSHA256 {
+                            fullHash = cached
+                        } else if let computed = calculateFullSHA256(at: p) {
+                            cache.put(path: p, size: size, mtime: mtime, fullSHA256: computed)
+                            fullHash = computed
+                        } else {
+                            fullHash = nil
+                        }
+
+                        guard let h = fullHash else { return }
                         let name = (p as NSString).lastPathComponent
                         let item = DuplicateFileItem(
                             path: p,
@@ -561,7 +622,7 @@ enum DuplicateScanner {
                             inodeKey: DuplicateScanner.inodeKey(forPath: p)
                         )
                         mapLock.lock()
-                        fullHashMap[fullHash, default: []].append(item)
+                        fullHashMap[h, default: []].append(item)
                         mapLock.unlock()
                     }
 
@@ -836,6 +897,7 @@ enum DuplicateScanner {
 
         // 按可节省空间从大到小排序
         resultGroups.sort { $0.wastedBytes > $1.wastedBytes }
+        FileFingerprintCache.shared.saveToDisk()
         progress(1.0, "扫描完成")
         return resultGroups
     }

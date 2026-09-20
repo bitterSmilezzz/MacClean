@@ -350,13 +350,24 @@ struct DuplicateView: View {
     // MARK: - 底栏统计与清理
     private var footer: some View {
         HStack(spacing: Space.md) {
-            if let summary = dup.lastSummary {
-                HStack(spacing: Space.xxs) {
-                    IconSlot(systemName: "checkmark.circle", size: 12, color: Signal.positive, width: 14)
-                    Text(summary)
-                        .font(Typo.caption)
-                        .foregroundStyle(Ink.secondary)
-                        .lineLimit(1)
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                if let summary = dup.lastSummary {
+                    HStack(spacing: Space.xxs) {
+                        IconSlot(systemName: "checkmark.circle", size: 12, color: Signal.positive, width: 14)
+                        Text(summary)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                if let cacheStats = dup.cacheStatsSummary {
+                    HStack(spacing: Space.xxs) {
+                        IconSlot(systemName: "bolt.fill", size: 12, color: Accent.tint, width: 14)
+                        Text(cacheStats)
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
 
