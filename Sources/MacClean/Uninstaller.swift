@@ -110,6 +110,7 @@ final class UninstallerState: ObservableObject {
         case preferences = "偏好碎片反查"
         case extensions = "插件与扩展治理"
         case localization = "多语言瘦身"
+        case loginItems = "自启死链排查"
         public var id: String { rawValue }
     }
 

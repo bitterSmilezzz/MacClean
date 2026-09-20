@@ -101,6 +101,8 @@ struct UninstallerView: View {
                 pluginsPanel
             case .localization:
                 localizationPanel
+            case .loginItems:
+                loginItemsPanel
             }
         }
         .background(Surface.window)
@@ -181,7 +183,7 @@ struct UninstallerView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 530)
+            .frame(width: 640)
             .accessibilityIdentifier("uninstallerTabPicker")
 
             Spacer()
@@ -260,6 +262,8 @@ struct UninstallerView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .accessibilityIdentifier("refreshLocalizationButton")
+            case .loginItems:
+                EmptyView()
             }
         }
         .padding(.horizontal, Space.gutter)
@@ -1352,6 +1356,22 @@ struct UninstallerView: View {
         .overlay(alignment: .top) {
             Hairline()
         }
+    }
+
+    // MARK: - 自启死链排查面板 (v1.67.0)
+
+    private var loginItemsPanel: some View {
+        ScrollView {
+            VStack(spacing: Space.md) {
+                LoginItemCleanerCard(
+                    onTriggerClean: {
+                        app.refreshDisk()
+                    }
+                )
+            }
+            .padding(Space.gutter)
+        }
+        .background(Surface.window)
     }
 }
 

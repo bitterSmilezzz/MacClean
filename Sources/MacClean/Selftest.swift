@@ -144,6 +144,8 @@ enum Selftest {
         suiteCLICacheDeep()
         // 访达快速查看缩略图缓存释放深度治理 (v1.66.0)
         suiteQuickLookThumbnailDeep()
+        // 已卸载应用登录项与自启残存深度治理 (v1.67.0)
+        suiteLoginItemDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
