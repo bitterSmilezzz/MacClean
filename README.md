@@ -92,7 +92,17 @@
     - **单项移除与全量历史轨迹收敛**：支持单项删除特定网络或一键清空全部历史记录，收敛无线探测广播指纹（Probe Requests）；
   - **风险扫描器联动与双栏原生治理面板 (`RiskView` + `NetworkPrivacyView`)**：
     - `RiskScanner` 联动新增「未加密开放 Wi-Fi 历史记录」与「Wi-Fi 访问轨迹残留」风险规则；
-    - `RiskView` 引入原生分段选择器，在「系统风险诊断」与「网络与 Wi-Fi 隐私」间无缝切换，风险项可一键直通治理。
+- **开发工程构建产物深度智能排查与按项目治理（v1.57.0 重磅新增）**：
+  - **多技术栈工程特征探测引擎 (`DevProjectScanner`)**：
+    - 全面覆盖 Xcode (`DerivedData`)、Rust (`target/`)、SwiftPM (`.build/`)、Node.js 前端 (`node_modules/`, `.next/`, `.nuxt/`, `.turbo/`)、Gradle/Java (`build/`, `.gradle/`)、Python (`venv/`, `.venv/`) 与 Go；
+    - **Xcode DerivedData 逆向工程反查**：深潜解析各构建目录下的 `info.plist` 提取 `WorkspacePath` 与最近访问时间戳，自动映射真实工程路径；对于源工程已被移动或删除的幽灵构建产物，精准标记为「👻 孤儿产物」；
+    - **工程活跃度与安全保护防线**：7 天内活跃工程（`isActive`）默认高亮保护，只推荐释放 >30 天陈旧及孤儿产物；白名单目录安全校验，严禁误伤工程源码文件；
+  - **开发残留分类二级细分与抽屉治理卡片 (`DevProjectInspectorCard` + `CategoryDetailView`)**：
+    - 在「开发残留」分类详情页增加二级细分过滤条（全部 / 工程构建产物 / 包依赖缓存 / IDE 索引与日志 / 容器与环境）；
+    - 引入「🏗️ 工程透视」悬浮抽屉卡片，支持按工程活跃状态（全部 / 陈旧 / 活跃 / 孤儿）及技术栈类型多维筛选；
+    - 支持工程单项与批量安全释放构建产物、绝对路径一键拷贝与访达定位；
+  - **系统内核 Mach 端口泄漏根除（P0 级底层加固）**：
+    - 彻底修复 `SystemMonitor.current()` 中调用 `mach_host_self()` 导致 Mach Port 引用泄漏的隐患，引入 `defer { mach_port_deallocate(...) }`，保障长时间常驻运行稳定性。
 - **菜单栏常驻助手全局快捷键呼出与极速一键清理微面板（v1.56.0 重磅新增）**：
   - **原生 Carbon Events 全局快捷键服务 (`GlobalHotkeyManager`)**：
     - 采用系统级底层 Carbon Events API 注册热键（默认 `⌃⌥Space`，支持 `⌥⌘C`、`⌃⌥C`、`⇧⌘C`、`F12` 等预设），无需申请耗时且敏感的辅助功能 (Accessibility) 权限，开箱即用；

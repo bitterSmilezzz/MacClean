@@ -14,6 +14,8 @@ struct CategoryDetailView: View {
     @State private var selectedSortOrder: LargeFileSortOrder = .recommended
     @State private var selectedAppResidueFilter: AppResidueFilterKind = .all
     @State private var selectedLogsFilter: LogsFilterKind = .all
+    @State private var selectedDevFilter: DevResidueFilterKind = .all
+    @State private var showProjectInspector = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -48,6 +50,9 @@ struct CategoryDetailView: View {
         }
         if category == .logsAndTemp && selectedLogsFilter != .all {
             result = result.filter { selectedLogsFilter.matches(item: $0) }
+        }
+        if category == .devResidue && selectedDevFilter != .all {
+            result = result.filter { selectedDevFilter.matches(item: $0) }
         }
         if category == .largeFiles, let dirFilter = activeDirectoryFilter, !dirFilter.isEmpty {
             let expDir = CleanPaths.expand(dirFilter)
@@ -290,6 +295,26 @@ struct CategoryDetailView: View {
             appResidueFilterBar
         } else if category == .logsAndTemp && st.isScanned && !st.items.isEmpty {
             logsFilterBar
+        } else if category == .devResidue && st.isScanned && !st.items.isEmpty {
+            VStack(spacing: 0) {
+                devResidueFilterBar
+                if showProjectInspector {
+                    DevProjectInspectorCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showProjectInspector = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
         } else if category == .browserAndSystem {
             SystemDeepStorageView()
                 .padding(.horizontal, Space.gutter)
@@ -1512,6 +1537,115 @@ extension CategoryDetailView {
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// 开发残留细分过滤栏
+    var devResidueFilterBar: some View {
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xxs) {
+                    ForEach(DevResidueFilterKind.allCases) { filter in
+                        let isSelected = selectedDevFilter == filter
+                        let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
+
+                        Button {
+                            withAnimation(Motion.micro) { selectedDevFilter = filter }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(filter.rawValue)
+                                    .font(isSelected ? Typo.rowStrong : Typo.row)
+                                Text("\(count)")
+                                    .font(.mcNumeric(10))
+                                    .opacity(0.65)
+                            }
+                            .padding(.horizontal, Space.xs)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                                    .fill(isSelected ? Accent.tint : Color.clear)
+                            )
+                            .foregroundStyle(isSelected ? Color.white : Ink.secondary)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("devResidueFilter_\(filter.id)")
+                    }
+                }
+                .padding(.horizontal, Space.gutter)
+                .padding(.vertical, Space.xs)
+            }
+
+            Spacer(minLength: 4)
+
+            projectInspectorChip
+                .padding(.trailing, Space.gutter)
+        }
+        .background(Surface.window)
+        .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// 工程透视卡片开关胶囊
+    private var projectInspectorChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showProjectInspector.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "folder.badge.gearshape")
+                    .font(.system(size: 10))
+                Text("工程透视")
+                    .font(Typo.micro)
+                if showProjectInspector {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showProjectInspector ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showProjectInspector ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("projectInspectorToggle")
+        .help("展开/收起本地工程构建产物透视与治理面板")
+    }
+}
+
+// MARK: - 开发残留细分过滤
+
+enum DevResidueFilterKind: String, CaseIterable, Identifiable {
+    case all = "全部开发残留"
+    case buildArtifacts = "工程构建产物"
+    case packageCaches = "包依赖缓存"
+    case ideCaches = "IDE 索引与日志"
+    case environments = "容器与环境"
+
+    var id: String {
+        switch self {
+        case .all: return "all"
+        case .buildArtifacts: return "build"
+        case .packageCaches: return "packages"
+        case .ideCaches: return "ide"
+        case .environments: return "env"
+        }
+    }
+
+    func matches(item: CleanItem) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .buildArtifacts:
+            return ["D1", "D2", "D11", "D13", "D14", "D22"].contains(item.rule)
+        case .packageCaches:
+            return ["D4", "D5", "D6", "D7", "D8", "D9", "D10", "D15", "D16", "D18", "D19"].contains(item.rule)
+        case .ideCaches:
+            return ["D3", "D20", "D21"].contains(item.rule)
+        case .environments:
+            return ["D12", "D17", "D23"].contains(item.rule)
+        }
     }
 }
 

@@ -55,6 +55,7 @@ struct MemoryStats: Equatable {
         var size = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
         var vmStats = vm_statistics64()
         let hostPort = mach_host_self()
+        defer { mach_port_deallocate(mach_task_self_, hostPort) }
         let ret = withUnsafeMutablePointer(to: &vmStats) {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(size)) {
                 host_statistics64(hostPort, HOST_VM_INFO64, $0, &size)

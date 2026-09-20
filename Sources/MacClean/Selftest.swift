@@ -124,6 +124,8 @@ enum Selftest {
         suitePluginExtensionDeep()
         // 菜单栏常驻助手全局快捷键呼出与极速一键清理微面板 (v1.56.0)
         suiteGlobalHotkeyDeep()
+        // 开发工程构建产物深度智能排查与按项目治理 (v1.57.0)
+        suiteDevProjectDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
