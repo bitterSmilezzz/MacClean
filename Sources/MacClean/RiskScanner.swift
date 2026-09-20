@@ -68,6 +68,8 @@ enum RiskScanner {
         (.sensitiveData, "共享目录权限"),
         (.networkExposure, "防火墙状态"),
         (.networkExposure, "远程登录/文件共享"),
+        (.networkExposure, "未加密开放 Wi-Fi 历史记录"),
+        (.networkExposure, "Wi-Fi 访问轨迹残留"),
         (.systemSecurity, "FileVault 磁盘加密"),
         (.systemSecurity, "自动登录"),
         (.startupItems, "可疑启动项"),
@@ -116,6 +118,14 @@ enum RiskScanner {
         // 9) 可疑启动项
         progress("检查可疑启动项…")
         items.append(contentsOf: checkStartupItems(home: home))
+
+        // 10) 未加密开放 Wi-Fi (v1.52.0)
+        progress("检查未加密开放 Wi-Fi…")
+        if let wifiItem = checkUnsecuredWiFi() { items.append(wifiItem) }
+
+        // 11) Wi-Fi 访问轨迹残留 (v1.52.0)
+        progress("检查已记住的 Wi-Fi 轨迹…")
+        if let trackItem = checkExcessiveWiFiHistory() { items.append(trackItem) }
 
         return items.sorted {
             if $0.severity.order != $1.severity.order { return $0.severity.order < $1.severity.order }
@@ -401,5 +411,39 @@ enum RiskScanner {
         // 读端必须收尾，否则 captured 可能只读到一半
         _ = readDone.wait(timeout: .now() + 2)
         return String(data: captured, encoding: .utf8)
+    }
+
+    // MARK: - 10. 未加密开放 Wi-Fi (v1.52.0)
+
+    static func checkUnsecuredWiFi(interface: String? = nil, records: [WiFiNetworkRecord]? = nil) -> RiskItem? {
+        let list = records ?? NetworkPrivacyInspector.shared.listPreferredNetworks(interface: interface)
+        let openNetworks = list.filter { $0.securityKind.isDangerous }
+        guard !openNetworks.isEmpty else { return nil }
+
+        let names = openNetworks.prefix(3).map { "\"\($0.ssid)\"" }.joined(separator: ", ")
+        let suffix = openNetworks.count > 3 ? " 等 \(openNetworks.count) 个网络" : ""
+
+        return RiskItem(
+            title: "已保存未加密开放 Wi-Fi 记录",
+            detail: "系统保存了开放未加密 Wi-Fi：\(names)\(suffix)。设备进入信号范围可能自动接入，存在网络流量被嗅探或被钓鱼伪热点劫持的风险。",
+            severity: .medium,
+            category: .networkExposure,
+            suggestion: "在网络与隐私治理面板中一键清理未加密开放网络，避免自动重连。"
+        )
+    }
+
+    // MARK: - 11. Wi-Fi 访问轨迹残留 (v1.52.0)
+
+    static func checkExcessiveWiFiHistory(interface: String? = nil, records: [WiFiNetworkRecord]? = nil, threshold: Int = 15) -> RiskItem? {
+        let list = records ?? NetworkPrivacyInspector.shared.listPreferredNetworks(interface: interface)
+        guard list.count >= threshold else { return nil }
+
+        return RiskItem(
+            title: "已记忆 Wi-Fi 历史网络过多",
+            detail: "系统当前记忆了 \(list.count) 个历史 Wi-Fi 网络。设备在寻找网络时会持续广播这些 SSID 探针，可能暴露历史行程与常去场所等位置隐私。",
+            severity: .low,
+            category: .networkExposure,
+            suggestion: "定期清理不再使用的陈旧无线网络，减少广播探针并降低漫游指纹特征。"
+        )
     }
 }

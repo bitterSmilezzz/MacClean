@@ -15,24 +15,41 @@ import SwiftUI
 struct RiskView: View {
     @EnvironmentObject private var app: AppState
 
+    enum RiskTab: String, CaseIterable, Identifiable {
+        case risks = "系统风险诊断"
+        case networkPrivacy = "网络与 Wi-Fi 隐私"
+
+        var id: String { rawValue }
+    }
+
+    @State private var selectedTab: RiskTab = .risks
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Hairline()
 
-            // 风险扫描错误横幅
-            if let err = app.riskLastError {
-                errorBanner(err)
-            }
-
-            if app.isRiskScanning {
-                scanningView
-            } else if !app.riskScanned {
-                introView
-            } else if app.riskItems.isEmpty {
-                allClearView
+            if selectedTab == .networkPrivacy {
+                ScrollView {
+                    NetworkPrivacyView()
+                        .padding(.horizontal, Space.gutter)
+                        .padding(.vertical, Space.md)
+                }
             } else {
-                riskList
+                // 风险扫描错误横幅
+                if let err = app.riskLastError {
+                    errorBanner(err)
+                }
+
+                if app.isRiskScanning {
+                    scanningView
+                } else if !app.riskScanned {
+                    introView
+                } else if app.riskItems.isEmpty {
+                    allClearView
+                } else {
+                    riskList
+                }
             }
         }
         .background(Surface.window)
@@ -42,30 +59,41 @@ struct RiskView: View {
 
     private var header: some View {
         HStack(spacing: Space.sm) {
-            Text("电脑风险提醒")
+            Text("电脑风险与隐私")
                 .font(Typo.title)
                 .foregroundStyle(Ink.primary)
 
+            Picker("", selection: $selectedTab) {
+                ForEach(RiskTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 240)
+            .accessibilityIdentifier("riskTabPicker")
+
             Spacer(minLength: Space.md)
 
-            if app.riskScanned && !app.riskItems.isEmpty {
-                HStack(spacing: Space.sm) {
-                    severityCount(app.riskCounts[.high, default: 0], label: "高", color: Signal.critical)
-                    severityCount(app.riskCounts[.medium, default: 0], label: "中", color: Signal.caution)
-                    severityCount(app.riskCounts[.low, default: 0], label: "低", color: Ink.tertiary)
+            if selectedTab == .risks {
+                if app.riskScanned && !app.riskItems.isEmpty {
+                    HStack(spacing: Space.sm) {
+                        severityCount(app.riskCounts[.high, default: 0], label: "高", color: Signal.critical)
+                        severityCount(app.riskCounts[.medium, default: 0], label: "中", color: Signal.caution)
+                        severityCount(app.riskCounts[.low, default: 0], label: "低", color: Ink.tertiary)
+                    }
+                    .padding(.trailing, Space.xxs)
                 }
-                .padding(.trailing, Space.xxs)
-            }
 
-            Button {
-                app.scanRisks()
-            } label: {
-                Label(app.riskScanned ? "重新检查" : "开始检查", systemImage: "stethoscope")
+                Button {
+                    app.scanRisks()
+                } label: {
+                    Label(app.riskScanned ? "重新检查" : "开始检查", systemImage: "stethoscope")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .accessibilityIdentifier("riskScanButton")
+                .disabled(app.isRiskScanning)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .accessibilityIdentifier("riskScanButton")
-            .disabled(app.isRiskScanning)
         }
         .padding(.horizontal, Space.gutter)
         .padding(.vertical, Space.sm)
@@ -163,7 +191,11 @@ struct RiskView: View {
                         GroupBox(title: "\(severity.label)（\(group.count) 项）") {
                             ForEach(Array(group.enumerated()), id: \.element.id) { index, item in
                                 GroupedRow(isLast: index == group.count - 1) {
-                                    RiskRow(item: item)
+                                    RiskRow(item: item) {
+                                        withAnimation(Motion.micro) {
+                                            selectedTab = .networkPrivacy
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -181,6 +213,7 @@ struct RiskView: View {
 
 struct RiskRow: View {
     let item: RiskItem
+    var onNavigatePrivacy: (() -> Void)? = nil
     @State private var isExpanded = false
 
     private var color: Color {
@@ -222,6 +255,19 @@ struct RiskRow: View {
                             .foregroundStyle(Ink.secondary)
                     }
                     .padding(.top, Space.xxs)
+
+                    if (item.title.contains("Wi-Fi") || item.title.contains("DNS")), let onNavigate = onNavigatePrivacy {
+                        Button {
+                            onNavigate()
+                        } label: {
+                            Label("前往网络与 Wi-Fi 隐私治理", systemImage: "arrow.forward.circle")
+                                .font(Typo.caption)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .padding(.top, Space.xxs)
+                    }
+
                     if let path = item.path {
                         Text(path)
                             .font(Typo.caption)

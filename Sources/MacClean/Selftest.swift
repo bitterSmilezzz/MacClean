@@ -114,6 +114,8 @@ enum Selftest {
         suiteSpaceVisualizerDeep2()
         // 菜单栏常驻助手快捷小组件与状态指示深化 (v1.51.0)
         suiteMenuBarWidgetsDeep()
+        // 网络与系统安全隐私数据深度体检 (v1.52.0)
+        suiteNetworkPrivacyDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
