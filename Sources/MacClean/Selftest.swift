@@ -136,6 +136,8 @@ enum Selftest {
         suiteFontCacheDeep()
         // 下载目录智能时效归档与按类型治理 (v1.62.0)
         suiteDownloadsOrganizerDeep()
+        // 剪贴板历史与大文件临时缓冲区治理 (v1.63.0)
+        suiteClipboardDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

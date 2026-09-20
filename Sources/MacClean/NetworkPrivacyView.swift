@@ -44,12 +44,69 @@ public struct NetworkPrivacyView: View {
             // 1. DNS 缓存治理微卡
             dnsCacheGroup
 
-            // 2. Wi-Fi 访问历史与未加密开放网络排查卡片
+            // 2. 剪贴板与大文件临时缓冲区治理卡片 (v1.63.0)
+            clipboardGroup
+
+            // 3. Wi-Fi 访问历史与未加密开放网络排查卡片
             wifiHistoryGroup
         }
         .accessibilityIdentifier("networkPrivacyContainer")
         .onAppear {
             refreshData()
+        }
+    }
+
+    // MARK: - 剪贴板与临时缓冲区治理 (v1.63.0)
+
+    @State private var showClipboardCard = false
+
+    private var clipboardGroup: some View {
+        GroupBox(title: "系统剪贴板与临时缓冲区") {
+            VStack(spacing: Space.xs) {
+                GroupedRow(isLast: !showClipboardCard) {
+                    HStack(spacing: Space.sm) {
+                        IconSlot(systemName: "doc.on.clipboard", size: 16, color: Accent.tint)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("剪贴板内存大对象与敏感凭据")
+                                .font(Typo.row)
+                                .foregroundStyle(Ink.primary)
+                            Text("排查内存驻留大图片、音视频剪贴板与疑似 API Key/密码泄露风险")
+                                .font(Typo.micro)
+                                .foregroundStyle(Ink.tertiary)
+                        }
+
+                        Spacer(minLength: Space.xs)
+
+                        Button {
+                            withAnimation(Motion.standard) {
+                                showClipboardCard.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(showClipboardCard ? "收起治理面板" : "展开治理面板")
+                                Image(systemName: showClipboardCard ? "chevron.up" : "chevron.down")
+                                    .font(.system(size: 9))
+                            }
+                            .font(Typo.caption)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .accessibilityIdentifier("toggleClipboardPurgerButton")
+                    }
+                }
+
+                if showClipboardCard {
+                    ClipboardPurgerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showClipboardCard = false
+                            }
+                        }
+                    )
+                    .padding(.top, 4)
+                }
+            }
         }
     }
 
