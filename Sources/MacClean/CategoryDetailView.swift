@@ -20,6 +20,7 @@ struct CategoryDetailView: View {
     @State private var showFontCacheInspector = false
     @State private var showDownloadsOrganizer = false
     @State private var showScreenshotsOrganizer = false
+    @State private var showCLICacheOptimizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -375,6 +376,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showProjectInspector = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showCLICacheOptimizer {
+                    CLICacheOptimizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showCLICacheOptimizer = false
                             }
                         },
                         onTriggerClean: {
@@ -1788,10 +1805,12 @@ extension CategoryDetailView {
                 .padding(.vertical, Space.xs)
             }
 
-            Spacer(minLength: 4)
+            HStack(spacing: Space.xs) {
+                projectInspectorChip
 
-            projectInspectorChip
-                .padding(.trailing, Space.gutter)
+                cliCacheOptimizerChip
+            }
+            .padding(.trailing, Space.gutter)
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
@@ -1824,6 +1843,35 @@ extension CategoryDetailView {
         .buttonStyle(.plain)
         .accessibilityIdentifier("projectInspectorToggle")
         .help("展开/收起本地工程构建产物透视与治理面板")
+    }
+
+    /// 终端与命令行开发缓存治理开关胶囊
+    private var cliCacheOptimizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showCLICacheOptimizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 10))
+                Text("CLI 缓存")
+                    .font(Typo.micro)
+                if showCLICacheOptimizer {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showCLICacheOptimizer ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showCLICacheOptimizer ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("cliCacheOptimizerToggle")
+        .help("展开/收起终端与命令行开发工具缓存治理面板")
     }
 }
 

@@ -140,6 +140,8 @@ enum Selftest {
         suiteClipboardDeep()
         // 屏幕截图与录屏归档助手深度治理 (v1.64.0)
         suiteScreenshotsOrganizerDeep()
+        // 终端与命令行开发缓存深度治理 (v1.65.0)
+        suiteCLICacheDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
