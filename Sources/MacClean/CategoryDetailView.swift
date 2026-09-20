@@ -22,6 +22,7 @@ struct CategoryDetailView: View {
     @State private var showScreenshotsOrganizer = false
     @State private var showCLICacheOptimizer = false
     @State private var showQuickLookPurger = false
+    @State private var showColorSyncOptimizer = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -337,6 +338,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showFontCacheInspector = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showColorSyncOptimizer {
+                    ColorSyncProfileCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showColorSyncOptimizer = false
                             }
                         },
                         onTriggerClean: {
@@ -1673,8 +1690,11 @@ extension CategoryDetailView {
 
             Spacer(minLength: 4)
 
-            fontCacheInspectorChip
-                .padding(.trailing, Space.gutter)
+            HStack(spacing: Space.xs) {
+                fontCacheInspectorChip
+                colorSyncOptimizerChip
+            }
+            .padding(.trailing, Space.gutter)
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
@@ -1710,6 +1730,38 @@ extension CategoryDetailView {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("fontCacheInspectorChipButton")
+    }
+
+    /// 多显示器色彩描述与 ICC Profile 治理卡片开关胶囊
+    private var colorSyncOptimizerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showColorSyncOptimizer.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "display.2")
+                    .font(.system(size: 10))
+                Text("ICC色彩")
+                    .font(Typo.micro)
+                if showColorSyncOptimizer {
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 9))
+                } else {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9))
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .fill(showColorSyncOptimizer ? Accent.tint.opacity(0.15) : Surface.sunken)
+            )
+            .foregroundStyle(showColorSyncOptimizer ? Accent.tint : Ink.secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("colorSyncOptimizerChipButton")
     }
 
     /// 日志与临时细分过滤栏

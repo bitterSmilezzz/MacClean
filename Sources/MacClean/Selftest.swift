@@ -146,6 +146,8 @@ enum Selftest {
         suiteQuickLookThumbnailDeep()
         // 已卸载应用登录项与自启残存深度治理 (v1.67.0)
         suiteLoginItemDeep()
+        // 系统多显示器色彩描述与 ICC Profile 残存治理 (v1.68.0)
+        suiteColorSyncDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 
