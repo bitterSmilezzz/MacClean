@@ -91,7 +91,17 @@
     - **高危开放网络一键批量清除**：一键清除所有公共/无密码开放 Wi-Fi，防范 Evil Twin 伪热点嗅探与静默自动重连风险；
     - **单项移除与全量历史轨迹收敛**：支持单项删除特定网络或一键清空全部历史记录，收敛无线探测广播指纹（Probe Requests）；
   - **风险扫描器联动与双栏原生治理面板 (`RiskView` + `NetworkPrivacyView`)**：
-    - `RiskScanner` 联动新增「未加密开放 Wi-Fi 历史记录」与「Wi-Fi 访问轨迹残留」风险规则；
+- **系统核心转储与废弃诊断报告智能排查与治理（v1.58.0 重磅新增）**：
+  - **诊断报告与核心转储深度探测引擎 (`DiagnosticReportScanner`)**：
+    - 全面扫描系统与用户级诊断报告根目录：`~/Library/Logs/DiagnosticReports`、`~/Library/Logs/DiagnosticReports/Retired`、`~/Library/Application Support/CrashReporter` 与 `/Library/Logs/DiagnosticReports`；
+    - **双模文件头智能解析引擎**：同时支持解析现代 macOS `.ips` 单行 JSON 元数据（提取 `app_name`、`bug_type`、`coalitionName`、`exception` 异常类型等）与经典 `.crash` 纯文本格式（提取 `Process`、`Identifier`、`Exception Type` 与 `Termination Reason`）；
+    - **精准分类识别 (`DiagnosticReportKind`)**：自动细分为「💥 应用崩溃 (Crash)」、「⏳ 卡死与无响应 (Spin/Hang)」、「💾 系统核心转储 (Core Dump)」以及「📈 聚合与系统诊断」；
+    - **已卸载孤儿报告反查与保护防线**：交叉比对系统已安装应用集合，精准标识无主残留的「👻 已卸载孤儿」；内置 Apple 官方核心守护与开发调试测试保护白名单，严禁误判系统底层关键诊断；
+  - **交互式诊断治理抽屉卡片 (`DiagnosticReportCard` + `CategoryDetailView`)**：
+    - 在「日志与临时文件」分类详情页增设「📉 诊断透视」专属胶囊开关；
+    - 统计卡片直观聚合总报告数、总占用、孤儿数量与 >30天陈旧报告数；
+    - 支持按状态（全部 / 孤儿 / 陈旧 / 崩溃 / 卡死 / 核心转储）及关键字瞬时检索；
+    - 提供快捷一键全选孤儿、全选陈旧、快速预览日志前 25 行错误堆栈、路径拷贝及安全释放；
 - **开发工程构建产物深度智能排查与按项目治理（v1.57.0 重磅新增）**：
   - **多技术栈工程特征探测引擎 (`DevProjectScanner`)**：
     - 全面覆盖 Xcode (`DerivedData`)、Rust (`target/`)、SwiftPM (`.build/`)、Node.js 前端 (`node_modules/`, `.next/`, `.nuxt/`, `.turbo/`)、Gradle/Java (`build/`, `.gradle/`)、Python (`venv/`, `.venv/`) 与 Go；

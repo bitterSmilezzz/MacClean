@@ -126,6 +126,8 @@ enum Selftest {
         suiteGlobalHotkeyDeep()
         // 开发工程构建产物深度智能排查与按项目治理 (v1.57.0)
         suiteDevProjectDeep()
+        // 系统核心转储与废弃诊断报告智能排查与治理 (v1.58.0)
+        suiteDiagnosticReportDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

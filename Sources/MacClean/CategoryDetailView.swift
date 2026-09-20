@@ -16,6 +16,7 @@ struct CategoryDetailView: View {
     @State private var selectedLogsFilter: LogsFilterKind = .all
     @State private var selectedDevFilter: DevResidueFilterKind = .all
     @State private var showProjectInspector = false
+    @State private var showCrashReportInspector = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -294,7 +295,25 @@ struct CategoryDetailView: View {
         } else if category == .appResidue && st.isScanned && !st.items.isEmpty {
             appResidueFilterBar
         } else if category == .logsAndTemp && st.isScanned && !st.items.isEmpty {
-            logsFilterBar
+            VStack(spacing: 0) {
+                logsFilterBar
+                if showCrashReportInspector {
+                    DiagnosticReportCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showCrashReportInspector = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
         } else if category == .devResidue && st.isScanned && !st.items.isEmpty {
             VStack(spacing: 0) {
                 devResidueFilterBar
@@ -1503,40 +1522,76 @@ extension CategoryDetailView {
 
     /// 日志与临时细分过滤栏
     var logsFilterBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.xxs) {
-                ForEach(LogsFilterKind.allCases) { filter in
-                    let isSelected = selectedLogsFilter == filter
-                    let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xxs) {
+                    ForEach(LogsFilterKind.allCases) { filter in
+                        let isSelected = selectedLogsFilter == filter
+                        let count = filter == .all ? st.items.count : st.items.filter { filter.matches(item: $0) }.count
 
-                    Button {
-                        withAnimation(Motion.micro) { selectedLogsFilter = filter }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text(filter.rawValue)
-                                .font(isSelected ? Typo.rowStrong : Typo.row)
-                            Text("\(count)")
-                                .font(.mcNumeric(10))
-                                .opacity(0.65)
+                        Button {
+                            withAnimation(Motion.micro) { selectedLogsFilter = filter }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text(filter.rawValue)
+                                    .font(isSelected ? Typo.rowStrong : Typo.row)
+                                Text("\(count)")
+                                    .font(.mcNumeric(10))
+                                    .opacity(0.65)
+                            }
+                            .padding(.horizontal, Space.xs)
+                            .padding(.vertical, 4)
+                            .background(
+                                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                                    .fill(isSelected ? Accent.tint : Color.clear)
+                            )
+                            .foregroundStyle(isSelected ? Color.white : Ink.secondary)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, Space.xs)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
-                                .fill(isSelected ? Accent.tint : Color.clear)
-                        )
-                        .foregroundStyle(isSelected ? Color.white : Ink.secondary)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("logsFilter_\(filter.id)")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("logsFilter_\(filter.id)")
                 }
+                .padding(.horizontal, Space.gutter)
+                .padding(.vertical, Space.xs)
             }
-            .padding(.horizontal, Space.gutter)
-            .padding(.vertical, Space.xs)
+
+            Spacer(minLength: 4)
+
+            crashReportInspectorChip
+                .padding(.trailing, Space.gutter)
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
+    }
+
+    /// 崩溃诊断报告治理卡片开关胶囊
+    private var crashReportInspectorChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showCrashReportInspector.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "waveform.path.ecg.rectangle")
+                    .font(.system(size: 10))
+                Text("诊断透视")
+                    .font(Typo.micro)
+                if showCrashReportInspector {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showCrashReportInspector ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showCrashReportInspector ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("crashReportInspectorToggle")
+        .help("展开/收起崩溃日志与系统诊断报告治理面板")
     }
 
     /// 开发残留细分过滤栏
