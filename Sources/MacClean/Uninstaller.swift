@@ -109,6 +109,7 @@ final class UninstallerState: ObservableObject {
         case orphans = "孤儿残留排查"
         case preferences = "偏好碎片反查"
         case extensions = "插件与扩展治理"
+        case localization = "多语言瘦身"
         public var id: String { rawValue }
     }
 
@@ -139,6 +140,92 @@ final class UninstallerState: ObservableObject {
     @Published var isScanningPlugins = false
     @Published var lastPluginSummary: String?
     @Published var isCleaningPlugins = false
+
+    // MARK: - 多语言瘦身状态 (v1.60.0)
+    @Published var localizationBundles: [AppLocalizationBundle] = []
+    @Published var selectedLocalizationBundle: AppLocalizationBundle?
+    @Published var isScanningLocalization = false
+    @Published var lastLocalizationSummary: String?
+    @Published var isCleaningLocalization = false
+
+    func loadLocalization() {
+        isScanningLocalization = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let bundles = AppLocalizationScanner.scan()
+            DispatchQueue.main.async {
+                self?.localizationBundles = bundles
+                self?.isScanningLocalization = false
+                if self?.selectedLocalizationBundle == nil || !bundles.contains(where: { $0.id == self?.selectedLocalizationBundle?.id }) {
+                    self?.selectedLocalizationBundle = bundles.first
+                }
+            }
+        }
+    }
+
+    func selectLocalizationBundle(_ bundle: AppLocalizationBundle?) {
+        selectedLocalizationBundle = bundle
+    }
+
+    func toggleLocalizationPack(bundleID: String, packID: String, on: Bool) {
+        guard let bIdx = localizationBundles.firstIndex(where: { $0.id == bundleID }) else { return }
+        var bundles = localizationBundles
+        if let pIdx = bundles[bIdx].languagePacks.firstIndex(where: { $0.id == packID }) {
+            if !bundles[bIdx].languagePacks[pIdx].isProtected {
+                bundles[bIdx].languagePacks[pIdx].isSelected = on
+            }
+        }
+        localizationBundles = bundles
+        if selectedLocalizationBundle?.id == bundleID {
+            selectedLocalizationBundle = bundles[bIdx]
+        }
+    }
+
+    func setAllLocalizationPacksSelected(bundleID: String, on: Bool) {
+        guard let bIdx = localizationBundles.firstIndex(where: { $0.id == bundleID }) else { return }
+        var bundles = localizationBundles
+        bundles[bIdx].languagePacks = bundles[bIdx].languagePacks.map { pack in
+            var copy = pack
+            if !copy.isProtected {
+                copy.isSelected = on
+            }
+            return copy
+        }
+        localizationBundles = bundles
+        if selectedLocalizationBundle?.id == bundleID {
+            selectedLocalizationBundle = bundles[bIdx]
+        }
+    }
+
+    func cleanSelectedLocalization(bundle: AppLocalizationBundle, permanently: Bool = false) -> Bool {
+        guard !isCleaningLocalization else { return false }
+        let selectedIDs = Set(bundle.languagePacks.filter { !$0.isProtected && $0.isSelected }.map(\.id))
+        guard !selectedIDs.isEmpty else { return false }
+
+        isCleaningLocalization = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let res = AppLocalizationScanner.clean(bundle: bundle, selectedItemIDs: selectedIDs, permanently: permanently)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.isCleaningLocalization = false
+                let mode = permanently ? "彻底清除" : "移入废纸篓"
+                self.lastLocalizationSummary = "【\(bundle.appName)】已安全\(mode) \(res.cleanedCount) 个外语包，释放 \(res.cleanedBytes.byteStringCN)"
+                if let updated = AppLocalizationScanner.inspectAppBundle(at: bundle.appPath), updated.removablePackCount > 0 {
+                    if let idx = self.localizationBundles.firstIndex(where: { $0.id == bundle.id }) {
+                        self.localizationBundles[idx] = updated
+                        if self.selectedLocalizationBundle?.id == bundle.id {
+                            self.selectedLocalizationBundle = updated
+                        }
+                    }
+                } else {
+                    self.localizationBundles.removeAll { $0.id == bundle.id }
+                    if self.selectedLocalizationBundle?.id == bundle.id {
+                        self.selectedLocalizationBundle = self.localizationBundles.first
+                    }
+                }
+            }
+        }
+        return true
+    }
 
     func loadApps() {
         // 三巡：置 isScanning 避免首次进入闪现"未发现可卸载 App"空态

@@ -9,10 +9,12 @@ struct UninstallerView: View {
     @State private var pluginSearchText = ""
     @State private var selectedPluginKind: PluginExtensionKind? = nil
     @State private var selectedPluginStatus: PluginExtensionStatus? = nil
+    @State private var localizationSearchText = ""
     @State private var confirmPermanent = false
     @State private var confirmPermanentOrphans = false
     @State private var confirmPermanentPreferences = false
     @State private var confirmPermanentPlugins = false
+    @State private var confirmPermanentLocalization = false
 
     private var uninstaller: UninstallerState { app.uninstaller }
 
@@ -58,6 +60,15 @@ struct UninstallerView: View {
         }
     }
 
+    private var filteredLocalizationBundles: [AppLocalizationBundle] {
+        let list = uninstaller.localizationBundles
+        guard !localizationSearchText.isEmpty else { return list }
+        return list.filter {
+            $0.appName.localizedCaseInsensitiveContains(localizationSearchText) ||
+            ($0.bundleID?.localizedCaseInsensitiveContains(localizationSearchText) == true)
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -88,6 +99,8 @@ struct UninstallerView: View {
                 preferencePanel
             case .extensions:
                 pluginsPanel
+            case .localization:
+                localizationPanel
             }
         }
         .background(Surface.window)
@@ -96,6 +109,7 @@ struct UninstallerView: View {
             if uninstaller.orphanApps.isEmpty { uninstaller.loadOrphans() }
             if uninstaller.preferenceItems.isEmpty { uninstaller.loadPreferences() }
             if uninstaller.pluginItems.isEmpty { uninstaller.loadPlugins() }
+            if uninstaller.localizationBundles.isEmpty { uninstaller.loadLocalization() }
         }
         .confirmationDialog("彻底删除不可恢复", isPresented: $confirmPermanent, titleVisibility: .visible) {
             Button("彻底删除所选", role: .destructive) {
@@ -129,6 +143,20 @@ struct UninstallerView: View {
         } message: {
             Text("将彻底删除 \(uninstaller.selectedPluginCount) 个插件与扩展（\(uninstaller.selectedPluginSize.byteStringCN)），此操作无法恢复。建议优先使用「移入废纸篓」。")
         }
+        .confirmationDialog("彻底删除选定语言包不可恢复", isPresented: $confirmPermanentLocalization, titleVisibility: .visible) {
+            Button("彻底删除所选语言包", role: .destructive) {
+                if let bundle = uninstaller.selectedLocalizationBundle {
+                    _ = uninstaller.cleanSelectedLocalization(bundle: bundle, permanently: true)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            if let bundle = uninstaller.selectedLocalizationBundle {
+                Text("将彻底删除【\(bundle.appName)】中的 \(bundle.selectedPackCount) 个外语包（\(bundle.reclaimableSize.byteStringCN)），此操作无法恢复。中文、英文与基础资源将始终保留。")
+            } else {
+                Text("此操作无法恢复。")
+            }
+        }
     }
 
     // MARK: - Header
@@ -153,7 +181,7 @@ struct UninstallerView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 440)
+            .frame(width: 530)
             .accessibilityIdentifier("uninstallerTabPicker")
 
             Spacer()
@@ -217,6 +245,21 @@ struct UninstallerView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .accessibilityIdentifier("refreshPluginsButton")
+            case .localization:
+                if !uninstaller.localizationBundles.isEmpty {
+                    Text("\(filteredLocalizationBundles.count) 个可瘦身 App")
+                        .font(.mcNumeric(11))
+                        .foregroundStyle(Ink.tertiary)
+                }
+
+                Button {
+                    uninstaller.loadLocalization()
+                } label: {
+                    Label("重新扫描", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .accessibilityIdentifier("refreshLocalizationButton")
             }
         }
         .padding(.horizontal, Space.gutter)
@@ -1069,6 +1112,239 @@ struct UninstallerView: View {
             .controlSize(.large)
             .accessibilityIdentifier("pluginTrashButton")
             .disabled(uninstaller.selectedPluginCount == 0 || uninstaller.isCleaningPlugins)
+        }
+        .padding(.horizontal, Space.gutter)
+        .padding(.vertical, Space.sm)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Hairline()
+        }
+    }
+
+    // MARK: - 多语言瘦身面板 (v1.60.0)
+
+    private var localizationPanel: some View {
+        Group {
+            if uninstaller.localizationBundles.isEmpty && !uninstaller.isScanningLocalization {
+                emptyLocalizationView
+            } else {
+                HStack(spacing: 0) {
+                    localizationAppList
+                    Divider()
+                    localizationRelatedPanel
+                }
+            }
+        }
+    }
+
+    private var emptyLocalizationView: some View {
+        VStack(spacing: Space.md) {
+            EmptyState(
+                icon: "globe.asia.australia.fill",
+                title: "未发现可瘦身的应用多语言资源",
+                message: "所有扫描到的应用均已为极简语言配置，或仅包含中文与英文资源。"
+            )
+            Button("重新扫描应用多语言包") {
+                uninstaller.loadLocalization()
+            }
+            .buttonStyle(.bordered)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var localizationAppList: some View {
+        VStack(spacing: 0) {
+            SearchField(placeholder: "搜索应用名称 / Bundle ID", text: $localizationSearchText)
+                .padding(.horizontal, Space.sm)
+                .padding(.vertical, Space.sm)
+
+            ScrollView {
+                VStack(spacing: 2) {
+                    ForEach(filteredLocalizationBundles) { bundle in
+                        Button {
+                            withAnimation(Motion.micro) {
+                                uninstaller.selectLocalizationBundle(bundle)
+                            }
+                        } label: {
+                            LocalizationAppRow(
+                                bundle: bundle,
+                                isSelected: uninstaller.selectedLocalizationBundle?.id == bundle.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("localizationAppRow_\(bundle.appName)")
+                    }
+                }
+                .padding(.horizontal, Space.xs)
+                .padding(.bottom, Space.md)
+            }
+        }
+        .frame(width: 280)
+        .background(Surface.group)
+    }
+
+    private var localizationRelatedPanel: some View {
+        VStack(spacing: 0) {
+            if let bundle = uninstaller.selectedLocalizationBundle {
+                localizationSummary(bundle)
+                localizationPacksList(bundle)
+                Spacer(minLength: 0)
+                localizationFooter(bundle)
+            } else {
+                EmptyState(
+                    icon: "hand.point.up.left",
+                    title: "从左侧选择一个应用",
+                    message: "查看其内部包含的多国语言包（.lproj），保留中文与英文，一键清理冗余外语。"
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private func localizationSummary(_ bundle: AppLocalizationBundle) -> some View {
+        GroupBox {
+            GroupedRow(isLast: true) {
+                HStack(spacing: Space.sm) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: bundle.appPath))
+                        .resizable()
+                        .frame(width: 36, height: 36)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: Space.xs) {
+                            Text(bundle.appName)
+                                .font(Typo.title)
+                                .foregroundStyle(Ink.primary)
+                                .lineLimit(1)
+
+                            Text("共 \(bundle.totalPackCount) 种语言")
+                                .font(Typo.micro)
+                                .foregroundStyle(Ink.secondary)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
+                                .background(Surface.sunken)
+                                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        }
+
+                        if let bid = bundle.bundleID {
+                            Text(bid)
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.quaternary)
+                                .lineLimit(1)
+                        }
+                    }
+
+                    Spacer(minLength: Space.sm)
+
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(bundle.totalReclaimablePotential.byteStringCN)
+                            .font(.mcNumeric(15, weight: .semibold))
+                            .foregroundStyle(Signal.positive)
+                        Text("可瘦身外语潜能")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, Space.md)
+        .padding(.top, Space.md)
+    }
+
+    private func localizationPacksList(_ bundle: AppLocalizationBundle) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: Space.xs) {
+                Text("语言包明细 (\(bundle.languagePacks.count))")
+                    .font(Typo.section)
+                    .foregroundStyle(Ink.tertiary)
+
+                Spacer()
+
+                Button("全选外语包") {
+                    uninstaller.setAllLocalizationPacksSelected(bundleID: bundle.id, on: true)
+                }
+                .buttonStyle(.plain)
+                .font(Typo.caption)
+                .foregroundStyle(Accent.tint)
+
+                Text("·")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.quaternary)
+
+                Button("取消勾选") {
+                    uninstaller.setAllLocalizationPacksSelected(bundleID: bundle.id, on: false)
+                }
+                .buttonStyle(.plain)
+                .font(Typo.caption)
+                .foregroundStyle(Ink.secondary)
+            }
+            .padding(.horizontal, Space.md)
+            .padding(.top, Space.sm)
+            .padding(.bottom, Space.xs)
+
+            ScrollView {
+                GroupBox {
+                    VStack(spacing: 0) {
+                        ForEach(Array(bundle.languagePacks.enumerated()), id: \.element.id) { index, pack in
+                            GroupedRow(isLast: index == bundle.languagePacks.count - 1) {
+                                LanguagePackRow(item: pack) { on in
+                                    uninstaller.toggleLocalizationPack(bundleID: bundle.id, packID: pack.id, on: on)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, Space.md)
+                .padding(.bottom, Space.md)
+            }
+        }
+    }
+
+    private func localizationFooter(_ bundle: AppLocalizationBundle) -> some View {
+        HStack(spacing: Space.md) {
+            if let summary = uninstaller.lastLocalizationSummary {
+                HStack(spacing: Space.xxs) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.positive)
+                    Text(summary)
+                        .font(Typo.body)
+                        .foregroundStyle(Ink.secondary)
+                }
+            }
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 0) {
+                Text("已选 \(bundle.selectedPackCount) 个外语包")
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.tertiary)
+                    .motionSafeNumericTransition()
+                Text(bundle.reclaimableSize.byteStringCN)
+                    .font(.mcNumeric(17, weight: .semibold))
+                    .foregroundStyle(Ink.primary)
+                    .motionSafeNumericTransition()
+            }
+
+            Button {
+                confirmPermanentLocalization = true
+            } label: {
+                Label("彻底删除", systemImage: "trash.slash")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .tint(Signal.critical)
+            .accessibilityIdentifier("localizationPermanentButton")
+            .disabled(bundle.selectedPackCount == 0 || uninstaller.isCleaningLocalization)
+
+            Button {
+                _ = uninstaller.cleanSelectedLocalization(bundle: bundle, permanently: false)
+            } label: {
+                Label("移入废纸篓", systemImage: "trash")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .accessibilityIdentifier("localizationTrashButton")
+            .disabled(bundle.selectedPackCount == 0 || uninstaller.isCleaningLocalization)
         }
         .padding(.horizontal, Space.gutter)
         .padding(.vertical, Space.sm)
