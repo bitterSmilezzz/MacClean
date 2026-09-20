@@ -142,6 +142,8 @@ enum Selftest {
         suiteScreenshotsOrganizerDeep()
         // 终端与命令行开发缓存深度治理 (v1.65.0)
         suiteCLICacheDeep()
+        // 访达快速查看缩略图缓存释放深度治理 (v1.66.0)
+        suiteQuickLookThumbnailDeep()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

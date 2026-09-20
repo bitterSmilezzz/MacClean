@@ -21,6 +21,7 @@ struct CategoryDetailView: View {
     @State private var showDownloadsOrganizer = false
     @State private var showScreenshotsOrganizer = false
     @State private var showCLICacheOptimizer = false
+    @State private var showQuickLookPurger = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -356,6 +357,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showCrashReportInspector = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showQuickLookPurger {
+                    QuickLookThumbnailPurgerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showQuickLookPurger = false
                             }
                         },
                         onTriggerClean: {
@@ -1731,10 +1748,12 @@ extension CategoryDetailView {
                 .padding(.vertical, Space.xs)
             }
 
-            Spacer(minLength: 4)
+            HStack(spacing: Space.xs) {
+                crashReportInspectorChip
 
-            crashReportInspectorChip
-                .padding(.trailing, Space.gutter)
+                quickLookPurgerChip
+            }
+            .padding(.trailing, Space.gutter)
         }
         .background(Surface.window)
         .overlay(alignment: .bottom) { Hairline() }
@@ -1767,6 +1786,35 @@ extension CategoryDetailView {
         .buttonStyle(.plain)
         .accessibilityIdentifier("crashReportInspectorToggle")
         .help("展开/收起崩溃日志与系统诊断报告治理面板")
+    }
+
+    /// 快速查看缩略图缓存释放卡片开关胶囊
+    private var quickLookPurgerChip: some View {
+        Button(action: {
+            withAnimation(Motion.standard) {
+                showQuickLookPurger.toggle()
+            }
+        }) {
+            HStack(spacing: 4) {
+                Image(systemName: "photo.stack.fill")
+                    .font(.system(size: 10))
+                Text("缩略图缓存")
+                    .font(Typo.micro)
+                if showQuickLookPurger {
+                    Circle()
+                        .fill(Accent.tint)
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 4)
+            .background(showQuickLookPurger ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(showQuickLookPurger ? Accent.tint : Ink.secondary)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("quickLookPurgerToggle")
+        .help("展开/收起访达快速查看（QuickLook）缩略图缓存释放面板")
     }
 
     /// 开发残留细分过滤栏
