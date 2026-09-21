@@ -404,15 +404,13 @@ enum FileSystem {
     // 闸门清单的内容在整个进程生命周期里不变，而 `normalizePath` 是**纯字符串函数**
     // （完全不触碰文件系统，同输入必得同输出），所以每条常量的归一化结果算一次就够。
     //
-    // 为什么必须缓存：分段计时（自检 `【临时】护栏分段计时` 量出）显示原先每判一个候选项
-    // 要把 13 条 G6 + 6 条 G8 + 3 条放行根 + 临时残留三件套 + 2 个 Cellar 根
-    // + 全局 node_modules 根反复重新归一化，占掉单次判定开销的绝大部分
-    // （hardExclude 81 µs、systemProtected 30、knownTempResidue 61、Cellar/node 43，
-    // 合计约 215 / 299 µs）。而每个扫描器对**每个候选项**都要过一次闸门。
-    //
+    // 为什么必须缓存：分段计时（一次性插桩，数字记录在 docs/CLEANUP-RULES.md 的 v1.72.4
+    // 条目里）显示原先每判一个候选项要把 13 条 G6 + 6 条 G8 + 3 条放行根 + 临时残留三件套
+    // + 2 个 Cellar 根 + 全局 node_modules 根反复重新归一化，占掉单次判定 299 µs 里的
+    // 约 215 µs。而每个扫描器对**每个候选项**都要过一次闸门。
     /// 一条"整段前缀匹配"的护栏路径：预先归一，并预先备好 `+ "/"` 形态，
     /// 免得每次比较都临时拼一个新串。
-    struct GuardPath {
+    private struct GuardPath {
         let exact: String
         let childPrefix: String
         init(raw: String) {
@@ -430,8 +428,8 @@ enum FileSystem {
     private static let guardHardExclude = CleanPaths.hardExclude.map { GuardPath(raw: $0) }
     private static let guardNever = ["/System", "/Library", "/usr", "/bin", "/sbin",
                                      "/etc", "/var/db", "/Volumes"].map { GuardPath(raw: $0) }
-    /// 常规放行根。`home` 单独留出，`isSafeToClean` 还要用它判"是不是主目录本身"。
-    static let guardHome = GuardPath(raw: NSHomeDirectory())
+    /// 常规放行根。`home` 单独留出，闸门还要用它判"是不是主目录本身"。
+    private static let guardHome = GuardPath(raw: NSHomeDirectory())
     private static let guardAllowedRoots: [GuardPath] =
         [guardHome.exact, "/tmp", "/var/tmp"].map { GuardPath(raw: $0) }
 

@@ -115,11 +115,18 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 - [ ] AI 面板：设置（baseURL/Key/模型）→ 连通性测试 → ✨ 提问 → 回答
 
 ## 3. 安全护栏
-- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G10）
+- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G16）
 - [ ] 新增"受限放行"时确认：**只放行具体路径/具名模式，未放行整个父目录**（G10）
 - [ ] 新增路径判定时**未使用 `standardizingPath`**——其行为依赖路径是否真实存在
       （`/private/var/db` 存在则被改成 `/var/db`，虚构路径则不变），
       会使同一目录出现两种形态导致判定失效。改用 `FileSystem.normalizePath`
+- [ ] 往 `CleanPaths` 的护栏清单（`hardExclude` / `systemProtected` / 放行根）加条目时，
+      **清单必须是进程内不变量**：闸门为省开销把它们预归一化缓存在 `FileSystem` 的
+      `static let`（`GuardPath`，v1.72.4），运行时改内容不会生效。
+      需要运行时增删的判据请走 `GovernanceDomain.register(_:)`（它会置脏 `cachedAll`），
+      不要自己再抄一份"每次遍历常量数组"的判定
+- [ ] 新增 `~` 相关路径处理时注意：`CleanPaths.expand` **只认前缀 `~`**
+      （v1.72.4 之前会把路径中间的 `~` 也换成主目录，导致护栏比对一条不存在的路径）
 - [ ] API Key 不落盘、不进日志、不进 git（只写系统钥匙串；钥匙串不可用时仅存内存）
       验证：`swift run MacClean --selftest` 中「API Key 存储」套件全过，
       且 `~/Library/Application Support/MacClean/ai.key` 不存在
