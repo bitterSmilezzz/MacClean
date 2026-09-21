@@ -23,6 +23,67 @@ enum CleanupRules {
         case delete
     }
 
+    // MARK: - 规则 v2 的四维权度（docs/CLEANUP-RULES-V2.md §2）
+    //
+    // 这四维**只登记、暂不参与决策**（步骤 1）。之所以现在就要逐条填齐：
+    // 判定合法性必须能追溯到"哪条契约、归属给谁、宿主什么状态、重建要付什么代价"，
+    // 而不是像现在这样只有一个 `nature` 拍扁出来的风险级。
+    // 填不出某一维，就说明这条规则现在**没有依据**——那正是步骤 3 要降档的理由。
+
+    /// ① 契约：这条规则的删除依据来自哪种"官方承认的可丢弃性"。
+    enum Contract: String {
+        /// Apple 声明的可丢弃区：`~/Library/Caches`（FSPG：app 能轻松重建，系统绝不在运行期删）
+        case appleCaches
+        /// `confstr` 的 user cache dir：Apple 明说"系统**不会**自动清理"→ 只能由工具清
+        case userCacheDir
+        /// 临时目录：Apple 自己承认"3 天未访问即可清"（confstr + dirhelper.plist）
+        case tempDir
+        /// 该工具自身的 prune 语义认定为未引用（`brew cleanup`、`docker buildx prune`）
+        case toolPrune
+        /// 位置本身不是契约，靠**结构标记**成立（`.ShipIt.`、`*.log.N`、`.savedState`）
+        case namedPattern
+        /// 位置语义是**数据**（`Application Support`、`UserData`、桌面/下载、备份）
+        case userData
+    }
+
+    /// ② 归属：能否唯一解析到某个 app / 包。`shared`/`unknown` 不得进 T0。
+    enum Ownership: String {
+        case uniqueBundle     // 唯一 bundle id
+        case uniquePath       // 唯一具名路径（不指向某个 app，但边界清楚）
+        case shared           // 多 app 或系统共享
+        case unknown          // 归属不明
+    }
+
+    /// ③ 宿主状态。`unknown` 一律不升级（G16 要求"已卸载"必须有正向证据）。
+    enum HostState: String {
+        case installedRunning
+        case installedIdle
+        case uninstalledProven
+        case systemLevel
+        case unknown
+    }
+
+    /// ④ 重建代价。owner 已定：**不做联网探测**，所以"能重建"不等于"便宜"。
+    enum RestoreCost: String {
+        case none             // 不需要重建（历史产物、失败标记）
+        case autoCheap        // 自动重编译/重生成，秒级到分钟级
+        case autoExpensive    // 要重下 GB 级、依赖特定镜像源
+        case stateLoss        // 能重建但丢状态（字体注册、登录态、索引偏好）
+        case impossible       // 不可重建（用户数据、取证材料、归档）
+    }
+
+    /// 档位（v2 §2）。步骤 3 才接进界面决策。
+    enum Tier: String, CaseIterable {
+        /// 确定是垃圾：四条硬要求同时成立。**唯一允许默认勾选**的档（D-1）
+        case t0
+        /// 可清理、有代价：默认不勾，提供本层全选
+        case t1
+        /// 需你裁决：归属或宿主不明、会丢状态、影响跨设备
+        case t2
+        /// 只报告不删
+        case t3
+    }
+
     /// 单条规则定义
     struct Rule {
         /// 规则编号，如 "C1" / "L6" / "D13"
@@ -40,9 +101,18 @@ enum CleanupRules {
         /// 是否为 v1.1 新增规则
         let isNew: Bool
 
+        // ── v2 四维权度 + 档位（无默认值：新登记规则必须显式表态）──
+        let contract: Contract
+        let ownership: Ownership
+        let hostState: HostState
+        let restore: RestoreCost
+        let tier: Tier
+
         init(id: String, category: CleanCategory, nature: ItemNature,
              consequence: String, summary: String,
-             cleanup: CleanupMethod = .trash, isNew: Bool = false) {
+             cleanup: CleanupMethod = .trash, isNew: Bool = false,
+             contract: Contract, ownership: Ownership, hostState: HostState,
+             restore: RestoreCost, tier: Tier) {
             self.id = id
             self.category = category
             self.nature = nature
@@ -50,6 +120,46 @@ enum CleanupRules {
             self.summary = summary
             self.cleanup = cleanup
             self.isNew = isNew
+            self.contract = contract
+            self.ownership = ownership
+            self.hostState = hostState
+            self.restore = restore
+            self.tier = tier
+        }
+    }
+
+    // MARK: - 档位自洽校验（v2 步骤 1）
+
+    /// 一条规则的档位与它自己的四维登记是否自相矛盾。返回 nil = 一致，否则给人话说明。
+    ///
+    /// 为什么要一个"运行时才用得到"的校验函数：T0 是**唯一允许默认勾选**的档，
+    /// 以后有人为了"让这个也一键清掉"而随手把 tier 改成 .t0 时，只要他的契约是数据、
+    /// 或者重建要重下 GB 级，这里就会红——档位不能靠自觉。
+    static func tierViolation(_ rule: Rule) -> String? {
+        switch rule.tier {
+        case .t0:
+            if rule.contract == .userData {
+                return "T0 的契约不得是数据（该位置语义上是用户数据）"
+            }
+            switch rule.restore {
+            case .none, .autoCheap: break
+            case .autoExpensive, .stateLoss, .impossible:
+                return "T0 要求重建代价为 none / auto-cheap，实际是 \(rule.restore.rawValue)"
+            }
+            if rule.hostState == .installedRunning { return "T0 不得在宿主运行中" }
+            // 靠"名字像垃圾"成立时，至少要有一条可辨识的路径边界，否则是纯猜
+            if rule.contract == .namedPattern, rule.ownership == .unknown {
+                return "T0 靠具名模式成立时不得归属完全未知"
+            }
+            return nil
+        case .t3:
+            // T3 是"只报告不删"。反方向也要锁：可删的东西不许躲在 T3 里绕过档位审查。
+            guard rule.contract == .userData else {
+                return "T3（只报告）应当是数据契约，实际是 \(rule.contract.rawValue)"
+            }
+            return nil
+        case .t1, .t2:
+            return nil
         }
     }
 
@@ -59,141 +169,222 @@ enum CleanupRules {
         // MARK: 1. 用户缓存 C1–C7
         Rule(id: "C1", category: .userCaches, nature: .losslessCache,
              consequence: "应用缓存文件，删除后应用会自动重建",
-             summary: "~/Library/Caches/* 各子目录"),
+             summary: "~/Library/Caches/* 各子目录",
+             contract: .appleCaches, ownership: .shared, hostState: .unknown,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "C2", category: .userCaches, nature: .losslessCache,
              consequence: "Xcode 缓存，重新打开工程时自动重建",
-             summary: "~/Library/Caches/com.apple.dt.Xcode（Xcode 未运行）"),
+             summary: "~/Library/Caches/com.apple.dt.Xcode（Xcode 未运行）",
+             contract: .appleCaches, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .autoExpensive, tier: .t1),
         Rule(id: "C3", category: .userCaches, nature: .losslessCache,
              consequence: "pip 下载缓存，下次安装依赖时重新下载",
-             summary: "pip 缓存（~/Library/Caches/pip、~/.cache/pip）"),
+             summary: "pip 缓存（~/Library/Caches/pip、~/.cache/pip）",
+             contract: .appleCaches, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "C4", category: .userCaches, nature: .losslessCache,
              consequence: "Homebrew 下载缓存，下次安装时重新下载",
-             summary: "~/Library/Caches/Homebrew"),
+             summary: "~/Library/Caches/Homebrew",
+             contract: .toolPrune, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t1),
         Rule(id: "C5", category: .userCaches, nature: .losslessCache,
              consequence: "浏览器网页缓存，浏览时自动重建",
-             summary: "浏览器缓存（Safari/Chrome/Edge/Brave/Opera/Vivaldi）"),
+             summary: "浏览器缓存（Safari/Chrome/Edge/Brave/Opera/Vivaldi）",
+             contract: .appleCaches, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "C6", category: .userCaches, nature: .losslessCache,
              consequence: "沙盒应用的缓存，应用会自动重建",
-             summary: "沙盒容器缓存 ~/Library/Containers/*/Data/Library/Caches/*"),
+             summary: "沙盒容器缓存 ~/Library/Containers/*/Data/Library/Caches/*",
+             contract: .appleCaches, ownership: .uniqueBundle, hostState: .unknown,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "C7", category: .userCaches, nature: .staleArtifact,
              consequence: "已安装应用的旧版本安装包，应用本体已安装完成",
              summary: "应用内旧安装包 ~/Library/Application Support/*/updates/*.{dmg,pkg,iso}",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .none, tier: .t0),
 
         // MARK: 2. 日志与临时文件 L1–L6
         Rule(id: "L1", category: .logsAndTemp, nature: .losslessCache,
              consequence: "应用日志，删除后应用会重新创建",
-             summary: "~/Library/Logs/* 顶层项"),
+             summary: "~/Library/Logs/* 顶层项",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .none, tier: .t1),
         Rule(id: "L2", category: .logsAndTemp, nature: .losslessCache,
              consequence: "崩溃与诊断报告，只用于事后排查",
-             summary: "~/Library/Logs/DiagnosticReports/*"),
+             summary: "~/Library/Logs/DiagnosticReports/*",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .impossible, tier: .t2),
+        // ⚠️ L3/L4 的档位已按 v2 规格登记为 T0，但**实现判据还没跟上**：现在只筛"当前用户可写"，
+        // 未按「属主==euid 且 >3 天未访问」过滤（Apple 自己的阈值，见 confstr 与 dirhelper.plist）。
+        // 因此 T0 的默认勾选（步骤 4）必须晚于这次判据改写（步骤 5），否则会把刚被写过的临时文件也勾上。
         Rule(id: "L3", category: .logsAndTemp, nature: .inferredUnused,
              consequence: "系统临时目录：通常可以丢弃，但可能有进程正在使用其中文件，请确认后再删",
-             summary: "/private/tmp/*、/private/var/tmp/*（仅可写项）"),
+             summary: "/private/tmp/*、/private/var/tmp/*（仅可写项）",
+             contract: .tempDir, ownership: .unknown, hostState: .unknown,
+             restore: .none, tier: .t0),
         Rule(id: "L4", category: .logsAndTemp, nature: .losslessCache,
              consequence: "应用临时文件，应用会重新创建",
-             summary: "~/Library/TemporaryItems/*"),
+             summary: "~/Library/TemporaryItems/*",
+             contract: .tempDir, ownership: .shared, hostState: .unknown,
+             restore: .none, tier: .t0),
         Rule(id: "L5", category: .logsAndTemp, nature: .staleArtifact,
              consequence: "已轮转的历史日志，当前日志不受影响",
-             summary: "旋转旧日志（*.log.N / *.N.log / *.gz，>30 天）"),
+             summary: "旋转旧日志（*.log.N / *.N.log / *.gz，>30 天）",
+             contract: .namedPattern, ownership: .shared, hostState: .installedIdle,
+             restore: .none, tier: .t0),
         Rule(id: "L6", category: .logsAndTemp, nature: .staleArtifact,
              consequence: "应用自动更新完成后的残留，更新已经结束",
              summary: "$TMPDIR/<bundle-id>.ShipIt.<suffix> 应用更新残留",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .none, tier: .t0),
         Rule(id: "L7", category: .logsAndTemp, nature: .staleArtifact,
              consequence: "应用崩溃历史排查记录与提交日志，不影响应用与系统正常运行",
              summary: "~/Library/Application Support/CrashReporter/*（>30 天历史崩溃记录）",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .impossible, tier: .t2),
 
         // MARK: 3. 开发残留 D1–D23
         Rule(id: "D1", category: .devResidue, nature: .rebuildable,
              consequence: "Xcode 编译产物，下次构建会重新生成（首次构建明显变慢）",
-             summary: "~/Library/Developer/Xcode/DerivedData/*"),
+             summary: "~/Library/Developer/Xcode/DerivedData/*",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t1),
         Rule(id: "D2", category: .devResidue, nature: .userData,
              consequence: "Xcode 归档包，是发布记录的原始产物，删了不可恢复",
-             summary: "~/Library/Developer/Xcode/Archives/*（>90 天）"),
+             summary: "~/Library/Developer/Xcode/Archives/*（>90 天）",
+             contract: .userData, ownership: .shared, hostState: .unknown,
+             restore: .impossible, tier: .t3),
         Rule(id: "D3", category: .devResidue, nature: .rebuildable,
              consequence: "模拟器运行时缓存，重新启动模拟器时重建",
-             summary: "~/Library/Developer/CoreSimulator/Caches/*"),
+             summary: "~/Library/Developer/CoreSimulator/Caches/*",
+             contract: .appleCaches, ownership: .shared, hostState: .unknown,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "D4", category: .devResidue, nature: .losslessCache,
              consequence: "npm 下载缓存，下次安装依赖时重新下载",
-             summary: "~/.npm/_cacache"),
+             summary: "~/.npm/_cacache",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D5", category: .devResidue, nature: .losslessCache,
              consequence: "Yarn 下载缓存，下次安装依赖时重新下载",
-             summary: "~/.yarn/cache"),
+             summary: "~/.yarn/cache",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D6", category: .devResidue, nature: .losslessCache,
              consequence: "pnpm 内容寻址存储，下次安装依赖时重新下载",
-             summary: "~/.pnpm-store"),
+             summary: "~/.pnpm-store",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D7", category: .devResidue, nature: .losslessCache,
              consequence: "Gradle 依赖与构建缓存，下次构建时重新下载",
-             summary: "~/.gradle/caches"),
+             summary: "~/.gradle/caches",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D8", category: .devResidue, nature: .inferredUnused,
              consequence: "Maven 失效元数据；下次解析依赖时会重新生成，确认后再删",
-             summary: "~/.m2/repository 失效元数据（*.lastUpdated / _remote.repositories）"),
+             summary: "~/.m2/repository 失效元数据（*.lastUpdated / _remote.repositories）",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .none, tier: .t0),
         Rule(id: "D9", category: .devResidue, nature: .losslessCache,
              consequence: "Cargo 依赖源码缓存，下次构建时重新下载",
-             summary: "~/.cargo/registry"),
+             summary: "~/.cargo/registry",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D10", category: .devResidue, nature: .losslessCache,
              consequence: "Swift Package Manager 缓存，下次解析依赖时重新下载",
-             summary: "~/Library/Caches/org.swift.swiftpm"),
+             summary: "~/Library/Caches/org.swift.swiftpm",
+             contract: .appleCaches, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t1),
         Rule(id: "D11", category: .devResidue, nature: .rebuildable,
              consequence: "Python 字节码缓存，下次导入时自动重新生成",
-             summary: "__pycache__（限定 ~/workspace 等代码目录，深度 ≤5）"),
+             summary: "__pycache__（限定 ~/workspace 等代码目录，深度 ≤5）",
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoCheap, tier: .t0),
         Rule(id: "D12", category: .devResidue, nature: .inferredUnused,
              consequence: "Homebrew 旧版本目录：当前链接到的版本会保留，但部分配方依赖旧版本，删前请确认",
-             summary: "/opt/homebrew/Cellar/<formula>/ 旧版本（保留当前 opt 链接版本）"),
+             summary: "/opt/homebrew/Cellar/<formula>/ 旧版本（保留当前 opt 链接版本）",
+             contract: .toolPrune, ownership: .uniquePath, hostState: .installedIdle,
+             restore: .autoCheap, tier: .t0),
         Rule(id: "D13", category: .devResidue, nature: .losslessCache,
              consequence: "Clang 模块缓存，编译时自动重建",
              summary: "$TMPDIR 同级 C/clang/ModuleCache（Clang 模块缓存）",
-             isNew: true),
+             isNew: true,
+             contract: .userCacheDir, ownership: .shared, hostState: .unknown,
+             restore: .autoCheap, tier: .t0),
         Rule(id: "D14", category: .devResidue, nature: .losslessCache,
              consequence: "Node 编译缓存，下次运行时自动重建",
              summary: "$TMPDIR/node-compile-cache（Node 编译缓存）",
-             isNew: true),
+             isNew: true,
+             contract: .userCacheDir, ownership: .shared, hostState: .unknown,
+             restore: .autoCheap, tier: .t0),
         Rule(id: "D15", category: .devResidue, nature: .inferredUnused,
              consequence: "依据命名推断为废弃副本；命名可能出自人工重命名，请确认后再删",
              summary: "全局 node_modules 下废弃版本副本（名字含 .old-/.retired-/.bak-/.disabled-）",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .uniquePath, hostState: .unknown,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "D16", category: .devResidue, nature: .losslessCache,
              consequence: "CocoaPods 依赖包与规格库缓存，下次执行 pod install 时按需重新下载",
              summary: "~/Library/Caches/CocoaPods/* 与 ~/.cocoapods/repos",
-             isNew: true),
+             isNew: true,
+             contract: .appleCaches, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D17", category: .devResidue, nature: .losslessCache,
              consequence: "Docker 构建缓存与客户端运行日志，下次构建镜像时重新拉取或生成",
              summary: "~/.docker/buildx/cache/* 与 ~/Library/Containers/com.docker.docker/Data/log/*",
-             isNew: true),
+             isNew: true,
+             contract: .toolPrune, ownership: .shared, hostState: .installedIdle,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "D18", category: .devResidue, nature: .losslessCache,
              consequence: "Cargo Git 源码仓库检出与索引，下次 cargo build 依赖时自动按需克隆",
              summary: "~/.cargo/git/checkouts/* 与 ~/.cargo/git/db/*",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D19", category: .devResidue, nature: .staleArtifact,
              consequence: "Gradle 历史守护进程日志与过时 Wrapper 发行包，不影响当前项目构建",
              summary: "~/.gradle/daemon/*/*.log 与 ~/.gradle/wrapper/dists/*",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "D20", category: .devResidue, nature: .losslessCache,
              consequence: "JetBrains IDE 历史版本索引缓存与运行日志，打开对应 IDE 时会自动重建索引",
              summary: "~/Library/Caches/JetBrains/* 与 ~/Library/Logs/JetBrains/* 历史版本索引与运行日志",
-             isNew: true),
+             isNew: true,
+             contract: .appleCaches, ownership: .uniqueBundle, hostState: .unknown,
+             restore: .autoExpensive, tier: .t1),
         Rule(id: "D21", category: .devResidue, nature: .staleArtifact,
              consequence: "连接旧版本真机调试时保存的符号文件，下次连接真机时会自动从设备重新提取",
              summary: "~/Library/Developer/Xcode/* DeviceSupport/* 过时设备调试符号（>60 天未修改）",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t1),
         Rule(id: "D22", category: .devResidue, nature: .rebuildable,
              consequence: "Xcode SwiftUI 画布与模拟器预览缓存，再次在 Xcode 中打开预览时会自动重新生成",
              summary: "~/Library/Developer/Xcode/UserData/Previews/* SwiftUI 动态预览与临时模拟器缓存",
-             isNew: true),
+             isNew: true,
+             contract: .userData, ownership: .shared, hostState: .unknown,
+             restore: .stateLoss, tier: .t2),
         Rule(id: "D23", category: .devResidue, nature: .inferredUnused,
              consequence: "Docker Desktop 虚拟磁盘文件，包含所有本地镜像与容器。删除将重置 Docker 数据，建议退出 Docker 后确认或通过 Docker 客户端执行清理",
              summary: "Docker 虚拟磁盘 ~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw（需确认后清理）",
-             isNew: true),
+             isNew: true,
+             contract: .userData, ownership: .uniquePath, hostState: .unknown,
+             restore: .impossible, tier: .t3),
 
         // MARK: 4. App 残留 A1–A3（原 A3「孤儿缓存」已删除，见下方说明）
         Rule(id: "A1", category: .appResidue, nature: .orphanedResidue,
              consequence: "已卸载应用的数据目录，应用已不在本机",
-             summary: "~/Library/Application Support/<name>（App 已卸载）"),
+             summary: "~/Library/Application Support/<name>（App 已卸载）",
+             contract: .userData, ownership: .uniqueBundle, hostState: .uninstalledProven,
+             restore: .impossible, tier: .t2),
         Rule(id: "A2", category: .appResidue, nature: .orphanedResidue,
              consequence: "已卸载应用的偏好设置，应用已不在本机",
-             summary: "~/Library/Preferences/<bundle>.plist（App 已卸载，>180 天）"),
+             summary: "~/Library/Preferences/<bundle>.plist（App 已卸载，>180 天）",
+             contract: .userData, ownership: .uniqueBundle, hostState: .uninstalledProven,
+             restore: .impossible, tier: .t2),
         // A3（`~/Library/Caches/<bundle>`，App 已卸载）已于 v1.2 删除 —— 它是一条**幽灵规则**：
         // 登记在册但 Scanner 从未实现，而且实现出来只会更糟：
         //   · C1 已经全量覆盖 `~/Library/Caches/*`，A3 的目标集合是它的真子集；
@@ -203,43 +394,65 @@ enum CleanupRules {
         // 结论：不是补实现，而是删规则。
         Rule(id: "A3", category: .appResidue, nature: .systemCritical,
              consequence: "开机启动项配置，删错会影响登录或后台服务，务必逐个确认",
-             summary: "~/Library/LaunchAgents/*.plist（指向已卸载 App）"),
+             summary: "~/Library/LaunchAgents/*.plist（指向已卸载 App）",
+             contract: .userData, ownership: .uniqueBundle, hostState: .uninstalledProven,
+             restore: .impossible, tier: .t3),
         Rule(id: "A4", category: .appResidue, nature: .orphanedResidue,
              consequence: "已卸载应用的窗口状态恢复缓存，应用本体已不在本机",
              summary: "~/Library/Saved Application State/<bundle>.savedState（App 已卸载）",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .uniqueBundle, hostState: .uninstalledProven,
+             restore: .none, tier: .t0),
         Rule(id: "A5", category: .appResidue, nature: .orphanedResidue,
              consequence: "已卸载应用在 ByHost 中遗留的硬件偏好配置，应用已不在本机",
              summary: "~/Library/Preferences/ByHost/<bundle>.<UUID>.plist（App 已卸载）",
-             isNew: true),
+             isNew: true,
+             contract: .userData, ownership: .uniqueBundle, hostState: .uninstalledProven,
+             restore: .impossible, tier: .t2),
 
         // MARK: 5. 大文件与垃圾箱 T1–T5
         Rule(id: "T1", category: .largeFiles, nature: .userData,
              consequence: "废纸篓内容，清理即彻底删除、无法恢复",
-             summary: "~/.Trash/*（清理 = 彻底删除）", cleanup: .delete),
+             summary: "~/.Trash/*（清理 = 彻底删除）", cleanup: .delete,
+             contract: .userData, ownership: .unknown, hostState: .unknown,
+             restore: .impossible, tier: .t1),
         Rule(id: "T2", category: .largeFiles, nature: .userData,
              consequence: "下载目录里的文件，是你自己的东西",
-             summary: "~/Downloads/*（>500MB 或 >180 天未访问）"),
+             summary: "~/Downloads/*（>500MB 或 >180 天未访问）",
+             contract: .userData, ownership: .unknown, hostState: .unknown,
+             restore: .impossible, tier: .t3),
         Rule(id: "T3", category: .largeFiles, nature: .userData,
              consequence: "大文件，删了不可恢复",
-             summary: "大文件（>/1GB，深度 ≤2）"),
+             summary: "大文件（>/1GB，深度 ≤2）",
+             contract: .userData, ownership: .unknown, hostState: .unknown,
+             restore: .impossible, tier: .t3),
         Rule(id: "T4", category: .largeFiles, nature: .inferredUnused,
              consequence: "模拟器设备镜像（依据 90 天未使用推断）：删除后需重新创建并重装其中的 App",
-             summary: "~/Library/Developer/CoreSimulator/Devices/*（>90 天未使用）"),
+             summary: "~/Library/Developer/CoreSimulator/Devices/*（>90 天未使用）",
+             contract: .userData, ownership: .uniquePath, hostState: .unknown,
+             restore: .impossible, tier: .t3),
         Rule(id: "T5", category: .largeFiles, nature: .userData,
              consequence: "iPhone/iPad 本地备份，删了不可恢复",
-             summary: "~/Library/Application Support/MobileSync/Backup/*（>180 天）"),
+             summary: "~/Library/Application Support/MobileSync/Backup/*（>180 天）",
+             contract: .userData, ownership: .uniqueBundle, hostState: .unknown,
+             restore: .impossible, tier: .t3),
 
         // MARK: 6. 浏览器与系统数据 B1–B5
         Rule(id: "B1", category: .browserAndSystem, nature: .userData,
              consequence: "网站本地数据，删除后部分网站需要重新登录或丢失草稿",
-             summary: "Safari LocalStorage / WebsiteData（Safari 未运行）"),
+             summary: "Safari LocalStorage / WebsiteData（Safari 未运行）",
+             contract: .userData, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .stateLoss, tier: .t3),
         Rule(id: "B2", category: .browserAndSystem, nature: .losslessCache,
              consequence: "浏览器网页缓存，浏览时自动重建",
-             summary: "Chromium 系浏览器 Default/Cache、Default/Code Cache（浏览器未运行）"),
+             summary: "Chromium 系浏览器 Default/Cache、Default/Code Cache（浏览器未运行）",
+             contract: .appleCaches, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .autoCheap, tier: .t1),
         Rule(id: "B3", category: .browserAndSystem, nature: .losslessCache,
              consequence: "Safari 容器缓存，浏览时自动重建",
-             summary: "~/Library/Containers/com.apple.Safari 容器缓存"),
+             summary: "~/Library/Containers/com.apple.Safari 容器缓存",
+             contract: .appleCaches, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .autoCheap, tier: .t1),
         // B4/B5：原本是一条"Chromium 内嵌组件缓存"，把 CRX 下载缓存与
         // WidevineCdm（DRM）/ WasmTtsEngine（语音合成）/ SODALanguagePacks（语言包）
         // 混在一起统标 safe。后三者是**按需下载的功能组件**，删掉是功能不可用而非
@@ -247,11 +460,15 @@ enum CleanupRules {
         Rule(id: "B4", category: .browserAndSystem, nature: .losslessCache,
              consequence: "Chromium 组件下载缓存，需要时重新下载",
              summary: "Chromium 组件下载缓存 ~/Library/Application Support/*/component_crx_cache",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .autoExpensive, tier: .t2),
         Rule(id: "B5", category: .browserAndSystem, nature: .redownloadable,
              consequence: "按需下载的功能组件（DRM 播放 / 语音合成 / 语言包），删除后相关功能需重新下载才能使用",
              summary: "Chromium 功能组件 ~/Library/Application Support/*/{WidevineCdm, WasmTtsEngine, SODALanguagePacks}",
-             isNew: true),
+             isNew: true,
+             contract: .namedPattern, ownership: .uniqueBundle, hostState: .installedIdle,
+             restore: .autoExpensive, tier: .t2),
     ]
 
     /// 被"更具体的规则"单独认领的 `~/Library/Caches` 子路径。

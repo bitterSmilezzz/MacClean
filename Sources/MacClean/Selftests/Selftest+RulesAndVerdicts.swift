@@ -249,6 +249,75 @@ extension Selftest {
             return Set(ids).count == ids.count
         }
 
+        // ── 规则 v2 四维权度（docs/CLEANUP-RULES-V2.md）──
+        // 这一组只锁"登记是否自洽"，不改任何删除决策（那是步骤 3/4 的事）。
+
+        check("规则 v2：每条规则的档位都与它自己的四维登记自洽") {
+            var bad: [String] = []
+            for rule in CleanupRules.all {
+                if let why = CleanupRules.tierViolation(rule) { bad.append("\(rule.id)：\(why)") }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("规则 v2：T0 名单逐条点名（增删 T0 必须同时改规格）") {
+            // T0 是唯一允许默认勾选的档，所以这里用**白名单点名**而不是只查数量：
+            // 悄悄把某条改成 T0，即使四维看着自洽，也会在这里红。
+            let expected: Set<String> = ["C7", "L3", "L4", "L5", "L6",
+                                         "D8", "D11", "D12", "D13", "D14", "A4"]
+            let actual = Set(CleanupRules.all.filter { $0.tier == .t0 }.map(\.id))
+            guard actual == expected else {
+                print("      多出的 T0：\(actual.subtracting(expected).sorted())；"
+                    + "被移出的 T0：\(expected.subtracting(actual).sorted())")
+                return false
+            }
+            return true
+        }
+
+        check("规则 v2：档位分布与规格一致（11 / 16 / 17 / 8）") {
+            let count: (CleanupRules.Tier) -> Int = { t in CleanupRules.all.filter { $0.tier == t }.count }
+            let got = (count(.t0), count(.t1), count(.t2), count(.t3))
+            guard got == (11, 16, 17, 8) else {
+                print("      实际档位分布 T0/T1/T2/T3 = \(got.0)/\(got.1)/\(got.2)/\(got.3)")
+                return false
+            }
+            // 四档之和必须等于全表：不能有规则漏填档位或被重复计档
+            return got.0 + got.1 + got.2 + got.3 == CleanupRules.all.count
+        }
+
+        check("规则 v2：反证——数据契约或高重建代价伪装 T0 必须被拒") {
+            func fake(id: String, contract: CleanupRules.Contract,
+                      restore: CleanupRules.RestoreCost,
+                      ownership: CleanupRules.Ownership = .uniqueBundle) -> CleanupRules.Rule {
+                CleanupRules.Rule(id: id, category: .userCaches, nature: .losslessCache,
+                                  consequence: "", summary: "",
+                                  contract: contract, ownership: ownership,
+                                  hostState: .unknown, restore: restore, tier: .t0)
+            }
+            // ① 位置语义是数据 → 即使归属唯一、重建零成本，也不许进 T0
+            guard CleanupRules.tierViolation(
+                fake(id: "X1", contract: .userData, restore: .none)) != nil else { return false }
+            // ② 重建要重下 GB 级 → 不许进 T0（owner 已定不做联网探测，所以"能重建"不等于"便宜"）
+            guard CleanupRules.tierViolation(
+                fake(id: "X2", contract: .appleCaches, restore: .autoExpensive)) != nil else { return false }
+            // ③ 会丢状态（登录态、字体注册…）→ 不许进 T0
+            guard CleanupRules.tierViolation(
+                fake(id: "X3", contract: .appleCaches, restore: .stateLoss)) != nil else { return false }
+            // ④ 纯靠"名字像垃圾"且归属完全未知 → 不许进 T0
+            guard CleanupRules.tierViolation(
+                fake(id: "X4", contract: .namedPattern, restore: .none, ownership: .unknown)) != nil else { return false }
+            // 反证的反证：合法 T0 形态必须放行，否则上面四条是"恒拒"在空转
+            guard CleanupRules.tierViolation(
+                fake(id: "X5", contract: .tempDir, restore: .none, ownership: .unknown)) == nil else { return false }
+            // T3 也不能当垃圾桶：把可删项塞进"只报告"同样要红
+            let wrongT3 = CleanupRules.Rule(id: "X6", category: .userCaches, nature: .losslessCache,
+                                            consequence: "", summary: "",
+                                            contract: .appleCaches, ownership: .shared,
+                                            hostState: .unknown, restore: .autoCheap, tier: .t3)
+            return CleanupRules.tierViolation(wrongT3) != nil
+        }
+
         check("清理规则：各分类编号连续无缺号，ruleRef 与实际登记一致") {
             for category in CleanCategory.allCases {
                 let ids = CleanupRules.rules(in: category).map(\.id)
