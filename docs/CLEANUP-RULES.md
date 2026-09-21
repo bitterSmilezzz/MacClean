@@ -356,3 +356,13 @@
   - **本轮自己引入的两个回归**（记录以免重犯）：`ThumbnailCache` 只设条数上限未设体积上限
     （1024px 单张 ≈7.8 MB × 500 → 峰值 ~3.9 GB）；`SafeProcess.invokedCommands` 无条件 append
     而只有自检 reset（常驻进程下无界增长，且留存用户路径）。
+- **v1.72.2（2026-09-21）**：发布产物瘦身，**不涉及清理规则**。
+  - 56 个自检文件共 15,674 行（约占仓库 24%），且只有它们 `import ViewInspector`
+    （纯测试库）。此前全部链进 `dist/MacClean.app`——用户机器上的二进制带着整套测试代码。
+  - `Package.swift` 按 `MACCLEAN_NO_SELFTEST` 整目录排除 `Selftests/`、去掉依赖、
+    取消 `MACCLEAN_SELFTEST` 标记；`scripts/build-app.sh` 打包时自动设置。
+    发布产物 **24.5 MB → 19.7 MB（−19.8%）**。
+  - 没有改成独立 test target 的原因：自检要读每个类型的内部成员，同 module 才做得到；
+    拆出去就得把大量内部 API 改 `public`，那是更糟的封装。
+  - 剥离后的二进制跑 `--selftest` 明确报错、退出码 2 —— **不能静默通过**，
+    那等于让人以为"自检过了"而实际一个断言都没跑。

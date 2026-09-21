@@ -22,12 +22,17 @@ enum Selftest {
     static var failures: [String] = []
     static var passed = 0
 
-    /// 源码目录（编译期由 `#filePath` 推出）。
+    /// 产品源码目录（编译期由 `#filePath` 推出）。
     ///
     /// 供"扫源码本身"的 lint 型自检使用。原先这类检查写的是相对路径
     /// `Sources/MacClean/...`，只要不是从仓库根启动就一个文件都读不到，
     /// 于是恒真通过 —— 看起来在把关，其实一直在空转。
-    static let sourceDirectoryPath = (#filePath as NSString).deletingLastPathComponent
+    ///
+    /// 自检文件后来被移进 `Selftests/` 子目录（为的是发布时整目录排除），
+    /// 所以这里要**再往上一层**才是产品代码所在目录。少这一层，
+    /// "所有视图都走 motionSafe"那条 lint 就会去扫自检文件自己。
+    static let sourceDirectoryPath = ((#filePath as NSString)
+        .deletingLastPathComponent as NSString).deletingLastPathComponent
 
     enum SelftestError: Error {
         case buttonNotFound(String)

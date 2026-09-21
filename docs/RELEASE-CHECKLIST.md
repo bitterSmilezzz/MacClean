@@ -50,6 +50,12 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 2. 或等待 Apple 在 CLT 中补齐 SwiftUI 宏插件。
 
 ## 1. 代码与测试
+- [ ] **两种构建模式都要验**（v1.72.2 起自检代码不进发布产物）：
+      ① 开发构建 `swift build` 必须含自检，`--selftest` 全绿；
+      ② `./scripts/build-app.sh` 会设 `MACCLEAN_NO_SELFTEST=1` 排除 `Selftests/`，
+         打完包必须实测 `dist/MacClean.app/Contents/MacOS/MacClean --selftest`
+         **明确报错且退出码非 0**（静默"通过"= 严重问题：会让人以为自检过了）；
+      ③ 打开 release 的 .app 实际看一眼界面（自检不在里面了，界面是唯一防线）。
 - [ ] `swift build` 无 error **且无 warning**（历史遗留的 4 条 warning 已清零：Scanner 的两处
       死代码、AIReviewState 的两处捕获语义不一致——不要再引入新的）
 - [ ] `.build/debug/MacClean --selftest` 全过（退出码 0）。自检会自动把历史/撤销快照/

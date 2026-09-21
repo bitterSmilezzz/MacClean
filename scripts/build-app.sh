@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 APP_NAME="MacClean"
 BUILD_DIR=".build/release"
 APP_DIR="dist/$APP_NAME.app"
-VERSION="1.72.1"
+VERSION="1.72.2"
 
 # ---- 构建 SDK 选择（无 Xcode 的纯 CLT 环境必读）----
 # macOS 26.x 起 SwiftUI 的 @State 等属性包装器由宏实现，宏插件 `SwiftUIMacros`
@@ -26,7 +26,14 @@ fi
 # 会把该字符的首字节并入变量名，在 set -u 下报 "SDKROOT?: unbound variable"。
 SDK_NOTE=""
 if [ -n "${SDKROOT:-}" ]; then SDK_NOTE="（SDKROOT=${SDKROOT}）"; fi
-echo "==> Release 构建${SDK_NOTE}"
+
+# 发布产物不含自检：56 个 Selftests/*.swift 共 15,674 行（约占仓库 24%），
+# 且只有它们依赖测试库 ViewInspector。设了这个环境变量后 Package.swift 会
+# 整目录排除该子目录、去掉依赖，并取消 MACCLEAN_SELFTEST 编译标记
+# （此时 `--selftest` 会明确报错退出，不会静默"通过"）。详见 docs/RELEASE-CHECKLIST.md 第 1 节。
+export MACCLEAN_NO_SELFTEST=1
+
+echo "==> Release 构建${SDK_NOTE}（已剔除自检代码）"
 swift build -c release
 
 echo "==> 配置图标"

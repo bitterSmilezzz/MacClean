@@ -7,9 +7,21 @@ struct MacCleanApp: App {
 
     init() {
         // 无头测试模式：swift run MacClean --selftest（进程内 UI 自检，零窗口）
+        #if MACCLEAN_SELFTEST
         if CommandLine.arguments.contains("--selftest") {
             exit(Selftest.run())
         }
+        #else
+        // release 产物不链入自检代码（见 Package.swift 的 MACCLEAN_NO_SELFTEST）。
+        // 这里必须**明确报错并非零退出**：静默忽略会让跑的人以为"自检过了"，
+        // 而实际上一个断言都没执行——正是本项目反复在防的"没读到被当成很干净"。
+        if CommandLine.arguments.contains("--selftest") {
+            let msg = "此构建未包含自检代码（release 产物）。请改用开发构建执行：\n"
+                + "  SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift run MacClean --selftest\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+            exit(2)
+        }
+        #endif
         // 后台定时维护与低空间自愈命令行模式（LaunchAgent 无头执行，零窗口）
         if CommandLine.arguments.contains("--autoclean") {
             exit(AutoCleanService.run())
