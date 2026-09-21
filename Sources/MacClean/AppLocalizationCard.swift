@@ -39,12 +39,9 @@ struct LocalizationAppRow: View {
                         Text("最多可省 \(bundle.totalReclaimablePotential.byteStringCN)")
                             .font(.mcNumeric(10, weight: .semibold))
                             .foregroundStyle(Signal.positive)
-
-                        Text("需逐项手动勾选")
-                            .font(.mcNumeric(10))
-                            .foregroundStyle(Ink.tertiary)
                     }
                 }
+                .lineLimit(1)
             }
 
             Spacer(minLength: Space.xxs)
