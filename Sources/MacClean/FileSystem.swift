@@ -62,7 +62,47 @@ enum FileSystem {
     }
 
     private static var measurementCache: [String: Measurement] = [:]
+    /// 只做过**有界抽样**、体积不可信（`size` 是 0 或局部值）的键。
+    ///
+    /// 必须单独标记：抽样结果可以回答"最近什么时候被写过"，但绝不能被
+    /// `measure()` 当成体积复用——那会把一个几 GB 的目录报成 0 字节。
+    private static var sampledOnlyKeys: Set<String> = []
     private static let measurementLock = NSLock()
+
+    /// 取"最近写入"相关的测量结果。
+    ///
+    /// **与 `measure` 的关键区别**：绝不为了 usage 把整棵目录树走完。
+    ///
+    /// 为什么必须区分：聚合型清理项（Maven 仓库、Homebrew Cellar、轮转日志…）的 `path`
+    /// 是**巨大的父目录**，而它的体积是在扫描时逐个文件累加出来的、从未对父目录调用过 `size`。
+    /// 如果这里无条件全量遍历，就会为了一个"最近写入时间"把 `~/.m2/repository` 整棵树走一遍。
+    /// 实测这一处让整轮扫描从 3.4s 退化到 6.7s。
+    ///
+    /// 策略：
+    /// ① 若该路径已有完整测量（`size` 刚走过）→ 直接复用，零额外成本；
+    /// ② 否则退回**有界抽样**（深度不设限但样本上限 2000，够用即提前终止），
+    ///    这正是合并前的行为。
+    static func usageMeasurement(at path: String) -> Measurement {
+        let key = cacheKey(path)
+        measurementLock.lock()
+        let cached = measurementCache[key]
+        measurementLock.unlock()
+        if let cached { return cached }
+
+        let sampled = sampleMeasurement(at: path)
+        // v1.72 修：抽样结果原先**从不回填**，于是同一个大目录在一轮扫描里
+        // 每被问一次"最近写过吗"就要重新枚举至多 2000 项。
+        // 实测 ~/Library/Caches 单次 192.8 ms、Containers 166.8 ms，
+        // 而 `annotateUsage` 是每个清理项都要问一次。
+        // 回填时把它记为"仅抽样"，`measure()` 就不会误把这个没有体积的结果当成全量值。
+        measurementLock.lock()
+        if measurementCache[key] == nil {
+            measurementCache[key] = sampled
+            sampledOnlyKeys.insert(key)
+        }
+        measurementLock.unlock()
+        return sampled
+    }
 
     /// 测量缓存的键。
     ///
@@ -81,6 +121,7 @@ enum FileSystem {
     static func beginMeasurementSession() {
         measurementLock.lock()
         measurementCache.removeAll(keepingCapacity: true)
+        sampledOnlyKeys.removeAll()
         measurementLock.unlock()
     }
 
@@ -102,33 +143,13 @@ enum FileSystem {
                 var current = normalizePath(candidate)
                 while current.count > 1 {
                     measurementCache.removeValue(forKey: current)
+                    sampledOnlyKeys.remove(current)
                     let parent = normalizePath((current as NSString).deletingLastPathComponent)
                     if parent == current { break }
                     current = parent
                 }
             }
         }
-    }
-
-    /// 取"最近写入"相关的测量结果。
-    ///
-    /// **与 `measure` 的关键区别**：绝不为了 usage 把整棵目录树走完。
-    ///
-    /// 为什么必须区分：聚合型清理项（Maven 仓库、Homebrew Cellar、轮转日志…）的 `path`
-    /// 是**巨大的父目录**，而它的体积是在扫描时逐个文件累加出来的、从未对父目录调用过 `size`。
-    /// 如果这里无条件全量遍历，就会为了一个"最近写入时间"把 `~/.m2/repository` 整棵树走一遍。
-    /// 实测这一处让整轮扫描从 3.4s 退化到 6.7s。
-    ///
-    /// 策略：
-    /// ① 若该路径已有完整测量（`size` 刚走过）→ 直接复用，零额外成本；
-    /// ② 否则退回**有界抽样**（深度不设限但样本上限 2000，够用即提前终止），
-    ///    这正是合并前的行为。
-    static func usageMeasurement(at path: String) -> Measurement {
-        measurementLock.lock()
-        let cached = measurementCache[cacheKey(path)]
-        measurementLock.unlock()
-        if let cached { return cached }
-        return sampleMeasurement(at: path)
     }
 
     /// 有界抽样：只看最近修改时间，不做全量统计。
@@ -179,7 +200,9 @@ enum FileSystem {
     static func measure(at path: String) -> Measurement {
         let key = cacheKey(path)
         measurementLock.lock()
-        if let hit = measurementCache[key] {
+        // 只做过抽样的条目**不能**当体积用：它的 `size` 不是全量递归的结果，
+        // 复用会把几 GB 的目录报成 0 字节。这类条目必须重新完整测算。
+        if let hit = measurementCache[key], !sampledOnlyKeys.contains(key) {
             measurementLock.unlock()
             return hit
         }
@@ -189,6 +212,7 @@ enum FileSystem {
         if let incHit = IncrementalCache.lookup(at: path) {
             measurementLock.lock()
             measurementCache[key] = incHit
+            sampledOnlyKeys.remove(key)   // 增量缓存存的是上次的**全量**结果
             measurementLock.unlock()
             return incHit
         }
@@ -198,6 +222,7 @@ enum FileSystem {
 
         measurementLock.lock()
         measurementCache[key] = computed
+        sampledOnlyKeys.remove(key)
         measurementLock.unlock()
 
         // 写入增量指纹缓存

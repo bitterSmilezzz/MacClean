@@ -184,5 +184,92 @@ extension Selftest {
             return m2.size > m1.size
         }
 
+        // v1.72 修：`usageMeasurement` 开始回填抽样结果后，必须守住一条不变量——
+        // **抽样结果永远不能被当成体积复用**。否则为了省一次枚举，
+        // 会把一个几 GB 的目录在界面上报成 0 字节（比慢得多严重）。
+        check("测量缓存：仅抽样条目不参与体积复用，size 始终等于全量递归结果") {
+            let fm = FileManager.default
+            let dir = "/private/tmp/macclean_partial_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+            let payload = Data(repeating: 0xB5, count: 4096)
+            for i in 0..<5 {
+                try? payload.write(to: URL(fileURLWithPath: "\(dir)/f\(i).bin"))
+            }
+            let expected = Int64(payload.count * 5)
+
+            FileSystem.beginMeasurementSession()
+            // 先问 usage（走有界抽样并回填），再问 size —— 顺序正是回归的触发条件
+            let usage = FileSystem.usageMeasurement(at: dir)
+            guard usage.exists, usage.isDirectory else { return false }
+            let size = FileSystem.size(at: dir)
+            guard size == expected else {
+                print("      抽样条目被当成体积用了：size=\(size) 期望 \(expected)")
+                return false
+            }
+            // 第三次必须是纯缓存命中（值不变），且 usage 也拿到了全量结果
+            let again = FileSystem.size(at: dir)
+            let usageAfter = FileSystem.usageMeasurement(at: dir)
+            return again == expected && usageAfter.size == expected
+        }
+
+        // 失效必须把"仅抽样"标记一起清掉，否则删完文件后父目录会继续报旧体积
+        check("测量缓存：invalidate 同时清除抽样标记，删除后体积立即归零") {
+            let fm = FileManager.default
+            let dir = "/private/tmp/macclean_inval_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+            let file = "\(dir)/a.bin"
+            try? Data(repeating: 0x11, count: 8192).write(to: URL(fileURLWithPath: file))
+
+            FileSystem.beginMeasurementSession()
+            guard FileSystem.size(at: dir) == 8192 else { return false }
+            // 只问 usage（把该键标成"仅抽样"）之后再删除
+            _ = FileSystem.usageMeasurement(at: dir)
+            try? fm.removeItem(atPath: file)
+            FileSystem.invalidateMeasurements(for: [dir])
+            return FileSystem.size(at: dir) == 0
+        }
+
+        // 回填生效的**确定性**证明：不靠计时（计时受机器负载与其它套件干扰，
+        // 上一轮 `--scan` 的耗时对比就是因为日志项从 503 涨到 997 而失去可比性）。
+        // 抽样结果若真的进了缓存，那么中途改动文件 mtime 后立刻再问一次，
+        // 拿到的必须还是**旧的** newest；一旦失效缓存，才会看到新值。
+        check("测量缓存：usage 回填后可被命中（改 mtime 不重采，失效后才重采）") {
+            let fm = FileManager.default
+            let dir = "/private/tmp/macclean_backfill_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+            let old = Date(timeIntervalSince1970: 1_600_000_000)   // 固定过去时间，避免依赖当前时刻
+            let newer = Date(timeIntervalSince1970: 1_900_000_000)
+            for (i, date) in [old, old, old].enumerated() {
+                let f = "\(dir)/f\(i).bin"
+                try? Data([0x01]).write(to: URL(fileURLWithPath: f))
+                try? fm.setAttributes([.modificationDate: date], ofItemAtPath: f)
+            }
+
+            FileSystem.beginMeasurementSession()
+            let first = FileSystem.usageMeasurement(at: dir)
+            guard let firstNewest = first.newest, abs(firstNewest.timeIntervalSince(old)) < 2 else {
+                print("      首次抽样未拿到预期 mtime：\(String(describing: first.newest))")
+                return false
+            }
+
+            // 中途把其中一个文件改到很新的时间
+            try? fm.setAttributes([.modificationDate: newer], ofItemAtPath: dir + "/f0.bin")
+            let cached = FileSystem.usageMeasurement(at: dir)
+            guard let cachedNewest = cached.newest, abs(cachedNewest.timeIntervalSince(old)) < 2 else {
+                print("      未命中缓存（拿到了改动后的新值）：\(String(describing: cached.newest))")
+                return false
+            }
+
+            FileSystem.invalidateMeasurements(for: [dir])
+            let refreshed = FileSystem.usageMeasurement(at: dir)
+            guard let r = refreshed.newest, abs(r.timeIntervalSince(newer)) < 2 else {
+                print("      失效后未重新抽样：\(String(describing: refreshed.newest))")
+                return false
+            }
+            return true
+        }
     }
 }
