@@ -467,7 +467,6 @@ extension Selftest {
             try? fm.createDirectory(atPath: base, withIntermediateDirectories: true)
             defer { try? fm.removeItem(atPath: base) }
             let scanner = DiagnosticReportScanner.shared
-            let complete = diagSelftestInventory()
 
             // ① 用户白名单里的 .ips
             let wlPath = base + "/Whitelisted_2026.ips"

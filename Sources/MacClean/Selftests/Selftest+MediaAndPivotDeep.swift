@@ -1,8 +1,75 @@
 import Foundation
 import SwiftUI
+import AVFoundation
+import CoreVideo
+import CoreMedia
 
 // 自检套件：重复文件与大文件智能分析进阶 (v1.46.0)
 extension Selftest {
+    /// 生成一个真实可读的 H.264 mp4，用来验证元数据解析链路。
+    ///
+    /// 为什么非得造真的：AVFoundation 迁移到 `load(...)` 之后，每个字段都被
+    /// `try? … ?? 0/[]` 兜住了——真要是全部解析失败，代码照样编译、
+    /// 现有断言照样全绿，界面上却再也显示不出时长/分辨率/码率。
+    /// 只查"不崩溃、nil 不崩"是守不住这种坏法的，必须有一个**真的有值**的样本。
+    /// 像素内容全不填（未初始化的 BGRA 也是一帧合法画面），自检只关心容器与轨道元数据。
+    static func makeVideoFixture(at path: String, frames: Int = 6, timescale: Int32 = 10) -> Bool {
+        let url = URL(fileURLWithPath: path)
+        try? FileManager.default.removeItem(atPath: path)
+        let (w, h) = (320, 240)
+        guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mp4) else { return false }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: w,
+            AVVideoHeightKey: h,
+        ])
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: input,
+            sourcePixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                kCVPixelBufferWidthKey as String: w,
+                kCVPixelBufferHeightKey as String: h,
+            ])
+        guard writer.canAdd(input) else { return false }
+        writer.add(input)
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+
+        var appended = 0
+        var lastT = CMTime.zero
+        for i in 0..<frames {
+            var buffer: CVPixelBuffer?
+            guard CVPixelBufferCreate(kCFAllocatorDefault, w, h,
+                                      kCVPixelFormatType_32BGRA, nil, &buffer) == kCVReturnSuccess,
+                  let buffer else { break }
+            // 编码器没 ready 就 append 会**直接抛 ObjC 异常**（不是返回 false），
+            // 进程当场终止——实测就是这样把整个自检跑断的，必须先等。
+            var waits = 0
+            while !input.isReadyForMoreMediaData && waits < 300 {
+                Thread.sleep(forTimeInterval: 0.01)
+                waits += 1
+            }
+            guard input.isReadyForMoreMediaData else { break }
+            let t = CMTime(value: CMTimeValue(i), timescale: timescale)
+            if adaptor.append(buffer, withPresentationTime: t) {
+                appended += 1
+                lastT = t
+            }
+        }
+        guard appended >= 2 else { return false }
+        input.markAsFinished()
+        // 收尾时间取**实际写进去的最后一帧**：用循环上界的话，中途 ready 超时
+        // 提前 break 会让 endSession 落在没写过的时间戳上。
+        writer.endSession(atSourceTime: lastT)
+
+        // 完成回调在 AVFoundation 自己的队列上跑，等它期间不能占着协作线程池
+        let done = DispatchGroup()
+        done.enter()
+        writer.finishWriting { done.leave() }
+        guard done.wait(timeout: .now() + .seconds(15)) == .success else { return false }
+        return writer.status == .completed && FileManager.default.fileExists(atPath: path)
+    }
+
     static func suiteMediaAndPivotDeep() {
         check("媒体元数据模型：时长、分辨率与码率格式化验证") {
             let meta4K = MediaMetadata(
@@ -59,9 +126,95 @@ extension Selftest {
             guard !MediaMetadataParser.isMediaFile(path: "/Users/test/code.swift") else { return false }
 
             // 解析不存在或非法路径时不崩溃且返回 nil
-            let nonExistent = MediaMetadataParser.cachedOrParse(path: "/non/existent/path/media.mp4", fileSize: 1024)
-            guard nonExistent == nil else { return false }
+            // （AVFoundation 只剩异步 `load`，这里必须等解析真的跑完再断言：
+            //   只查缓存会把"根本没去解析"也判成通过。用 `DispatchGroup` 而不是
+            //   裸标志位——后者主线程和 Task 各写各的，Thread Sanitizer 会报竞争。）
+            let missing = "/non/existent/path/media.mp4"
+            var parsed: MediaMetadata?
+            let parsedDone = DispatchGroup()
+            parsedDone.enter()
+            Task {
+                parsed = await MediaMetadataParser.parse(path: missing, fileSize: 1024)
+                parsedDone.leave()
+            }
+            // 超时不算通过，但窗口要给足：这是"解析有没有卡住"的判据，
+            // 不是性能基准，机器被并行构建压满时不该假红（真卡住 10 秒同样是失败）。
+            guard parsedDone.wait(timeout: .now() + .seconds(10)) == .success else { return false }
+            guard parsed == nil else { return false }
+            // 同步侧只读缓存：没预热过的路径必须是 nil，body 里不再隐式发起解析
+            guard MediaMetadataParser.cached(path: missing) == nil else { return false }
 
+            return true
+        }
+
+        // 真造一个能读的 mp4 走完整解析链路：守住"字段全被 try? 兜成 0/nil
+        // 但看起来一切正常"这一类失败——那只有拿真的有值的样本才测得出来。
+        check("媒体元数据端到端：真实 mp4 样本解析出时长/分辨率/码率，并回填缓存") {
+            let dir = NSTemporaryDirectory() + "macclean-media-\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let file = dir + "/selftest.mp4"
+            guard makeVideoFixture(at: file) else {
+                print("      跳过：本机无法生成 H.264 样例（AVAssetWriter 不可用）")
+                return true
+            }
+            let size = FileSystem.size(at: file)
+            var meta: MediaMetadata?
+            let done = DispatchGroup()
+            done.enter()
+            Task {
+                meta = await MediaMetadataParser.load(path: file, fileSize: size)
+                done.leave()
+            }
+            guard done.wait(timeout: .now() + .seconds(20)) == .success else { return false }
+            guard let meta else {
+                print("      真实 mp4 解析返回 nil —— 字段被 try? 静默吞掉了")
+                return false
+            }
+            var bad: [String] = []
+            if meta.durationSeconds <= 0 { bad.append("durationSeconds=\(meta.durationSeconds)") }
+            if meta.pixelWidth != 320 || meta.pixelHeight != 240 {
+                bad.append("分辨率 \(meta.pixelWidth)x\(meta.pixelHeight)，期望 320x240")
+            }
+            if !meta.hasVideo { bad.append("hasVideo=false") }
+            if meta.bitrateKbps <= 0 { bad.append("bitrateKbps=\(meta.bitrateKbps)") }
+            if meta.videoCodec?.isEmpty != false { bad.append("videoCodec 为空") }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "、")); return false }
+            // `load` 必须回填缓存，否则同步侧（body / sort 比较器）永远读不到
+            return MediaMetadataParser.cached(path: file)?.durationSeconds == meta.durationSeconds
+        }
+
+        // 解析从"用到才同步解析"改成"后台按批预热"之后，必须有一条上限锁死：
+        // 缓存超过 500 条是整体丢弃的，不限流的话一个几千项的媒体分类会把缓存反复清空，
+        // 每次重绘重解析几千个文件——比改造前更贵。而且 `.task(id:)` 的键与预热对象
+        // 必须同源，否则会静默出现"键没变、这一项却没被预热"。
+        check("媒体预热：按上限截断、只挑媒体文件，且键与实际预热对象同源") {
+            let items: [CleanItem] = (0..<1000).map { i in
+                CleanItem(name: "m\(i)", path: "/tmp/media-selftest/m\(i).\(i.isMultiple(of: 2) ? "mp4" : "txt")",
+                          size: 1024, nature: .losslessCache, category: .largeFiles)
+            }
+            let targets = MediaMetadataParser.warmTargets(from: items)
+            guard targets.count == MediaMetadataParser.warmLimit else {
+                print("      预热条数 \(targets.count)，上限 \(MediaMetadataParser.warmLimit)")
+                return false
+            }
+            // 只挑媒体文件，且保持列表原有顺序（排在前面的先被预热）
+            guard targets.allSatisfy({ MediaMetadataParser.isMediaFile(path: $0.path) }) else { return false }
+            guard targets.first?.path == "/tmp/media-selftest/m0.mp4" else { return false }
+            // 上限之后的媒体项不得进入预热集：m998 是 mp4，排在第 499 位之后
+            guard !targets.contains(where: { $0.path.contains("/m998.") }) else {
+                print("      上限之后的项被拉进了预热集")
+                return false
+            }
+            let paths = MediaMetadataParser.warmPaths(from: items)
+            guard paths == targets.map(\.path) else {
+                print("      键与实际预热对象不同源")
+                return false
+            }
+            // 空列表与非媒体列表都必须什么都不做
+            guard MediaMetadataParser.warmTargets(from: []).isEmpty,
+                  MediaMetadataParser.warmTargets(from: Array(items.filter { !$0.path.hasSuffix(".mp4") })).isEmpty
+            else { return false }
             return true
         }
 

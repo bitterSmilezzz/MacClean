@@ -33,6 +33,9 @@ struct CategoryDetailView: View {
     @State private var showHud = false
     @State private var hudMessage = ""
     @State private var quickLookURL: URL?
+    /// 媒体元数据预热完成计数：解析已从 body 里挪到 `.task` 后台跑，
+    /// 靠它把"缓存填好了"这一事件变成一次重绘，否则徽标要等用户动一下才出现。
+    @State private var mediaMetaRevision = 0
 
     private var st: CategoryState { app.state(for: category) }
 
@@ -90,21 +93,31 @@ struct CategoryDetailView: View {
                 result.sort { ($0.modificationDate ?? Date.distantPast) > ($1.modificationDate ?? Date.distantPast) }
             case .bitrateDescending:
                 result.sort { a, b in
-                    let bA = MediaMetadataParser.cachedOrParse(path: a.path, fileSize: a.size)?.bitrateKbps ?? 0
-                    let bB = MediaMetadataParser.cachedOrParse(path: b.path, fileSize: b.size)?.bitrateKbps ?? 0
+                    let bA = MediaMetadataParser.cached(path: a.path)?.bitrateKbps ?? 0
+                    let bB = MediaMetadataParser.cached(path: b.path)?.bitrateKbps ?? 0
                     if bA != bB { return bA > bB }
                     return a.size > b.size
                 }
             case .durationDescending:
                 result.sort { a, b in
-                    let dA = MediaMetadataParser.cachedOrParse(path: a.path, fileSize: a.size)?.durationSeconds ?? 0
-                    let dB = MediaMetadataParser.cachedOrParse(path: b.path, fileSize: b.size)?.durationSeconds ?? 0
+                    let dA = MediaMetadataParser.cached(path: a.path)?.durationSeconds ?? 0
+                    let dB = MediaMetadataParser.cached(path: b.path)?.durationSeconds ?? 0
                     if dA != dB { return dA > dB }
                     return a.size > b.size
                 }
             }
         }
         return result
+    }
+
+    /// 媒体预热只在"这批要预热的文件变了"时才重跑，故取路径集合做键（排序后，
+    /// 免得仅换列表顺序就把一轮解析推翻）。
+    ///
+    /// 键的来源与 `warm(items:)` 是**同一个** `warmPaths(from:)`：两边若各写一遍
+    /// 过滤与截断规则，就会出现"键没变、该项却没被预热"或"每次重绘都重启任务"。
+    /// 只取到上限那么多，键的计算量也就与列表长度无关。
+    private func mediaPrewarmKey(_ items: [CleanItem]) -> String {
+        MediaMetadataParser.warmPaths(from: items).sorted().joined(separator: "\u{1}")
     }
 
     var body: some View {
@@ -123,6 +136,12 @@ struct CategoryDetailView: View {
             footer(filtered: filtered, visibleSelectedCount: visibleSelectedCount)
         }
         .background(Surface.window)
+        // AVFoundation 只剩异步 `load`，解析不能再留在 body 里跑：改成后台预热，
+        // 完成后自增 revision 触发一次重绘，徽标与"按码率/时长排序"随即就位。
+        .task(id: mediaPrewarmKey(filtered)) {
+            await MediaMetadataParser.warm(items: filtered)
+            mediaMetaRevision += 1
+        }
         .quickLookPreview($quickLookURL)
         .onChange(of: app.lastCleanSummary) { summary in
             if let summary, !summary.isEmpty {
@@ -1103,7 +1122,7 @@ struct ItemRowView: View {
                 }
                 if item.category == .largeFiles,
                    MediaMetadataParser.isMediaFile(path: item.path),
-                   let meta = MediaMetadataParser.cachedOrParse(path: item.path, fileSize: item.size) {
+                   let meta = MediaMetadataParser.cached(path: item.path) {
                     Text(meta.badgeText)
                         .font(Typo.micro)
                         .foregroundColor(Accent.tint)
@@ -1150,7 +1169,7 @@ struct ItemRowView: View {
         }
         if item.category == .largeFiles,
            MediaMetadataParser.isMediaFile(path: item.path),
-           let meta = MediaMetadataParser.cachedOrParse(path: item.path, fileSize: item.size) {
+           let meta = MediaMetadataParser.cached(path: item.path) {
             HStack(spacing: 4) {
                 Image(systemName: "film")
                     .font(.system(size: 10))

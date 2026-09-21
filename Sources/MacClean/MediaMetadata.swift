@@ -121,35 +121,76 @@ final class MediaMetadataParser {
         return mediaExtensions.contains(ext)
     }
 
-    /// 从缓存获取或同步解析音视频元数据
-    static func cachedOrParse(path: String, fileSize: Int64) -> MediaMetadata? {
+    /// 只读缓存：同步上下文（视图 body、`sort` 比较器）用得上，取不到就按"未知"渲染。
+    /// 补齐由 `warm(items:)` 在后台完成。
+    static func cached(path: String) -> MediaMetadata? {
         cacheLock.lock()
-        if let hit = cache[path] {
-            cacheLock.unlock()
-            return hit
-        }
-        cacheLock.unlock()
+        defer { cacheLock.unlock() }
+        return cache[path]
+    }
 
-        guard let meta = parse(path: path, fileSize: fileSize) else {
-            return nil
-        }
+    /// 解析并回填缓存；已缓存过则直接返回。
+    @discardableResult
+    static func load(path: String, fileSize: Int64) async -> MediaMetadata? {
+        if let hit = cached(path: path) { return hit }
+        guard let meta = await parse(path: path, fileSize: fileSize) else { return nil }
+        store(meta, for: path)
+        return meta
+    }
 
+    /// 写缓存。单独抽成同步函数是因为 `NSLock` 不能在异步上下文里用——
+    /// 内联进 `load` 现在只是报 warning，Swift 6 语言模式下会直接编译失败。
+    private static func store(_ meta: MediaMetadata, for path: String) {
         cacheLock.lock()
+        defer { cacheLock.unlock() }
         if cache.count > 500 {
             cache.removeAll(keepingCapacity: true)
         }
         cache[path] = meta
-        cacheLock.unlock()
-        return meta
     }
 
-    /// 解析指定本地音视频文件
-    static func parse(path: String, fileSize: Int64) -> MediaMetadata? {
+    /// 预热一批清理项中真正是媒体文件的那部分。
+    ///
+    /// 串行而非并发：`AVURLAsset` 的 `load` 本身就跑在媒体的后台队列上，
+    /// 这里再并发只是把同一次 UI 刷新要用的解析排成长队。
+    static func warm(items: [CleanItem]) async {
+        for item in warmTargets(from: items) {
+            guard !Task.isCancelled else { return }
+            _ = await load(path: item.path, fileSize: item.size)
+        }
+    }
+
+    /// 单次预热的条数上限。
+    ///
+    /// 必须有上限：`store` 里缓存超过 500 条会整体丢弃（改造前是"用到才解析"，
+    /// 天然不会撞上），而现在一次 `.task` 就要把整份过滤结果全解析——一个几千项的
+    /// 媒体分类会把缓存反复清空，于是每次重绘都重解析几千个文件，比改造前更贵。
+    /// 超上限的项按"未知"渲染，与原同步实现在解析失败时的表现同一口径。
+    static let warmLimit = 400
+
+    /// **唯一**的选取规则：预热谁，`.task(id:)` 的键就是谁。
+    /// 两处各写一遍 filter/prefix 的话，一旦不一致就会得到"键没变但没预热到"
+    /// 或"每次重绘都重启任务"这类静默失效。
+    static func warmTargets(from items: [CleanItem]) -> [CleanItem] {
+        Array(items.lazy.filter { isMediaFile(path: $0.path) }.prefix(warmLimit))
+    }
+
+    static func warmPaths(from items: [CleanItem]) -> [String] {
+        warmTargets(from: items).map(\.path)
+    }
+
+    /// 解析指定本地音视频文件。
+    ///
+    /// macOS 13 起 `AVAsset`/`AVAssetTrack` 的同步属性（`duration`、`tracks(withMediaType:)`、
+    /// `naturalSize`、`preferredTransform`、`estimatedDataRate`、`formatDescriptions`）
+    /// 全部废弃，只剩 `load(...)` 这一条异步通道，所以这里没法保持同步签名。
+    /// 单个键读不到就按 0/空处理，沿用本文件"读不到即未知、不报错"的口径。
+    static func parse(path: String, fileSize: Int64) async -> MediaMetadata? {
         guard isMediaFile(path: path) else { return nil }
         let url = URL(fileURLWithPath: path)
         let asset = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
 
-        let durationSec = CMTimeGetSeconds(asset.duration)
+        let durationSec = CMTimeGetSeconds((try? await asset.load(.duration)) ?? .invalid)
         let validDuration = durationSec.isFinite && durationSec > 0 ? durationSec : 0
 
         var width = 0
@@ -160,32 +201,28 @@ final class MediaMetadataParser {
         var audioSampleRate: Int? = nil
         var totalEstimatedRate: Float = 0
 
-        let videoTracks = asset.tracks(withMediaType: .video)
+        let videoTracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
         if let videoTrack = videoTracks.first {
             hasVideo = true
-            let size = videoTrack.naturalSize.applying(videoTrack.preferredTransform)
+            let geometry = try? await videoTrack.load(.naturalSize, .preferredTransform)
+            let size = (geometry?.0 ?? .zero).applying(geometry?.1 ?? .identity)
             width = Int(abs(size.width))
             height = Int(abs(size.height))
-            totalEstimatedRate += videoTrack.estimatedDataRate
+            totalEstimatedRate += (try? await videoTrack.load(.estimatedDataRate)) ?? 0
 
-            // 提取视频编码格式描述
-            let descriptions = videoTrack.formatDescriptions as? [CMFormatDescription] ?? []
-            if let desc = descriptions.first {
-                let subtype = CMFormatDescriptionGetMediaSubType(desc)
-                videoCodec = fourCCToString(subtype)
+            if let desc = ((try? await videoTrack.load(.formatDescriptions)) ?? []).first {
+                videoCodec = fourCCToString(CMFormatDescriptionGetMediaSubType(desc))
             }
         }
 
-        let audioTracks = asset.tracks(withMediaType: .audio)
+        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
         if let audioTrack = audioTracks.first {
             hasAudio = true
-            totalEstimatedRate += audioTrack.estimatedDataRate
+            totalEstimatedRate += (try? await audioTrack.load(.estimatedDataRate)) ?? 0
 
-            let descriptions = audioTrack.formatDescriptions as? [CMFormatDescription] ?? []
-            if let desc = descriptions.first {
-                if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee {
-                    audioSampleRate = Int(asbd.mSampleRate)
-                }
+            if let desc = ((try? await audioTrack.load(.formatDescriptions)) ?? []).first,
+               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee {
+                audioSampleRate = Int(asbd.mSampleRate)
             }
         }
 

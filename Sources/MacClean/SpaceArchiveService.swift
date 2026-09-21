@@ -342,7 +342,7 @@ final class SpaceArchiveService {
         guard let handle = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? handle.close() }
         do {
-            try handle.seek(toFileOffset: UInt64(size - tail))
+            handle.seek(toFileOffset: UInt64(size - tail))
             guard let data = try handle.read(upToCount: Int(tail)), data.count >= 22 else { return false }
             return data.range(of: Data([0x50, 0x4B, 0x05, 0x06]), options: [.backwards]) != nil
         } catch {

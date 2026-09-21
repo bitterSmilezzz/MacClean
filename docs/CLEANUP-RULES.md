@@ -400,4 +400,15 @@
     （23 个边界输入，含 `/a//b`、`/a/.../b`、`/private/`、路径中间的 `~`）；
     ② 闸门判定开销相对**单次软链解析 ≤ 3 倍**——用比值而不是绝对阈值，与机器负载无关，
     改动前实测 14.6 倍。
+  - **同一版顺手把编译告警清零（14 条 → 0 条，两种构建模式都是 0）**，其中一条与删除判据有关：
+    `PluginExtensionItem.isSafeToClean` 是与 `FileSystem.isSafeToClean` **同名异义**的废弃属性，
+    两处调用（扩展残留"全选"与"已全选"判定）迁到 `isDeletableVerdict` 后连 shim 一起删除。
+    `Locale.current.languageCode` → `language.languageCode.identifier` 经 8 种 locale 实测同值，
+    "多语言瘦身要保留用户自己的语言"这条判据不变。
+  - **音视频元数据（时长/分辨率/码率徽标）改后台预热**：AVFoundation 在 macOS 13 起
+    只剩异步 `load(...)`，而解析原先在 SwiftUI `body` 与 `sort` 比较器里同步跑。
+    徽标因此会**晚一帧**出现、按码率/时长排序在预热完成后才稳定；解析链路新增一条
+    用 `AVAssetWriter` 现场编出的真实 mp4 作样本的端到端断言（否则"每个字段都被
+    `try?` 兜成 0"这种坏法能拿到全绿）。清理规则本身不受影响——这些字段只用于展示与排序。
+
 

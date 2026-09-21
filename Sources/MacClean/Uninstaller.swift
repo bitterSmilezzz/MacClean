@@ -513,7 +513,7 @@ final class UninstallerState: ObservableObject {
         pluginItems = pluginItems.map { item in
             var copy = item
             if safeOnly {
-                if item.isSafeToClean {
+                if item.isDeletableVerdict {
                     copy.isSelected = on
                 } else {
                     copy.isSelected = false
@@ -540,7 +540,7 @@ final class UninstallerState: ObservableObject {
     }
 
     var allPluginsSelected: Bool {
-        let safeItems = pluginItems.filter { $0.isSafeToClean }
+        let safeItems = pluginItems.filter { $0.isDeletableVerdict }
         return !safeItems.isEmpty && safeItems.allSatisfy { $0.isSelected }
     }
 

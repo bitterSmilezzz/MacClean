@@ -113,9 +113,6 @@ struct PluginExtensionItem: Identifiable, Equatable, Hashable {
         !isUserAuthoredContent && status.providesDeletionVerdict
     }
 
-    @available(*, deprecated, renamed: "isDeletableVerdict")
-    var isSafeToClean: Bool { isDeletableVerdict }
-
     init(
         id: UUID = UUID(),
         name: String,

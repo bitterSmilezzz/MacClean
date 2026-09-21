@@ -56,8 +56,24 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
          打完包必须实测 `dist/MacClean.app/Contents/MacOS/MacClean --selftest`
          **明确报错且退出码非 0**（静默"通过"= 严重问题：会让人以为自检过了）；
       ③ 打开 release 的 .app 实际看一眼界面（自检不在里面了，界面是唯一防线）。
-- [ ] `swift build` 无 error **且无 warning**（历史遗留的 4 条 warning 已清零：Scanner 的两处
-      死代码、AIReviewState 的两处捕获语义不一致——不要再引入新的）
+- [ ] `swift build` 无 error **且无 Swift 源码 warning**。v1.72.4 起确实做到 0 条
+      （历史遗留的 4 条 + 本轮 14 条全部清零；`MACCLEAN_NO_SELFTEST=1 swift build -c release`
+      同样 0 条源码告警）。两类**与源码无关**的残留不算在内，也别去想办法消掉：
+      ① 两条 `ld: warning: search path '/Library/Developer/CommandLineTools/Developer/…'
+         not found`——§0 那条 SDKROOT 钉版在 CLT 布局下的产物；
+      ② release 模式下两条 SwiftPM 的 `dependency 'viewinspector' is not used by any target`——
+         package 级依赖声明是**故意留着**的，删掉会让 release 构建顺手删掉被 git 跟踪的
+         `Package.resolved`（真发生过）。
+- [ ] **`try?`/`?? 0` 兜底的解析代码，必须配一个"输入真的有值"的样本断言**。
+      macOS 13 起 AVFoundation 的同步属性（`duration`/`tracks(withMediaType:)`/`naturalSize`/
+      `estimatedDataRate`/`formatDescriptions`）全部废弃，只剩 `load(...)` 异步族，
+      于是每个字段都得 `try? await … ?? 0`——真要是全部解析失败，代码照编译、
+      自检照全绿，界面上却再也显示不出时长/分辨率/码率。
+      现在由 `Selftest.makeVideoFixture` 现场用 `AVAssetWriter` 造一个真 H.264 mp4，
+      断言解析结果非零并回填缓存。**同类改动（任何"失败即静默降级"的解析）都要照此办。**
+      另：`AVAssetWriterInputPixelBufferAdaptor.append` 在 `isReadyForMoreMediaData == false`
+      时是**抛 ObjC 异常**而不是返回 false，会把整个进程打断（实测就是这样跑断了自检），
+      必须先等 ready。
 - [ ] `.build/debug/MacClean --selftest` 全过（退出码 0）。自检会自动把历史/撤销快照/
       增量指纹缓存重定向到临时目录（`MACCLEAN_STATE_DIR`，见 `MacCleanState`），
       **不要**在未隔离的状态下从 `.app` 内跑自检——那会读写用户真实的清理历史与白名单

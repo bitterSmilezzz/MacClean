@@ -172,7 +172,7 @@ public enum LocalizationHelper {
         }
         raw.append(contentsOf: Locale.preferredLanguages)
         raw.append(Locale.current.identifier)
-        raw.append(Locale.current.languageCode ?? "")
+        raw.append(Locale.current.language.languageCode?.identifier ?? "")
         var seen = Set<String>()
         var out: [String] = []
         for entry in raw {
