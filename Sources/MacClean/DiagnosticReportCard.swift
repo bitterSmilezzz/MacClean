@@ -34,6 +34,18 @@ public struct DiagnosticReportCard: View {
         self.onTriggerClean = onTriggerClean
     }
 
+    /// 自检注入口：`isCleaning` 是 `@State`，ViewInspector 在 macOS 上不传播它的变更，
+    /// 只能从 init 播种 —— 用于断言"清理进行中，批量释放按钮必须禁用"（防重复提交）。
+    /// 生产调用方走上面那个 init，行为完全不变。
+    internal init(onClose: @escaping () -> Void, onTriggerClean: (() -> Void)? = nil,
+                  initiallyCleaning: Bool,
+                  initiallyConfirming: Bool = false) {
+        self.onClose = onClose
+        self.onTriggerClean = onTriggerClean
+        _isCleaning = State(initialValue: initiallyCleaning)
+        _showConfirmClean = State(initialValue: initiallyConfirming)
+    }
+
     // MARK: - 过滤计算
 
     private var filteredReports: [DiagnosticReportItem] {
@@ -331,17 +343,21 @@ public struct DiagnosticReportCard: View {
                 Button("勾选全部孤儿转储") {
                     selectByCondition { $0.isOrphan && !$0.needsConfirmation }
                 }
+                .accessibilityIdentifier("diagnosticSelectOrphans")
                 Button("勾选全部陈旧报告 (>30天)") {
                     selectByCondition { $0.isStale && !$0.needsConfirmation && !$0.isGlobalScope }
                 }
+                .accessibilityIdentifier("diagnosticSelectStale")
                 Button("勾选当前列表全部") {
                     // "需确认"与 root 管理的位置不进批量勾选：证据不足与删不动的都不该被顺手勾上
                     selectByCondition { !$0.needsConfirmation && !$0.isGlobalScope }
                 }
+                .accessibilityIdentifier("diagnosticSelectAllCurrent")
                 Divider()
                 Button("全部反选 / 清除勾选") {
                     selectByCondition { _ in false }
                 }
+                .accessibilityIdentifier("diagnosticClearSelection")
             } label: {
                 Text("快捷勾选 ▾")
                     .font(Typo.micro)
@@ -367,6 +383,7 @@ public struct DiagnosticReportCard: View {
             }
             .buttonStyle(.plain)
             .disabled(selectedReports.isEmpty || isCleaning)
+            .accessibilityIdentifier("diagnosticBatchCleanButton")
         }
     }
 

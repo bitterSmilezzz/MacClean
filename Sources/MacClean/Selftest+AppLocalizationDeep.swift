@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import SwiftUI
+import ViewInspector
 
 // MARK: - 应用程序多语言本地化资源包瘦身深度自检 (v1.60.0 / v1.74.0 加固)
 
@@ -573,7 +575,146 @@ extension Selftest {
             guard fm.fileExists(atPath: pack) else { return false }
             return true
         }
+
+        // ── UI 层安全行为断言（v1.75.0）────────────────────────────────
+        // v1.74.0 把多语言瘦身改成"逐项手动勾选"，是因为旧版把外语包当成默认可删项。
+        // 下面四条把这件事钉在界面上：零勾选、全选不吞受保护语言包、彻底删除必经确认、
+        // 清理中防重复提交。谁把它们改回去，自检立刻红。
+        check("多语言瘦身 UI: 进入页面零勾选，两个删除按钮都禁用") {
+            let app = AppState()
+            app.uninstaller.currentTab = .localization
+            let bundle = localizationUIBundle()
+            app.uninstaller.localizationBundles = [bundle]
+            app.uninstaller.selectedLocalizationBundle = bundle
+            let view = UninstallerView().environmentObject(app)
+
+            _ = try view.inspect().find(text: "已选 0 个外语包")
+            guard try button("localizationPermanentButton", in: view).isDisabled() else {
+                print("    ❌ 一个语言包都没勾，「彻底删除」竟可点击")
+                return false
+            }
+            guard try button("localizationTrashButton", in: view).isDisabled() else {
+                print("    ❌ 一个语言包都没勾，「移入废纸篓」竟可点击")
+                return false
+            }
+            // 受保护语言包（母语 / Base）在界面上压根不给勾选框
+            let toggles = try view.inspect().findAll(ViewType.Button.self)
+                .filter { (try? $0.accessibilityIdentifier()) == "languagePackRowToggle" }
+            guard toggles.count == 2 else {
+                print("    ❌ 语言包勾选框 \(toggles.count) 个 ≠ 非受保护项 2 个（受保护语言包可被勾选）")
+                return false
+            }
+            // 反证：手动勾一项后必须解禁，否则上面的"禁用"是恒真
+            try toggles[0].tap()
+            _ = try view.inspect().find(text: "已选 1 个外语包")
+            return try !button("localizationTrashButton", in: view).isDisabled()
+        }
+
+        check("多语言瘦身 UI: 「全选外语包」不勾母语与 Base") {
+            let app = AppState()
+            app.uninstaller.currentTab = .localization
+            let bundle = localizationUIBundle()
+            app.uninstaller.localizationBundles = [bundle]
+            app.uninstaller.selectedLocalizationBundle = bundle
+            let view = UninstallerView().environmentObject(app)
+
+            try button("localizationSelectAllPacksButton", in: view).tap()
+            let packs = app.uninstaller.localizationBundles[0].languagePacks
+            guard packs[0].isSelected && packs[1].isSelected else {
+                print("    ❌ 「全选外语包」连可清理的两项都没勾上")
+                return false
+            }
+            guard !packs[2].isSelected && !packs[3].isSelected else {
+                print("    ❌ 母语 / Base 语言包被「全选」勾上了")
+                return false
+            }
+            guard app.uninstaller.localizationBundles[0].selectedPackCount == 2 else { return false }
+            _ = try view.inspect().find(text: "已选 2 个外语包")
+            // 待释放额度只算非受保护项：4 MB + 2 MB
+            return try !button("localizationPermanentButton", in: view).isDisabled()
+        }
+
+        check("多语言瘦身 UI: 彻底删除必经确认弹窗，默认不呈现") {
+            let app = AppState()
+            app.uninstaller.currentTab = .localization
+            var bundle = localizationUIBundle()
+            bundle.languagePacks[0].isSelected = true
+            app.uninstaller.localizationBundles = [bundle]
+            app.uninstaller.selectedLocalizationBundle = bundle
+
+            let calm = UninstallerView().environmentObject(app)
+            _ = try calm.inspect().find(text: "已选 1 个外语包")
+            // 未点任何删除按钮：本视图挂载的确认弹窗一个都不该呈现
+            for index in 0..<5 {
+                if let dialog = try? calm.inspect().vStack().confirmationDialog(index) {
+                    print("    ❌ 未经点击就呈现确认弹窗：\(String(describing: try? dialog.title().string()))")
+                    return false
+                }
+            }
+            let view = UninstallerView(initiallyConfirmingLocalization: true).environmentObject(app)
+            var presented: [(Int, InspectableView<ViewType.ConfirmationDialog>)] = []
+            for index in 0..<5 {
+                guard let dialog = try? view.inspect().vStack().confirmationDialog(index) else { continue }
+                presented.append((index, dialog))
+            }
+            guard presented.count == 1, let dialog = presented.first?.1 else {
+                print("    ❌ 确认后应只有语言包那一个弹窗，实得 \(presented.count) 个")
+                return false
+            }
+            guard try dialog.title().string() == "彻底删除选定语言包不可恢复" else {
+                print("    ❌ 弹窗标题不对：\(String(describing: try? dialog.title().string()))")
+                return false
+            }
+            // 弹窗内必须给出取消项，删除动作只活在这里
+            _ = try dialog.actions().find(button: "取消")
+            _ = try dialog.actions().find(button: "彻底删除所选语言包")
+            return true
+        }
+
+        check("多语言瘦身 UI: 清理进行中两个删除按钮都禁用") {
+            let app = AppState()
+            app.uninstaller.currentTab = .localization
+            var bundle = localizationUIBundle()
+            bundle.languagePacks[0].isSelected = true
+            app.uninstaller.localizationBundles = [bundle]
+            app.uninstaller.selectedLocalizationBundle = bundle
+            let idle = UninstallerView().environmentObject(app)
+            guard try !button("localizationTrashButton", in: idle).isDisabled() else {
+                print("    ❌ 对照组失效：已勾选且未在清理，按钮却禁用")
+                return false
+            }
+            app.uninstaller.isCleaningLocalization = true
+            let busy = UninstallerView().environmentObject(app)
+            guard try button("localizationTrashButton", in: busy).isDisabled() else {
+                print("    ❌ 清理进行中还能再点一次「移入废纸篓」")
+                return false
+            }
+            return try button("localizationPermanentButton", in: busy).isDisabled()
+        }
     }
+}
+
+/// UI 自检用的语言包清单：2 个可删外语包 + 母语 + Base（后两者必须受保护）。
+private func localizationUIBundle() -> AppLocalizationBundle {
+    AppLocalizationBundle(
+        id: "/Applications/LocalizationUIDemo.app", appName: "LocalizationUIDemo",
+        bundleID: "com.demo.localizationui",
+        appPath: "/Applications/LocalizationUIDemo.app", appTotalSize: 120_000_000,
+        languagePacks: [
+            LanguagePackItem(id: "/tmp/mc-loc-ui/fr.lproj", code: "fr", displayName: "法语 (French)",
+                             path: "/Applications/LocalizationUIDemo.app/Contents/Resources/fr.lproj",
+                             size: 4_000_000, isProtected: false),
+            LanguagePackItem(id: "/tmp/mc-loc-ui/ja.lproj", code: "ja", displayName: "日语 (Japanese)",
+                             path: "/Applications/LocalizationUIDemo.app/Contents/Resources/ja.lproj",
+                             size: 2_000_000, isProtected: false),
+            LanguagePackItem(id: "/tmp/mc-loc-ui/zh-Hans.lproj", code: "zh-Hans",
+                             displayName: "简体中文",
+                             path: "/Applications/LocalizationUIDemo.app/Contents/Resources/zh-Hans.lproj",
+                             size: 5_000_000, isProtected: true, protectionReason: "系统语言与中文始终保留"),
+            LanguagePackItem(id: "/tmp/mc-loc-ui/Base.lproj", code: "Base", displayName: "基础资源",
+                             path: "/Applications/LocalizationUIDemo.app/Contents/Resources/Base.lproj",
+                             size: 3_000_000, isProtected: true, protectionReason: "基础资源不可删除"),
+        ])
 }
 
 /// 自检用的"完整可信"已安装清单：不注入的话，结论会随本机装了哪些 App 翻转。

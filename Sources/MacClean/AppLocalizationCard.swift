@@ -74,6 +74,7 @@ struct LanguagePackRow: View {
                 }
                 .buttonStyle(.plain)
                 .frame(width: 18)
+                .accessibilityIdentifier("languagePackRowToggle")
             }
 
             VStack(alignment: .leading, spacing: 2) {

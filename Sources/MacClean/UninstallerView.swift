@@ -16,6 +16,13 @@ struct UninstallerView: View {
     @State private var confirmPermanentPlugins = false
     @State private var confirmPermanentLocalization = false
 
+    /// 自检注入口：`confirmPermanentLocalization` 是 `@State`，ViewInspector 在 macOS 上
+    /// 不传播它的变更，只能从 init 播种才能断言"彻底删除必经确认弹窗"。
+    /// 默认 `false`，生产调用方 `UninstallerView()` 行为完全不变。
+    internal init(initiallyConfirmingLocalization: Bool = false) {
+        _confirmPermanentLocalization = State(initialValue: initiallyConfirmingLocalization)
+    }
+
     private var uninstaller: UninstallerState { app.uninstaller }
 
     private var filteredApps: [InstalledApp] {
@@ -1273,6 +1280,7 @@ struct UninstallerView: View {
                 .buttonStyle(.plain)
                 .font(Typo.caption)
                 .foregroundStyle(Accent.tint)
+                .accessibilityIdentifier("localizationSelectAllPacksButton")
 
                 Text("·")
                     .font(Typo.caption)
@@ -1284,6 +1292,7 @@ struct UninstallerView: View {
                 .buttonStyle(.plain)
                 .font(Typo.caption)
                 .foregroundStyle(Ink.secondary)
+                .accessibilityIdentifier("localizationClearPacksButton")
             }
             .padding(.horizontal, Space.md)
             .padding(.top, Space.sm)

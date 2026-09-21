@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import ViewInspector
 
 // MARK: - 系统底层存储深度治理自检套件 (v1.48.0)
 
@@ -365,5 +367,64 @@ extension Selftest {
             guard SystemDeepStorageInspector.hibernateRiskText.contains("丢失") else { return false }
             return true
         }
+
+        // ── UI 层安全行为断言（v1.75.0）────────────────────────────────
+        // 本模块唯一的失控路径是"一键把所有本地快照删光"：快照删除不可撤销。
+        check("底层存储 UI: 未逐条点名勾选时释放按钮禁用") {
+            let snapshots = deepStorageUISnapshots()
+            let view = SystemDeepStorageView()
+            guard try button("deleteAllSnapshotsButton", in: view).isDisabled() else {
+                print("    ❌ 一条快照都没勾选就能触发批量删除")
+                return false
+            }
+            _ = try view.inspect().find(text: "先勾选要释放的快照")
+            // 反证：点名一条后按钮必须解禁 —— 否则上面的"禁用"是恒真
+            let named = SystemDeepStorageView(initialSnapshots: snapshots,
+                                              initiallyConfirmedNames: [snapshots[0].name])
+            guard try !button("deleteAllSnapshotsButton", in: named).isDisabled() else {
+                print("    ❌ 已逐条点名勾选，释放按钮仍禁用")
+                return false
+            }
+            _ = try named.inspect().find(text: "释放已勾选 (1) 个")
+            return true
+        }
+
+        check("底层存储 UI: 快照删除必经确认弹窗，范围只含点名项") {
+            let snapshots = deepStorageUISnapshots()
+            let calm = SystemDeepStorageView(initialSnapshots: snapshots,
+                                              initiallyConfirmedNames: [snapshots[0].name])
+            _ = try calm.inspect().find(text: "释放已勾选 (1) 个")
+            guard (try? calm.inspect().vStack().alert(0)) == nil else {
+                print("    ❌ 未经点击就呈现删除确认弹窗")
+                return false
+            }
+            let view = SystemDeepStorageView(initialSnapshots: snapshots,
+                                             initiallyConfirmedNames: [snapshots[0].name],
+                                             initiallyConfirming: true)
+            let alert = try view.inspect().vStack().alert(0)
+            guard try alert.title().string() == "释放勾选的 APFS 本地快照" else { return false }
+            // 确认按钮上的数量 = 用户点名的数量，不是清单总量
+            _ = try alert.actions().find(button: "确认删除这 1 个")
+            _ = try alert.actions().find(button: "取消")
+            let message = (try? alert.message().findAll(ViewType.Text.self))?
+                .compactMap { try? $0.string() }.joined(separator: " ") ?? ""
+            guard message.contains(snapshots[0].name) else {
+                print("    ❌ 确认弹窗没写清要删哪一个：<\(message)>")
+                return false
+            }
+            guard !message.contains(snapshots[1].name) else {
+                print("    ❌ 确认弹窗把未点名的快照也算进了删除范围")
+                return false
+            }
+            return true
+        }
     }
+}
+
+/// UI 自检用的快照清单：两条合法时间戳快照，路径与真机无关。
+private func deepStorageUISnapshots() -> [APFSSnapshot] {
+    [APFSSnapshot(name: "com.apple.TimeMachine.2026-09-18-100000.local",
+                  dateString: "2026-09-18-100000"),
+     APFSSnapshot(name: "com.apple.TimeMachine.2026-09-17-080000.local",
+                  dateString: "2026-09-17-080000")]
 }

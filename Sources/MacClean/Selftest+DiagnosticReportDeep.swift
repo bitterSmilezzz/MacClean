@@ -246,6 +246,91 @@ extension Selftest {
             return true
         }
 
+        // ── UI 层安全行为断言（v1.75.0）────────────────────────────────
+        // 网关把删除统一收口后，"界面上会不会误删"只剩这几条不变量在守：
+        // 零默选 / 批量勾选跳过证据不足与 root 托管项 / 删除必经确认 / 清理中防重复提交。
+        check("DiagnosticReport UI: 报告列表零默选，未勾选时批量释放禁用") {
+            let scanner = DiagnosticReportScanner.shared
+            scanner.reports = diagUIReports()
+            let card = DiagnosticReportCard(onClose: {}).environmentObject(AppState())
+            guard try button("diagnosticBatchCleanButton", in: card).isDisabled() else {
+                print("    ❌ 一项都没勾选，批量释放按钮竟可点击")
+                return false
+            }
+            // 反证：勾上确证孤儿后按钮必须可用，且待释放额度只算已勾选项
+            var seeded = diagUIReports()
+            seeded[0].isSelected = true
+            scanner.reports = seeded
+            let chosen = DiagnosticReportCard(onClose: {}).environmentObject(AppState())
+            guard try !button("diagnosticBatchCleanButton", in: chosen).isDisabled() else {
+                print("    ❌ 已勾选确证孤儿，批量释放仍禁用")
+                return false
+            }
+            _ = try chosen.inspect().find(text: "释放选中 (4 KB)")
+            return true
+        }
+
+        check("DiagnosticReport UI: 批量勾选跳过需确认与 root 托管项") {
+            let scanner = DiagnosticReportScanner.shared
+            scanner.reports = diagUIReports()
+            let card = DiagnosticReportCard(onClose: {}).environmentObject(AppState())
+            try button("diagnosticSelectAllCurrent", in: card).tap()
+            let after = scanner.reports
+            guard after[0].isSelected, after[3].isSelected else {
+                print("    ❌ 点「勾选当前列表全部」连可清理项都没勾上")
+                return false
+            }
+            guard !after[1].isSelected else {
+                print("    ❌ 「需确认」（证据不足）报告被批量勾选")
+                return false
+            }
+            guard !after[2].isSelected else {
+                print("    ❌ root 托管的全局报告被批量勾选（删不动却进了删除名额）")
+                return false
+            }
+            // 额度只算可清理的两条：4 KB + 1 KB，不含被跳过的 16 KB
+            _ = try card.inspect().find(text: "释放选中 (5 KB)")
+            return true
+        }
+
+        check("DiagnosticReport UI: 永久删除只存在于确认弹窗") {
+            let scanner = DiagnosticReportScanner.shared
+            var seeded = diagUIReports()
+            seeded[0].isSelected = true
+            scanner.reports = seeded
+            let calm = DiagnosticReportCard(onClose: {}, initiallyCleaning: false)
+                .environmentObject(AppState())
+            _ = try calm.inspect().find(text: "释放选中 (4 KB)")
+            let calmRoot = try calm.inspect().view(DiagnosticReportCard.self)
+            guard (try? calmRoot.vStack().confirmationDialog()) == nil else {
+                print("    ❌ 未点批量释放就呈现确认弹窗")
+                return false
+            }
+            let card = DiagnosticReportCard(onClose: {}, initiallyCleaning: false,
+                                            initiallyConfirming: true)
+                .environmentObject(AppState())
+            let dialog = try card.inspect().view(DiagnosticReportCard.self).vStack().confirmationDialog()
+            guard try dialog.title().string().hasPrefix("确认批量释放 1 份诊断报告") else { return false }
+            _ = try dialog.actions().find(button: "移入系统废纸篓 (推荐)")
+            _ = try dialog.actions().find(button: "永久删除")
+            _ = try dialog.actions().find(button: "取消")
+            return true
+        }
+
+        check("DiagnosticReport UI: 清理进行中批量释放禁用，防重复提交") {
+            let scanner = DiagnosticReportScanner.shared
+            var seeded = diagUIReports()
+            seeded[0].isSelected = true
+            scanner.reports = seeded
+            let busy = DiagnosticReportCard(onClose: {}, initiallyCleaning: true)
+                .environmentObject(AppState())
+            guard try button("diagnosticBatchCleanButton", in: busy).isDisabled() else {
+                print("    ❌ 清理进行中还能再点一次批量释放")
+                return false
+            }
+            return true
+        }
+
         // v1.74.0 安全加固自检 ------------------------------------------------
 
         // 7. 权限读不到的报告根 → 报"结果不完整"，绝不报"没有异常报告"
@@ -478,4 +563,28 @@ private func diagSelftestInventory() -> AppInventory.Snapshot {
         bundleIDs: ["com.apple.safari"], bundlePrefixes: ["com.apple"],
         normalizedNames: [], executableNames: [], runningBundleIDs: [],
         appPaths: [], unreadableRoots: [])
+}
+
+/// UI 自检用的四类报告：确证孤儿 / 证据不足需确认 / root 托管全局目录 / 普通近期报告。
+/// 体积取十进制整数，便于断言界面上"释放选中"的额度只包含可清理项。
+private func diagUIReports() -> [DiagnosticReportItem] {
+    [DiagnosticReportItem(id: "/tmp/mc-diag-ui/orphan.ips", fileName: "Ghost_1.ips",
+                          path: "/tmp/mc-diag-ui/orphan.ips", size: 4_000,
+                          creationDate: Date().addingTimeInterval(-40 * 86_400), ageDays: 40,
+                          appName: "GhostApp", bundleID: "com.ghost.removed", kind: .crash,
+                          isOrphan: true),
+     DiagnosticReportItem(id: "/tmp/mc-diag-ui/unproven.ips", fileName: "Unproven_1.ips",
+                          path: "/tmp/mc-diag-ui/unproven.ips", size: 8_000,
+                          creationDate: Date().addingTimeInterval(-31 * 86_400), ageDays: 31,
+                          appName: "UnprovenApp", bundleID: nil, kind: .crash,
+                          needsConfirmation: true),
+     DiagnosticReportItem(id: "/tmp/mc-diag-ui/global.ips", fileName: "Global_1.ips",
+                          path: "/Library/Logs/DiagnosticReports/Global_1.ips", size: 8_000,
+                          creationDate: Date().addingTimeInterval(-45 * 86_400), ageDays: 45,
+                          appName: "GlobalApp", bundleID: "com.ghost.global", kind: .crash,
+                          isOrphan: true, isGlobalScope: true),
+     DiagnosticReportItem(id: "/tmp/mc-diag-ui/recent.ips", fileName: "Recent_1.ips",
+                          path: "/tmp/mc-diag-ui/recent.ips", size: 1_000,
+                          creationDate: Date(), ageDays: 1,
+                          appName: "RecentApp", bundleID: "com.demo.recent", kind: .diagnostics)]
 }

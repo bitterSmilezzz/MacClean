@@ -19,6 +19,19 @@ public struct PrinterDriverOptimizerCard: View {
         self.onTriggerClean = onTriggerClean
     }
 
+    /// 自检注入口：卡片状态是 `@State`，只能从 init 播种才能在内存里驱动 UI 断言
+    /// （不触发 `onAppear`，因此绝不会因为自检手滑去扫真盘）。生产调用方走上面那个 init。
+    internal init(onClose: @escaping () -> Void, onTriggerClean: (() -> Void)? = nil,
+                  initialSummary: PrinterDriverSummary,
+                  initiallyCleaning: Bool = false,
+                  initiallyConfirming: Bool = false) {
+        self.onClose = onClose
+        self.onTriggerClean = onTriggerClean
+        _summary = State(initialValue: initialSummary)
+        _isCleaning = State(initialValue: initiallyCleaning)
+        _showConfirmClean = State(initialValue: initiallyConfirming)
+    }
+
     private var displayedItems: [PrinterDriverItem] {
         if showOrphansOnly {
             // 「需确认」项一并列出：它们不可删，但用户需要看到"为什么没被判定为可清理"
@@ -128,6 +141,7 @@ public struct PrinterDriverOptimizerCard: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(isScanning || isCleaning)
+            .accessibilityIdentifier("printerReloadButton")
 
             Button {
                 onClose()
@@ -235,6 +249,7 @@ public struct PrinterDriverOptimizerCard: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .controlSize(.small)
+                .accessibilityIdentifier("printerRowToggle")
             } else {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 12))
@@ -349,6 +364,7 @@ public struct PrinterDriverOptimizerCard: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(displayedItems.filter(\.status.isOrphanOrCorrupted).isEmpty)
+            .accessibilityIdentifier("printerSelectAllButton")
 
             Button("全不选") {
                 selectAll(false)
@@ -356,6 +372,7 @@ public struct PrinterDriverOptimizerCard: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(selectedCount == 0)
+            .accessibilityIdentifier("printerClearAllButton")
 
             Spacer()
 
@@ -374,6 +391,7 @@ public struct PrinterDriverOptimizerCard: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(selectedCount == 0 || isScanning || isCleaning)
+            .accessibilityIdentifier("printerCleanButton")
         }
     }
 

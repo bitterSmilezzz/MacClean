@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import SwiftUI
+import ViewInspector
 
 // MARK: - 废弃打印机驱动与 PPD 描述文件治理深度自检 (v1.71.0，v1.72.0 加固)
 //
@@ -451,7 +453,121 @@ extension Selftest {
             guard summary.orphanCount == 0 else { return false }
             return true
         }
+
+        // 13. ── UI 层安全行为断言（v1.75.0）──────────────────────────────
+        // 本模块在真机上出过"读不到 CUPS → 全部驱动判废弃 → 默认全勾选"的事故。
+        // 下面四条把"零默选 / 批量勾选不吞受保护项 / 删除必经确认 / 清理中防重复提交"
+        // 钉在视图层：任何一处改回默认可删，自检立刻红。
+        check("PrinterDriver UI: 扫描结果零默选，受保护行不给勾选框") {
+            let card = PrinterDriverOptimizerCard(onClose: {}, initialSummary: printerUIMixedSummary())
+            // ① 一项都没勾 → 「全不选」与「清理选中」双双禁用
+            guard try button("printerClearAllButton", in: card).isDisabled() else { return false }
+            guard try button("printerCleanButton", in: card).isDisabled() else {
+                print("    ❌ 零勾选时清理按钮竟可点击（存在默认可删）")
+                return false
+            }
+            // 反证：卡片不是"永远禁用"——把一项确证孤儿置为已选，按钮必须立刻可用
+            var seeded = printerUIMixedSummary()
+            seeded.items[0].isSelected = true
+            guard try !button("printerCleanButton",
+                              in: PrinterDriverOptimizerCard(onClose: {}, initialSummary: seeded)).isDisabled()
+            else {
+                print("    ❌ 已勾选确证孤儿，清理按钮仍禁用")
+                return false
+            }
+            // ② 只有确证废弃/损坏的行才有勾选框；在用 / 系统核心 / 需确认渲染锁形图标
+            let toggles = try card.inspect().findAll(ViewType.Toggle.self)
+                .filter { (try? $0.accessibilityIdentifier()) == "printerRowToggle" }
+            guard toggles.count == 2 else {
+                print("    ❌ 勾选框数量 \(toggles.count) ≠ 可清理项数量 2（受保护项被允许勾选）")
+                return false
+            }
+            return true
+        }
+
+        check("PrinterDriver UI: 证据不足（需确认）时全选按钮必须禁用") {
+            // 真机降级态：CUPS 读不到 → 全部条目落 needsConfirmation，一条都不许批量勾上
+            let degraded = PrinterDriverSummary(
+                items: [printerUIItem("HP_LaserJet", .needsConfirmation, size: 3_000_000),
+                        printerUIItem("Canon_MG", .needsConfirmation, size: 2_000_000)],
+                totalSize: 5_000_000, orphanCount: 0, orphanSize: 0, activeCount: 0,
+                cupsEvidenceReadable: false, needsConfirmationCount: 2)
+            let card = PrinterDriverOptimizerCard(onClose: {}, initialSummary: degraded)
+            guard try button("printerSelectAllButton", in: card).isDisabled() else {
+                print("    ❌ 证据不足时「全选」仍可点，会把未证孤儿整体勾上")
+                return false
+            }
+            guard try button("printerCleanButton", in: card).isDisabled() else { return false }
+            // 降级说明必须如实出现在界面上，不能只留一个空列表
+            _ = try card.inspect().find(text: "因此没有一项被判定为废弃驱动，也没有任何一项被默认勾选。")
+            return true
+        }
+
+        check("PrinterDriver UI: 彻底删除只在确认弹窗里，不是一键直达") {
+            var summary = printerUIMixedSummary()
+            summary.items[0].isSelected = true
+            let card = PrinterDriverOptimizerCard(onClose: {}, initialSummary: summary,
+                                                  initiallyConfirming: true)
+            // 未确认（initiallyConfirming=false）时弹窗不该在视图树里；
+            // 同一份清单先证明"卡片确实渲染了、勾选项确实进了待释放额度"，
+            // 否则下面的"抽不到弹窗"可能只是抽不到任何东西。
+            let calm = PrinterDriverOptimizerCard(onClose: {}, initialSummary: summary)
+            _ = try calm.inspect().find(text: "清理选中 (3 MB)")
+            let calmDialog = try? calm.inspect().vStack().confirmationDialog()
+            guard calmDialog == nil else {
+                print("    ❌ 未点删除就有确认弹窗")
+                return false
+            }
+            let dialog = try card.inspect().vStack().confirmationDialog()
+            guard try dialog.title().string() == "确认清理选中的打印机驱动与 PPD 描述文件" else { return false }
+            // 必须能取消，且"彻底删除"与"移入废纸篓"都只活在这个弹窗内
+            _ = try dialog.actions().find(button: "取消")
+            _ = try dialog.actions().find(button: "安全移入废纸篓")
+            _ = try dialog.actions().find(button: "彻底删除")
+            return true
+        }
+
+        check("PrinterDriver UI: 清理进行中按钮禁用，防重复提交") {
+            var summary = printerUIMixedSummary()
+            summary.items[0].isSelected = true
+            guard try !button("printerCleanButton",
+                              in: PrinterDriverOptimizerCard(onClose: {}, initialSummary: summary)).isDisabled()
+            else {
+                print("    ❌ 对照组失效：已勾选且未在清理，按钮却禁用")
+                return false
+            }
+            let busy = PrinterDriverOptimizerCard(onClose: {}, initialSummary: summary,
+                                                  initiallyCleaning: true)
+            guard try button("printerCleanButton", in: busy).isDisabled() else {
+                print("    ❌ 清理进行中还能再点一次")
+                return false
+            }
+            // 重入时"重新扫描"也要一起禁用，否则并发扫盘会覆盖清理结果
+            return try button("printerReloadButton", in: busy).isDisabled()
+        }
     }
+}
+
+// MARK: - 打印机卡片 UI 自检夹具
+
+/// 造一条打印机驱动条目（路径全部指向不存在的临时目录，绝不含真实文件）。
+private func printerUIItem(_ name: String, _ status: PrinterDriverStatus,
+                           size: Int64, selected: Bool = false) -> PrinterDriverItem {
+    let path = "/tmp/macclean-selftest-printer-ui/\(name)"
+    return PrinterDriverItem(id: path, name: name, vendor: "惠普 (HP)", path: path,
+                             kind: .vendorDriverBundle, status: status, size: size,
+                             modificationDate: Date(), isSelected: selected)
+}
+
+/// 混合清单：2 条确证废弃/损坏 + 1 条需确认 + 1 条在用。默认可删集合必须是 0。
+private func printerUIMixedSummary() -> PrinterDriverSummary {
+    PrinterDriverSummary(
+        items: [printerUIItem("Old_HP_Driver", .orphanUnused, size: 3_000_000),
+                printerUIItem("Broken_Canon_PPD", .corrupted, size: 2_000_000),
+                printerUIItem("Unproven_Epson_Package", .needsConfirmation, size: 7_000_000),
+                printerUIItem("Active_HP_Queue", .activeConfigured, size: 9_000_000)],
+        totalSize: 21_000_000, orphanCount: 2, orphanSize: 5_000_000, activeCount: 1,
+        cupsEvidenceReadable: true, needsConfirmationCount: 1)
 }
 
 // MARK: - 打印机套件自检辅助

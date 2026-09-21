@@ -20,6 +20,18 @@ public struct SystemDeepStorageView: View {
 
     public init() {}
 
+    /// 自检注入口：本卡片的勾选集是 `@State`（ViewInspector 在 macOS 上不传播它的变更），
+    /// 只能从 init 播种，才能断言"未逐条点名就不给删 / 删除必经确认弹窗"。
+    /// 生产调用方仍走 `SystemDeepStorageView()`，行为不变。
+    internal init(initialSnapshots: [APFSSnapshot],
+                  initiallyConfirmedNames: Set<String> = [],
+                  initiallyConfirming: Bool = false) {
+        _snapshots = State(initialValue: initialSnapshots)
+        _confirmedSnapshotNames = State(initialValue: initiallyConfirmedNames)
+        _snapshotListRead = State(initialValue: true)
+        _showConfirmDeleteAllSnapshots = State(initialValue: initiallyConfirming)
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             // 头部与刷新

@@ -1,5 +1,7 @@
 import Foundation
 import Darwin
+import SwiftUI
+import ViewInspector
 
 // MARK: - 系统音频 HAL 插件与残存驱动排查治理深度自检 (v1.70.0，v1.72.0 加固)
 //
@@ -475,7 +477,97 @@ extension Selftest {
             guard item.domainID == nil else { return false }   // fixture 路径不属于任何真实域
             return true
         }
+
+        // ── UI 层安全行为断言（v1.75.0）────────────────────────────────
+        check("AudioHAL UI: 扫描结果零默选，受保护行不给勾选框") {
+            let card = AudioHALOptimizerCard(onClose: {}, initialSummary: audioUIMixedSummary())
+            guard try button("audioClearAllButton", in: card).isDisabled() else { return false }
+            guard try button("audioCleanButton", in: card).isDisabled() else {
+                print("    ❌ 零勾选时清理按钮可点击（存在默认可删）")
+                return false
+            }
+            // 反证：勾上确证孤儿后必须解禁
+            var seeded = audioUIMixedSummary()
+            seeded.items[0].isSelected = true
+            guard try !button("audioCleanButton",
+                              in: AudioHALOptimizerCard(onClose: {}, initialSummary: seeded)).isDisabled()
+            else { return false }
+            // 在用 / 官方核心 / 证据不足的行压根没有勾选框
+            let toggles = try card.inspect().findAll(ViewType.Toggle.self)
+                .filter { (try? $0.accessibilityIdentifier()) == "audioRowToggle" }
+            guard toggles.count == 2 else {
+                print("    ❌ 勾选框 \(toggles.count) 个 ≠ 可清理项 2 个（受保护音频组件可被勾选）")
+                return false
+            }
+            return true
+        }
+
+        check("AudioHAL UI: 证据不足时全选与清理按钮一起禁用") {
+            let degraded = AudioPluginSummary(
+                items: [audioUIItem("GhostHAL", .unknownNeedsConfirmation, size: 3_000_000),
+                        audioUIItem("GhostUnit", .unknownNeedsConfirmation, size: 2_000_000)],
+                totalSize: 5_000_000, orphanCount: 0, orphanSize: 0, activeCount: 0,
+                evidenceReadable: false, evidenceSource: "none", needsConfirmationCount: 2)
+            let card = AudioHALOptimizerCard(onClose: {}, initialSummary: degraded)
+            guard try button("audioSelectAllButton", in: card).isDisabled() else {
+                print("    ❌ 证据不足时「全选」仍可点")
+                return false
+            }
+            return try button("audioCleanButton", in: card).isDisabled()
+        }
+
+        check("AudioHAL UI: 彻底删除只在确认弹窗里") {
+            var summary = audioUIMixedSummary()
+            summary.items[0].isSelected = true
+            let calm = AudioHALOptimizerCard(onClose: {}, initialSummary: summary)
+            _ = try calm.inspect().find(text: "清理选中 (3 MB)")
+            guard (try? calm.inspect().vStack().confirmationDialog()) == nil else {
+                print("    ❌ 未点删除就有确认弹窗")
+                return false
+            }
+            let card = AudioHALOptimizerCard(onClose: {}, initialSummary: summary,
+                                             initiallyConfirming: true)
+            let dialog = try card.inspect().vStack().confirmationDialog()
+            guard try dialog.title().string() == "确认清理选中的音频驱动与插件" else { return false }
+            _ = try dialog.actions().find(button: "取消")
+            _ = try dialog.actions().find(button: "安全移入废纸篓")
+            _ = try dialog.actions().find(button: "彻底删除")
+            return true
+        }
+
+        check("AudioHAL UI: 清理进行中禁止重复提交") {
+            var summary = audioUIMixedSummary()
+            summary.items[0].isSelected = true
+            let busy = AudioHALOptimizerCard(onClose: {}, initialSummary: summary,
+                                             initiallyCleaning: true)
+            guard try button("audioCleanButton", in: busy).isDisabled() else {
+                print("    ❌ 清理进行中还能再点一次")
+                return false
+            }
+            // 清理期间不许并发重启 coreaudiod
+            return try button("audioRestartButton", in: busy).isDisabled()
+        }
     }
+}
+
+/// UI 自检用的音频插件条目（路径全部指向不存在的临时目录）。
+private func audioUIItem(_ name: String, _ status: AudioPluginStatus,
+                         size: Int64) -> AudioPluginItem {
+    let path = "/tmp/macclean-selftest-audio-ui/\(name)"
+    return AudioPluginItem(id: path, name: name, path: path, kind: .halDriver,
+                           status: status, size: size, modificationDate: Date(),
+                           isSelected: false)
+}
+
+/// 混合清单：2 条确证残存/损坏 + 1 条证据不足 + 1 条活跃在用，默认可删集合必须为 0。
+private func audioUIMixedSummary() -> AudioPluginSummary {
+    AudioPluginSummary(
+        items: [audioUIItem("GhostVendor_HAL", .orphanResidue, size: 3_000_000),
+                audioUIItem("Broken_AudioUnit", .corrupted, size: 2_000_000),
+                audioUIItem("Unproven_VST", .unknownNeedsConfirmation, size: 7_000_000),
+                audioUIItem("Apple_HalPlugin", .appleOfficial, size: 9_000_000)],
+        totalSize: 21_000_000, orphanCount: 2, orphanSize: 5_000_000, activeCount: 1,
+        evidenceReadable: true, evidenceSource: "coreaudio", needsConfirmationCount: 1)
 }
 
 // MARK: - 音频套件自检辅助

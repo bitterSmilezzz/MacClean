@@ -21,6 +21,20 @@ public struct AudioHALOptimizerCard: View {
         self.onTriggerClean = onTriggerClean
     }
 
+    /// 自检注入口：卡片状态是 `@State`（ViewInspector 在 macOS 上不传播它的变更），
+    /// 只能从 init 播种才能在内存里断言"零默选 / 批量勾选不吞受保护项 / 删除必经确认 /
+    /// 清理中防重复提交"。不触发 `onAppear`，因此自检不会去扫真盘。
+    internal init(onClose: @escaping () -> Void, onTriggerClean: (() -> Void)? = nil,
+                  initialSummary: AudioPluginSummary,
+                  initiallyCleaning: Bool = false,
+                  initiallyConfirming: Bool = false) {
+        self.onClose = onClose
+        self.onTriggerClean = onTriggerClean
+        _summary = State(initialValue: initialSummary)
+        _isCleaning = State(initialValue: initiallyCleaning)
+        _showConfirmClean = State(initialValue: initiallyConfirming)
+    }
+
     private var displayedItems: [AudioPluginItem] {
         if showOrphansOnly {
             // 「证据不足」项照样列出（不可删），用户要能看到"为什么没被判成残留"
@@ -247,6 +261,7 @@ public struct AudioHALOptimizerCard: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .controlSize(.small)
+                .accessibilityIdentifier("audioRowToggle")
             } else {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 12))
@@ -351,6 +366,7 @@ public struct AudioHALOptimizerCard: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(displayedItems.filter(\.status.isOrphanOrCorrupted).isEmpty)
+            .accessibilityIdentifier("audioSelectAllButton")
 
             Button("全不选") {
                 selectAll(false)
@@ -358,6 +374,7 @@ public struct AudioHALOptimizerCard: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(selectedCount == 0)
+            .accessibilityIdentifier("audioClearAllButton")
 
             Spacer()
 
@@ -376,6 +393,7 @@ public struct AudioHALOptimizerCard: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(isScanning || isCleaning || isRestarting)
+            .accessibilityIdentifier("audioRestartButton")
 
             Button(role: .destructive) {
                 showConfirmClean = true
@@ -392,6 +410,7 @@ public struct AudioHALOptimizerCard: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(selectedCount == 0 || isScanning || isCleaning || isRestarting)
+            .accessibilityIdentifier("audioCleanButton")
         }
     }
 
