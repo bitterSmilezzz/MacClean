@@ -37,15 +37,15 @@ echo "==> Release 构建${SDK_NOTE}（已剔除自检代码）"
 swift build -c release
 
 echo "==> 配置图标"
-if [ -f "Resources/AppIcon.icns" ]; then
-    ICON_SRC="Resources/AppIcon.icns"
-else
-    ICON_DIR="/tmp/macclean-icon.iconset"
-    rm -rf "$ICON_DIR"
-    swift scripts/make-icon.swift "$ICON_DIR" >/dev/null
-    iconutil -c icns "$ICON_DIR" -o "$ICON_DIR/AppIcon.icns"
-    ICON_SRC="$ICON_DIR/AppIcon.icns"
+# 图标缺了要**明确失败**，不能退回程序化生成的那版：那样打出来的 .app 一切正常，
+# 只是 Dock 里悄悄换成了另一个图标，没人会发现。
+if [ ! -f "Resources/AppIcon.icns" ]; then
+    echo "缺少 Resources/AppIcon.icns。从主图重新生成：" >&2
+    echo "  swift scripts/make-icns.swift Resources/AppIcon-master.png /tmp/mc-iconset.iconset" >&2
+    echo "  iconutil -c icns /tmp/mc-iconset.iconset -o Resources/AppIcon.icns" >&2
+    exit 1
 fi
+ICON_SRC="Resources/AppIcon.icns"
 
 echo "==> 组装 .app"
 rm -rf "dist"

@@ -17,3 +17,6 @@ dist/
 .build-agent*/
 .build-main/
 .build-wmo/
+
+# 出图/生成的临时素材（图标候选等，不入库）
+vibe_images/

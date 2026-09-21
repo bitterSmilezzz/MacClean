@@ -281,7 +281,7 @@ swift build
 # 无头扫描测试（打印本机可清理项）
 .build/debug/MacClean --scan
 
-# 打包完整 .app（包含透光晶体高清图标 + ad-hoc 签名）
+# 打包完整 .app（含应用图标 + ad-hoc 签名）
 ./scripts/build-app.sh
 open dist/MacClean.app
 ```
@@ -393,8 +393,8 @@ open /Applications/MacClean.app
 MacClean/
 ├── docs/CLEANUP-RULES.md        # 固化规则文档（与 CleanupRules.swift 同步维护）
 ├── scripts/build-app.sh         # .app 打包脚本
-├── Resources/                   # 应用资源（透光晶体 AppIcon.icns, AppIcon.png）
-├── scripts/make-icon.swift      # 备用程序化图标生成脚本
+├── Resources/                   # 应用图标（AppIcon-master.png 主图 → AppIcon.icns）
+├── scripts/make-icns.swift      # 主图 → iconset：按 Apple 圆角比例重切遮罩并出 10 个尺寸
 └── Sources/MacClean/
     ├── MacCleanApp.swift        # 入口（--selftest / --scan / --autoclean / --keymigrate 无头模式）
     ├── Selftests/               # 56 个自检文件（Selftest.swift 调度 + Selftest+<领域>.swift）
