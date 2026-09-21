@@ -357,9 +357,10 @@ public final class ClipboardPurger {
             }
             // 只有真正的剪贴板溢出目录才允许整目录展开；
             // 位置认不出来时宁可一个字节都不动，也不能拿"目录条目"当整删的通行证
+            // 本项的真实位置先解析一次：写在闭包里会变成"每个登记目录都重解析一遍同一项"
+            let itemReal = FileSystem.normalizePath(FileSystem.realPath(item.path))
             let isTemporaryItems = Self.temporaryItemsDirs.contains {
-                FileSystem.normalizePath(FileSystem.realPath($0)) ==
-                FileSystem.normalizePath(FileSystem.realPath(item.path))
+                FileSystem.normalizePath(FileSystem.realPath($0)) == itemReal
             }
             guard isTemporaryItems else {
                 blocked.append(.make(name: item.name, path: item.path, reason: .outsideDomain,

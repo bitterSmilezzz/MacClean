@@ -104,8 +104,18 @@ final class WhitelistManager: ObservableObject {
     /// 缓存的是旧目标，保护范围会滞后到下一次规则增删。方向上是"少保护"而非"多删除"，
     /// 且被删对象一侧的 `realPath` 仍然是实时解析的（软链跳板封堵不受影响）。
     private struct RuleIndex {
+        /// 一条 path 规则的预归一匹配对。`childPrefix` 预先备好，查表时不再拼新串。
+        struct Entry {
+            let exact: String
+            let childPrefix: String
+            init(_ normalized: String) {
+                exact = normalized
+                childPrefix = normalized + "/"
+            }
+        }
+
         let isEmpty: Bool
-        let pathCandidates: [[String]]
+        let pathCandidates: [[Entry]]
         let appNames: Set<String>
         let extensions: Set<String>
 
@@ -115,12 +125,24 @@ final class WhitelistManager: ObservableObject {
                 let raw = rule.standardPath
                 guard !raw.isEmpty else { return nil }
                 let resolved = FileSystem.normalizePath(FileSystem.realPath(raw))
-                return resolved == raw ? [raw] : [raw, resolved]
+                return resolved == raw ? [Entry(raw)] : [Entry(raw), Entry(resolved)]
             }
             appNames = Set(rules.filter { $0.type == .appName }
                 .map { $0.pattern.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
             extensions = Set(rules.filter { $0.type == .extension }.map(\.normalizedExtension))
             isEmpty = rules.isEmpty
+        }
+
+        /// 命中任一规则（自身或其下任意层级）。`"/"` 不是一条可用的路径规则，跳过。
+        func matches(path targets: [String]) -> Bool {
+            for rulePaths in pathCandidates {
+                for entry in rulePaths where entry.exact != "/" {
+                    for target in targets where target == entry.exact || target.hasPrefix(entry.childPrefix) {
+                        return true
+                    }
+                }
+            }
+            return false
         }
     }
 
@@ -264,14 +286,20 @@ final class WhitelistManager: ObservableObject {
         let resolvedTarget = FileSystem.normalizePath(FileSystem.realPath(path))
         if resolvedTarget != targets[0] { targets.append(resolvedTarget) }
 
-        for rulePaths in index.pathCandidates {
-            for target in targets {
-                for rulePath in rulePaths where rulePath != "/" {
-                    if target == rulePath || target.hasPrefix(rulePath + "/") { return true }
-                }
-            }
-        }
-        return false
+        return index.matches(path: targets)
+    }
+
+    /// 与 `isWhitelisted(path:)` 同一条规则、同一个匹配函数，但**不再解析软链**：
+    /// 调用方传进来的必须已经是 `normalizePath(realPath(...))` 之后的形态。
+    ///
+    /// 为什么可以省：`normalizePath ∘ realPath` 是幂等的，对已解析的串再解析一遍
+    /// 只会得到同一个字符串，也就是只多出一次全路径逐段 lstat。
+    /// `FileSystem.isSafeToClean` 每个候选项都要查一次白名单，实测那一次重复解析
+    /// 每项 9.5 µs；规则侧的解析已经随规则变更缓存在 `RuleIndex` 里了。
+    func isWhitelisted(resolvedPath: String) -> Bool {
+        let index = rulesIndex
+        guard !index.isEmpty else { return false }
+        return index.matches(path: [resolvedPath])
     }
 
     /// 检查指定 App 名称是否被用户白名单命中

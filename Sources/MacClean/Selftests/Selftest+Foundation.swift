@@ -74,6 +74,57 @@ extension Selftest {
             CleanPaths.expand("~/Library/Caches") == NSHomeDirectory() + "/Library/Caches" &&
             CleanPaths.expand("/private/tmp") == "/private/tmp"
         }
+        // v1.72.4：`expand` 原先是 `replacingOccurrences(of: "~", ...)`，会把路径**中间**的
+        // `~` 也换成主目录，于是护栏拿去和 G6/G8/白名单比对的是一个根本不存在的串。
+        check("CleanPaths.expand 只认前缀 ~，不碰路径中间的 ~") {
+            CleanPaths.expand("/tmp/a~b") == "/tmp/a~b" &&
+            CleanPaths.expand("/Users/x/Downloads/report~final.pdf") == "/Users/x/Downloads/report~final.pdf" &&
+            CleanPaths.expand("~") == NSHomeDirectory() &&
+            CleanPaths.expand("~/") == NSHomeDirectory() + "/" &&
+            FileSystem.normalizePath("/tmp/a~b") == "/tmp/a~b"
+        }
+        // `normalizePath` 有一条"已是干净绝对路径就原样返回"的快速通道。
+        // 快速通道与完整消解流程必须**逐字符同结果**，否则护栏的清单匹配会出现两套口径。
+        check("normalizePath 快速通道与完整消解同结果") {
+            let home = NSHomeDirectory()
+            let cases: [(String, String)] = [
+                ("/a//b", "/a/b"),
+                ("//", "/"),
+                ("/a//", "/a"),
+                ("/a/./b", "/a/b"),
+                ("/a/../b", "/b"),
+                ("/a/b/../c", "/a/c"),
+                ("/a/b/", "/a/b"),
+                ("/a/b/.", "/a/b"),
+                ("/a/b/..", "/a"),
+                ("/a/.../b", "/a/.../b"),        // 三个点不是 "."/".."，原样保留
+                ("/private/tmp/x", "/tmp/x"),
+                ("/private/var/db", "/var/db"),
+                ("/private", "/private"),
+                ("/private/", "/private"),
+                ("/", "/"),
+                ("/tmp", "/tmp"),
+                ("/tmp/", "/tmp"),
+                ("/x~/y", "/x~/y"),
+                ("/a~/b/../c", "/a~/c"),
+                ("~", home),
+                ("~/Library", home + "/Library"),
+                (home + "/Library/Caches/a", home + "/Library/Caches/a"),
+                // `..` 是纯字符串消解、不查文件系统：`/Users/name/..` 就是 `/Users`，
+                // 所以这里得到 /Users/etc/passwd 而不是 /etc/passwd（与改造前完全一致）。
+                (home + "/../etc/passwd", (home as NSString).deletingLastPathComponent + "/etc/passwd"),
+            ]
+            var bad: [String] = []
+            for (input, expected) in cases {
+                let got = FileSystem.normalizePath(input)
+                if got != expected { bad.append("\(input) → \(got)，期望 \(expected)") }
+                // 幂等：归一一次与归一两次必须同值（快速通道只在幂等成立时才敢提前返回）
+                let twice = FileSystem.normalizePath(got)
+                if twice != got { bad.append("\(input) 不幂等：\(got) → \(twice)") }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
         check("isSafeToClean 安全护栏") {
             !FileSystem.isSafeToClean(NSHomeDirectory()) &&
             !FileSystem.isSafeToClean("/") &&

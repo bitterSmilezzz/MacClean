@@ -271,5 +271,53 @@ extension Selftest {
             }
             return true
         }
+
+        // MARK: - 护栏热路径（v1.72.4）
+        //
+        // `isSafeToClean` 是**每个候选项**都要过的闸门：Scanner 单个分类就有 50+ 调用点，
+        // 孤儿排查按子项循环调用，删除网关还会再判一次。它只读路径、不读目录内容，
+        // 所以它的开销理论上应当 ≈ 一次软链解析；高出的部分全是重复计算的纯 CPU。
+        //
+        // 断言用**比值**而不是绝对耗时：分子分母在同一时刻背靠背测量，
+        // 机器负载会同比放大两边。上一轮 `< 60 µs` 的绝对阈值在两个并发构建时自己变过红。
+        check("护栏热路径：一次判定的开销相对单次软链解析的倍数") {
+            let fm = FileManager.default
+            let root = NSTemporaryDirectory() + "macclean_guardrail_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: root) }
+            var paths: [String] = []
+            for i in 0..<200 {
+                let p = "\(root)/c\(i)/Library/Caches/com.example.app\(i)"
+                try? fm.createDirectory(atPath: p, withIntermediateDirectories: true)
+                paths.append(p)
+            }
+            // 计时函数返回**调用次数**而不是判定结果：这些路径位于 `$TMPDIR`
+            // （`/var/folders/…`）不在常规放行根内，闸门必然全判 false——
+            // 拿"有多少个 true"当热身判据会把整轮测成空转。
+            func timedCalls(_ body: (String) -> Void) -> TimeInterval {
+                let start = Date()
+                var calls = 0
+                for p in paths { body(p); calls += 1 }
+                let elapsed = Date().timeIntervalSince(start)
+                // 一次都没真正调用到就判失败：否则"空转 0 ms"会刷出一个假的漂亮比值
+                return calls > 0 ? elapsed : .greatestFiniteMagnitude
+            }
+
+            // 交替测两轮，各取较小值：热身那轮要付 dentry 缓存未命中的代价
+            let r1 = timedCalls { _ = FileSystem.realPath($0).count }
+            let g1 = timedCalls { _ = FileSystem.isSafeToClean($0) }
+            let r2 = timedCalls { _ = FileSystem.realPath($0).count }
+            let g2 = timedCalls { _ = FileSystem.isSafeToClean($0) }
+            let resolve = min(r1, r2)
+            let gate = min(g1, g2)
+            let ratio = resolve > 0 ? gate / resolve : .greatestFiniteMagnitude
+            print(String(format: "      200 项 × 2 轮：单次软链解析 %.1f ms，闸门判定 %.1f ms → %.1f 倍",
+                         resolve * 1000, gate * 1000, ratio))
+            // 上界 3.0 而不是更紧的值：判定至少要付一次软链解析（分母本身）
+            // + 一次 `lstat`（末段软链判定）+ 一次 `normalizePath`，
+            // 这三项在调试构建下约等于分母的 1.3 倍，再压就要动 G1 的软链封堵。
+            // 修好之前的实测是 **14.6 倍**（清单常量的重复归一化占掉 215/299 µs）。
+            return ratio < 3.0
+        }
     }
 }

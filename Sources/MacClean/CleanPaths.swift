@@ -377,8 +377,20 @@ enum CleanPaths {
     /// D15：全局 node_modules 扫描根（源自 CleanupRules，便于统一维护）
     static var globalNodeModulesRoots: [String] { CleanupRules.globalNodeModulesRoots }
 
-    /// 展开 ~ 前缀
+    /// 展开 `~` 前缀（**只认前缀**）。
+    ///
+    /// 原先是无条件 `replacingOccurrences(of: "~", ...)`，两个问题：
+    /// ① 会把路径**中间**的 `~` 也换成主目录——`/tmp/x~/y` 变成 `/tmp/x/Users/me/y`，
+    ///    于是一个真实存在的垃圾路径，被拿去和 G6/G8/白名单比对的却是另一个不存在的路径；
+    /// ② 绝大多数传入的路径本来就是绝对路径（扫描器给的都来自 `expandingTildeInPath`
+    ///    或 `FileSystem.children`），却仍要付一次全串搜索替换 + 一次 `NSHomeDirectory()`。
+    /// 而本函数在护栏里每条候选路径要被调 30 多次（`normalizePath` 的每一步），
+    /// 是 `isSafeToClean` 单次开销 166 µs 的主要来源。
     static func expand(_ p: String) -> String {
-        p.replacingOccurrences(of: "~", with: NSHomeDirectory())
+        guard p.hasPrefix("~") else { return p }
+        let home = NSHomeDirectory()
+        if p == "~" { return home }
+        guard p.hasPrefix("~/") else { return p }   // `~foo` 这类用户主目录写法不支持，原样返回
+        return home + p.dropFirst(1)
     }
 }

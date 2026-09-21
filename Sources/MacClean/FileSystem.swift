@@ -399,6 +399,55 @@ enum FileSystem {
 
     // MARK: - v1.1 安全护栏（G8/G9）与受限放行
 
+    // MARK: 护栏清单的预归一化缓存
+    //
+    // 闸门清单的内容在整个进程生命周期里不变，而 `normalizePath` 是**纯字符串函数**
+    // （完全不触碰文件系统，同输入必得同输出），所以每条常量的归一化结果算一次就够。
+    //
+    // 为什么必须缓存：分段计时（自检 `【临时】护栏分段计时` 量出）显示原先每判一个候选项
+    // 要把 13 条 G6 + 6 条 G8 + 3 条放行根 + 临时残留三件套 + 2 个 Cellar 根
+    // + 全局 node_modules 根反复重新归一化，占掉单次判定开销的绝大部分
+    // （hardExclude 81 µs、systemProtected 30、knownTempResidue 61、Cellar/node 43，
+    // 合计约 215 / 299 µs）。而每个扫描器对**每个候选项**都要过一次闸门。
+    //
+    /// 一条"整段前缀匹配"的护栏路径：预先归一，并预先备好 `+ "/"` 形态，
+    /// 免得每次比较都临时拼一个新串。
+    struct GuardPath {
+        let exact: String
+        let childPrefix: String
+        init(raw: String) {
+            let n = normalizePath(raw)
+            exact = n
+            childPrefix = n + "/"
+        }
+        /// 命中自身或其下任意层级。入参必须已归一化。
+        func matches(_ normalized: String) -> Bool {
+            normalized == exact || normalized.hasPrefix(childPrefix)
+        }
+    }
+
+    private static let guardSystemProtected = CleanPaths.systemProtected.map { GuardPath(raw: $0) }
+    private static let guardHardExclude = CleanPaths.hardExclude.map { GuardPath(raw: $0) }
+    private static let guardNever = ["/System", "/Library", "/usr", "/bin", "/sbin",
+                                     "/etc", "/var/db", "/Volumes"].map { GuardPath(raw: $0) }
+    /// 常规放行根。`home` 单独留出，`isSafeToClean` 还要用它判"是不是主目录本身"。
+    static let guardHome = GuardPath(raw: NSHomeDirectory())
+    private static let guardAllowedRoots: [GuardPath] =
+        [guardHome.exact, "/tmp", "/var/tmp"].map { GuardPath(raw: $0) }
+
+    // D13/D14 的两个精确路径 + L6 的 `$TMPDIR` 父段。
+    // 用 `static let` 意味着取的是**首次访问时**的 `NSTemporaryDirectory()`：
+    // 本进程不会改 `TMPDIR`（自检只重定向 `MACCLEAN_STATE_DIR`），故无失效问题。
+    private static let guardClangModuleCache = normalizePath(CleanPaths.clangModuleCache)
+    private static let guardNodeCompileCache = normalizePath(CleanPaths.nodeCompileCache)
+    private static let normalizedUserTempDir = normalizePath(CleanPaths.userTempDir)
+
+    // D12/D15 的扫描根
+    private static let guardCellarRoots = [CleanPaths.homebrewCellar, CleanPaths.homebrewCellarIntel]
+        .map { normalizePath($0) + "/" }
+    private static let guardNodeModulesRoots = CleanupRules.globalNodeModulesRoots
+        .map { normalizePath($0) + "/" }
+
     /// G9：检测是否拥有「完全磁盘访问权限」(TCC)。
     /// 判据：能否打开 `~/Library/Application Support/com.apple.TCC/TCC.db`（仅 FDA 授权进程可读）。
     /// 用途：无此权限时 `~/.Trash`、照片图库等目录扫描结果为空——必须让 UI 能区分
@@ -430,11 +479,22 @@ enum FileSystem {
     /// G8：系统级硬保护判定（文档 §7：SIP restricted / sunlnk / 系统必需）。
     /// sudo 同样无解或会破坏系统，工具绝不列为可清理项。
     static func isSystemProtected(_ path: String) -> Bool {
-        let normalized = normalizePath(path)
-        for protected in CleanPaths.systemProtected {
-            let p = normalizePath(protected)
-            if normalized == p || normalized.hasPrefix(p + "/") { return true }
-        }
+        isSystemProtectedNormalized(normalizePath(path))
+    }
+
+    /// 入参必须已是 `normalizePath` 形态。闸门内部用它，避免同一个串归一两次。
+    static func isSystemProtectedNormalized(_ normalized: String) -> Bool {
+        guardNormalized(normalized, in: guardSystemProtected)
+    }
+
+    /// G6 用户数据硬排除，入参必须已是 `normalizePath` 形态。
+    /// 与 `isSafeToClean` 共用同一份预归一清单，杜绝"两套标准"。
+    static func isHardExcludedNormalized(_ normalized: String) -> Bool {
+        guardNormalized(normalized, in: guardHardExclude)
+    }
+
+    private static func guardNormalized(_ normalized: String, in list: [GuardPath]) -> Bool {
+        for g in list where g.matches(normalized) { return true }
         return false
     }
 
@@ -450,7 +510,44 @@ enum FileSystem {
     /// 本函数只做**确定性变换、完全不触碰文件系统**：
     /// ① 展开 `~`；② 消解 `.`、`..` 与多余分隔符；③ 统一剥离 `/private` 前缀别名，
     /// 使 `/private/tmp/x` 与 `/tmp/x`、`/private/var/db` 与 `/var/db` 判定一致。
+    private static let privateAliasPrefix = "/private/"
+
+    /// 快速通道判据：输入已经是"确定性归一化之后 would 得到的那个形态"。
+    /// 即：绝对路径、无重复分隔符、无 `.`/`..` 段、无结尾斜杠——这种串只需要处理
+    /// `/private` 别名，其余原样返回。
+    ///
+    /// 为什么手写一趟 UTF-8 扫描而不是 `contains("//") || contains("/./") || …`：
+    /// 每种写法都要把整个路径走一遍，`String.contains` 在调试构建下是逐 Character
+    /// 的泛型迭代。护栏对每个候选项要调这个函数一次，路径又普遍有七八十个字符，
+    /// 八趟扫描比一趟字节扫描贵一个数量级。
+    private static func isPlainAbsolutePath(_ p: String) -> Bool {
+        guard p.hasPrefix("/"), p.utf8.count >= 2, p.utf8.last != UInt8(ascii: "/") else { return false }
+        var prevWasSlash = false
+        var dots = 0        // 当前段开头连续的 '.'
+        var sawOther = false  // 当前段出现过非 '.' 字符
+        for b in p.utf8 {
+            if b == UInt8(ascii: "/") {
+                if prevWasSlash { return false }                       // "//"
+                if !sawOther && (dots == 1 || dots == 2) { return false }  // "." / ".." 段
+                prevWasSlash = true
+                dots = 0
+                sawOther = false
+            } else {
+                if b == UInt8(ascii: "."), !sawOther { dots += 1 } else { sawOther = true }
+                prevWasSlash = false
+            }
+        }
+        return dots == 0 || sawOther || dots > 2
+    }
+
     static func normalizePath(_ path: String) -> String {
+        // ①+② 已是干净绝对路径时跳过展开与消解（见 `isPlainAbsolutePath`）
+        if isPlainAbsolutePath(path) {
+            return path.hasPrefix(privateAliasPrefix)
+                ? String(path.dropFirst(privateAliasPrefix.count - 1))
+                : path
+        }
+
         let expanded = CleanPaths.expand(path)
         // 手动消解 . 与 ..（不查询文件系统，保证同输入必得同输出）
         var parts: [String] = []
@@ -464,8 +561,8 @@ enum FileSystem {
         }
         var normalized = "/" + parts.joined(separator: "/")
         // 统一 /private 别名（/tmp→/private/tmp、/var→/private/var 的逆映射）
-        if normalized.hasPrefix("/private/") {
-            normalized = String(normalized.dropFirst("/private".count))
+        if normalized.hasPrefix(privateAliasPrefix) {
+            normalized = String(normalized.dropFirst(privateAliasPrefix.count - 1))
         }
         return normalized
     }
@@ -479,17 +576,19 @@ enum FileSystem {
     /// - D14 `<TMPDIR>/node-compile-cache`
     /// - L6  `<TMPDIR>/<bundle-id>.ShipIt.<字母数字后缀>`（仅顶层直接子项）
     static func isKnownTempResidue(_ path: String) -> Bool {
-        let normalized = normalizePath(path)
-        let tmpDir = normalizePath(CleanPaths.userTempDir)
+        isKnownTempResidueNormalized(normalizePath(path))
+    }
 
+    /// 入参必须已是 `normalizePath` 形态。
+    static func isKnownTempResidueNormalized(_ normalized: String) -> Bool {
         // D13：Clang 模块缓存
-        if normalized == normalizePath(CleanPaths.clangModuleCache) { return true }
+        if normalized == guardClangModuleCache { return true }
 
         // D14：Node 编译缓存
-        if normalized == normalizePath(CleanPaths.nodeCompileCache) { return true }
+        if normalized == guardNodeCompileCache { return true }
 
         // L6：应用更新残留，仅限 $TMPDIR 顶层直接子项
-        guard (normalized as NSString).deletingLastPathComponent == tmpDir else { return false }
+        guard (normalized as NSString).deletingLastPathComponent == normalizedUserTempDir else { return false }
         let name = (normalized as NSString).lastPathComponent
         guard let range = name.range(of: CleanupRules.shipItMarker),
               range.lowerBound != name.startIndex else { return false }   // 标记前必须有 bundle-id 段
@@ -503,9 +602,12 @@ enum FileSystem {
     /// 且目录名必须命中废弃标记且标记后紧跟版本号/日期；
     /// 绝不放行其父级，禁止整根或整个 scope 目录被清理。
     static func isRetiredGlobalPackage(_ path: String) -> Bool {
-        let normalized = normalizePath(path)
-        for root in CleanPaths.globalNodeModulesRoots {
-            let prefix = normalizePath(root) + "/"
+        isRetiredGlobalPackageNormalized(normalizePath(path))
+    }
+
+    /// 入参必须已是 `normalizePath` 形态。
+    static func isRetiredGlobalPackageNormalized(_ normalized: String) -> Bool {
+        for prefix in guardNodeModulesRoots {
             guard normalized.hasPrefix(prefix) else { continue }
             let parts = normalized.dropFirst(prefix.count).split(separator: "/")
             // 仅 <pkg> 或 <@scope>/<pkg>
@@ -531,24 +633,28 @@ enum FileSystem {
         return isResolvedPathSafeToClean(normalizePath(realPath(path)))
     }
 
-    /// 对**已解析真实位置**的路径做放行判定。外部不要直接调用。
-    private static func isResolvedPathSafeToClean(_ normalized: String) -> Bool {
-        let home = normalizePath(NSHomeDirectory())
+    /// 对**已解析真实位置**的路径做放行判定。
+    ///
+    /// 入参必须是 `normalizePath(realPath(...))` 之后的形态——也就是闸门链路上游
+    /// 已经付过那次软链解析的地方（`governanceVerdictWithinHome` 就是这个调用方）。
+    /// 再解析一遍是幂等的，但幂等不等于免费：一趟逐段 lstat。
+    static func isResolvedPathSafeToClean(_ normalized: String) -> Bool {
         // 绝对禁止删除用户主目录本身
-        guard normalized != home, normalized != "/" else { return false }
+        guard normalized != guardHome.exact, normalized != "/" else { return false }
 
         // G8：系统级硬保护（最高优先级，任何放行规则都不得绕过）
-        if isSystemProtected(normalized) { return false }
+        if isSystemProtectedNormalized(normalized) { return false }
 
         // G6：硬排除白名单（用户数据：邮件/钥匙串/共享容器/云盘等）
-        for ex in CleanPaths.hardExclude {
-            let exPath = normalizePath(ex)
-            if normalized == exPath || normalized.hasPrefix(exPath + "/") { return false }
-        }
+        if guardNormalized(normalized, in: guardHardExclude) { return false }
 
         // 用户自定义白名单（路径与扩展名防误删底层护栏）
         // 必须置于下方三处放行之前：白名单优先级高于一切放行规则
-        if WhitelistManager.shared.isWhitelisted(path: normalized) || WhitelistManager.shared.isExtensionWhitelisted(path: normalized) {
+        // 走 `resolvedPath` 入口：传进来的已经是解析后的真实位置，
+        // 让 `isWhitelisted` 再解析一遍只会得到同一个串（`normalizePath ∘ realPath` 幂等），
+        // 却要再付一次全路径逐段 lstat。有白名单规则的用户实测每判一项多 9.5 µs。
+        if WhitelistManager.shared.isWhitelisted(resolvedPath: normalized)
+            || WhitelistManager.shared.isExtensionWhitelisted(path: normalized) {
             return false
         }
 
@@ -559,30 +665,26 @@ enum FileSystem {
         // 命中即直接放行——这些目标位于常规允许根目录之外（Cellar 在 /opt 或 /usr/local），
         // 若继续走下方常规检查会被 `/usr` 等系统位置禁令误拦（曾导致 `/usr/local/Cellar` 失效）；
         // 放行前已通过 G8 系统硬保护、G6 用户数据白名单与自定义白名单三道检查。
-        if isKnownTempResidue(normalized) { return true }
-        if isRetiredGlobalPackage(normalized) { return true }
-        if isCellarVersionDir(normalized) { return true }
+        if isKnownTempResidueNormalized(normalized) { return true }
+        if isRetiredGlobalPackageNormalized(normalized) { return true }
+        if isCellarVersionDirNormalized(normalized) { return true }
 
         // 常规路径：只允许主目录内 或 tmp 目录
-        let allowedRoots = [home, "/tmp", "/var/tmp"].map { normalizePath($0) }
-        guard allowedRoots.contains(where: { normalized == $0 || normalized.hasPrefix($0 + "/") }) else {
-            return false
-        }
+        guard guardNormalized(normalized, in: guardAllowedRoots) else { return false }
 
         // 禁止删除关键系统位置
-        let never = ["/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/var/db", "/Volumes"]
-        for n in never {
-            if normalized.hasPrefix(n + "/") || normalized == n { return false }
-        }
-        return true
+        return !guardNormalized(normalized, in: guardNever)
     }
 
     /// D12 放行判定：`<Cellar>/<formula>/<version>` 形态，且版本段以数字或 `v` 开头。
     /// 只允许删除某 formula 的某个具体版本，不允许整 Cellar 或整 formula 目录。
     static func isCellarVersionDir(_ path: String) -> Bool {
-        let normalized = normalizePath(path)
-        for cellar in [CleanPaths.homebrewCellar, CleanPaths.homebrewCellarIntel] {
-            let prefix = normalizePath(cellar) + "/"
+        isCellarVersionDirNormalized(normalizePath(path))
+    }
+
+    /// 入参必须已是 `normalizePath` 形态。
+    static func isCellarVersionDirNormalized(_ normalized: String) -> Bool {
+        for prefix in guardCellarRoots {
             guard normalized.hasPrefix(prefix) else { continue }
             let parts = normalized.dropFirst(prefix.count).split(separator: "/")
             // 需要 formula 名 + 版本号（≥2 段，且版本段以数字/v 开头防误删目录）

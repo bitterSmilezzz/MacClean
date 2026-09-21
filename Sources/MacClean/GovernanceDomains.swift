@@ -38,6 +38,13 @@ struct GovernanceDomain: Equatable, Hashable {
     /// 也有用户可见卷内容），把授权精确钉在少数几个条目上。
     let allowedEntryNames: Set<String>?
 
+    /// `root` 的确定性归一形态，**在 init 里算一次**。
+    ///
+    /// 原先是个计算属性 `normalizePath(root)`：`domain(forPath:)` 对每个候选路径都要
+    /// 把全部 19 个域比一遍，于是每次判定做 19 次字符串归一化；而 `normalizePath`
+    /// 对 `~` 开头的常量还要走完整消解流程。改成存储属性后这里退化成纯比较。
+    let normalizedRoot: String
+
     init(id: String, root: String, minDepthBelowRoot: Int, note: String,
          allowedEntryNames: Set<String>? = nil) {
         self.id = id
@@ -45,9 +52,8 @@ struct GovernanceDomain: Equatable, Hashable {
         self.minDepthBelowRoot = minDepthBelowRoot
         self.note = note
         self.allowedEntryNames = allowedEntryNames
+        self.normalizedRoot = FileSystem.normalizePath(root)
     }
-
-    var normalizedRoot: String { FileSystem.normalizePath(root) }
 
     /// 该域内目标所需的最小绝对深度（用于错误信息）
     var requiredDepth: Int {
@@ -164,6 +170,8 @@ extension GovernanceDomain {
     //    一个从未登记却能被网关放行的域。
     private static let registryLock = NSLock()
     private static var dynamicDomains: [String: GovernanceDomain] = [:]
+    /// `all` 的缓存。动态域只增不减（按 id 幂等覆盖），故登记时置脏即可。
+    private static var cachedAll: [GovernanceDomain]?
 
     /// 登记一个运行时才发现的治理域。按 `id` 去重、同 id 覆盖，故可反复调用（幂等）。
     ///
@@ -173,22 +181,36 @@ extension GovernanceDomain {
         registryLock.lock()
         defer { registryLock.unlock() }
         dynamicDomains[domain.id] = domain
+        cachedAll = nil
     }
 
     /// 已登记的动态域（按 id 排序，保证穷举顺序稳定）
     static var registeredDynamicDomains: [GovernanceDomain] {
         registryLock.lock()
         defer { registryLock.unlock() }
-        return dynamicDomains.values.sorted { $0.id < $1.id }
+        return sortedDynamicLocked()
+    }
+
+    /// 调用方必须已持有 `registryLock`。
+    private static func sortedDynamicLocked() -> [GovernanceDomain] {
+        dynamicDomains.values.sorted { $0.id < $1.id }
     }
 
     /// 全部已登记治理域 = 静态清单 + 运行时登记的动态域（按 id 去重，静态优先）。
     ///
     /// 新增治理模块若用了主目录之外的位置却既不在这里、也没 `register(_:)`，
     /// 网关一律拒绝。自检的穷举断言全部遍历本属性。
+    ///
+    /// 缓存的必要性：`domain(forPath:)` 对**每个候选路径**都要读一次本属性，
+    /// 而合并+去重+排序要新建三个集合。动态域数量个位数，缓存后命中代价是一次数组拷贝。
     static var all: [GovernanceDomain] {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        if let cached = cachedAll { return cached }
         let staticIDs = Set(staticDomains.map(\.id))
-        return staticDomains + registeredDynamicDomains.filter { !staticIDs.contains($0.id) }
+        let merged = staticDomains + sortedDynamicLocked().filter { !staticIDs.contains($0.id) }
+        cachedAll = merged
+        return merged
     }
 
     /// 域 id → 域（自检与文档用于穷举）
@@ -329,7 +351,9 @@ extension FileSystem {
         let real = normalizePath(realPath(path))
         guard real != "/" else { return .rejected(.resolvesToRoot) }
         if let blocked = coreGuardVerdict(real) { return .rejected(blocked) }
-        guard isSafeToClean(real) else { return .rejected(.blockedByBaseGate) }
+        // `real` 已经是解析+归一后的形态，走免二次解析的入口：原先在这里再调一次
+        // `isSafeToClean(real)` 等于把同一趟逐段 lstat 付两遍（每个候选项）。
+        guard isResolvedPathSafeToClean(real) else { return .rejected(.blockedByBaseGate) }
         guard exists(real) else { return .rejected(.missing) }
         return .allowed
     }
@@ -338,12 +362,12 @@ extension FileSystem {
     /// `isSafeToClean` 与本文件的域判定共用它，保证"同一份路径在两处结论一致"。
     /// 入参必须是 `normalizePath` 之后的真实位置。
     static func coreGuardVerdict(_ normalizedRealPath: String) -> GovernanceVerdict.Reason? {
-        if isSystemProtected(normalizedRealPath) { return .systemProtected }
-        for ex in CleanPaths.hardExclude {
-            let p = normalizePath(ex)
-            if normalizedRealPath == p || normalizedRealPath.hasPrefix(p + "/") { return .hardExcluded }
-        }
-        if WhitelistManager.shared.isWhitelisted(path: normalizedRealPath)
+        // 入参已归一化，所以走 `*Normalized` 版本：清单常量的归一化在 `FileSystem`
+        // 里只做一次，这里只剩前缀比较。
+        if isSystemProtectedNormalized(normalizedRealPath) { return .systemProtected }
+        if isHardExcludedNormalized(normalizedRealPath) { return .hardExcluded }
+        // 同理走 resolvedPath 入口，不再解析第二遍软链（`normalizePath ∘ realPath` 幂等）
+        if WhitelistManager.shared.isWhitelisted(resolvedPath: normalizedRealPath)
             || WhitelistManager.shared.isExtensionWhitelisted(path: normalizedRealPath) {
             return .userWhitelisted
         }

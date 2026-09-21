@@ -294,6 +294,13 @@ extension Selftest {
             // 关键：经由软链与直达真实路径，都必须命中
             guard wm.isWhitelisted(path: link + "/inner.bin") else { return false }
             guard wm.isWhitelisted(path: realDir + "/inner.bin") else { return false }
+            // v1.72.4：闸门内部改走 `isWhitelisted(resolvedPath:)`（不再重复解析软链）。
+            // 两个入口对"已解析过的真实位置"必须给出同一个答案，否则保护会在闸门里静默失效。
+            let resolvedTarget = FileSystem.normalizePath(FileSystem.realPath(realDir + "/inner.bin"))
+            guard wm.isWhitelisted(resolvedPath: resolvedTarget) else {
+                print("      resolvedPath 入口未命中：\(resolvedTarget)")
+                return false
+            }
             // 底层护栏也要认
             return !FileSystem.isSafeToClean(realDir + "/inner.bin")
         }
