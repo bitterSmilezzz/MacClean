@@ -103,6 +103,13 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       swift build --sanitize=thread && swift run --sanitize=thread MacClean --selftest
       ```
       （`scanAll` 会把 6 个分类并发丢进全局队列，共享缓存必须加锁或改快照）
+- [ ] **新增治理面板（卡片）时**：① 必须**默认收起**，靠细分过滤条上的胶囊展开——不许再出现
+      `SystemDeepStorageView()` 那种无条件挂载的写法（v1.72.6 之前它把浏览器分类的页头、
+      页脚和列表一起挤出窗口）；② 面板区整体被 `ScrollView + .frame(maxHeight: 340)` 封顶，
+      所以新卡片**内部**要有自己的滚动，不要指望页面给它高度；
+      ③ 真机把该分类的**所有面板一次全开**截图看过：页头（标题/过滤/扫描）与页脚
+      （已选/清理）必须仍在——SwiftUI 对超高 VStack 是**上下两头一起裁**，不是滚动，
+      表现就是"这一页点不动了"。
 - [ ] **改动了子进程调用时**：确认读管道**先于** `waitUntilExit`。
       macOS 管道缓冲区只有约 64 KB，先 wait 后读会双向死锁
 - [ ] **改动了重复文件扫描时**：确认硬链接仍被排除在"可节省空间"之外

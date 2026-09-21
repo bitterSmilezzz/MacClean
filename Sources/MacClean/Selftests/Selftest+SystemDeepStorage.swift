@@ -418,6 +418,41 @@ extension Selftest {
             }
             return true
         }
+
+        // 浏览器分类的三块治理面板必须**默认收起**（v1.72.6）。
+        // 「系统底层存储深度洞察」原先是**无条件挂载**的 473 行 UI，既没有内部滚动也没有高度
+        // 上限，和另外两张卡片一起把清理列表挤出窗口——分类标题、过滤/扫描那一排、底部
+        // 「已选 / 清理」全部看不见，真机上这页等于不能用。
+        // 这里锁两件事：① 面板正文默认不在树里；② 列表正文默认在树里
+        // （只查①会漏掉"面板拿掉了但列表也没了"这种坏法）。
+        check("浏览器分类：底层存储面板默认收起，且收起后清理列表仍然渲染") {
+            let app = AppState()
+            let st = app.state(for: .browserAndSystem)
+            st.isScanned = true
+            st.items = [CleanItem(name: "Tabbit WidevineCdm",
+                                  path: "/Users/test/Library/Caches/Tabbit Browser/WidevineCdm",
+                                  size: 20_200_000, rule: "B2", category: .browserAndSystem)]
+            let view = CategoryDetailView(category: .browserAndSystem).environmentObject(app)
+            guard let root = try? view.inspect() else { return false }
+
+            // 展开入口必须在（收起 ≠ 藏掉功能）
+            guard (try? root.find(viewWithAccessibilityIdentifier: "deepStorageInspectorToggle")) != nil else {
+                print("      找不到「底层存储」展开胶囊")
+                return false
+            }
+            let panelTitle = "系统底层存储深度洞察 (APFS 快照 & 休眠镜像)"
+            let texts = root.findAll(ViewType.Text.self).compactMap { try? $0.string() }
+            let panels = texts.filter { $0.contains(panelTitle) }.count
+            guard panels == 0 else {
+                print("      底层存储面板默认就展开了（出现 \(panels) 次）——它会挤掉清理列表")
+                return false
+            }
+            guard texts.contains(where: { $0.contains("Tabbit WidevineCdm") }) else {
+                print("      收起面板之后清理列表也没渲染了")
+                return false
+            }
+            return true
+        }
     }
 }
 

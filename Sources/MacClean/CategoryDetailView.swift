@@ -26,6 +26,11 @@ struct CategoryDetailView: View {
     @State private var showSpotlightOptimizer = false
     @State private var showAudioHALOptimizer = false
     @State private var showPrinterDriverOptimizer = false
+    /// 系统底层存储洞察面板（APFS 快照 / 休眠镜像）。
+    /// 与其余治理面板一致：**默认收起**。原先它是无条件挂载的，473 行 UI 又没有内部
+    /// 滚动与高度上限，于是它 + 另外两张卡片会把列表挤到窗口之外——分类页的标题栏、
+    /// 过滤/扫描那一排和底部「已选 / 清理」全部看不见了（真机截图实测）。
+    @State private var showDeepStorageInspector = false
     @State private var activeDirectoryFilter: String? = nil
     @State private var activeYearFilter: String? = nil
     @State private var showPivotCard = false
@@ -131,7 +136,15 @@ struct CategoryDetailView: View {
             header(filtered: filtered)
             Divider().overlay(Surface.hairline)
             statusBanners
-            subCategoryFilterBarIfNeeded
+            // 治理面板区**限高且可滚**：这些卡片是"点胶囊才展开"的，用户完全可以一次开三块
+            // （浏览器分类就有 Spotlight / 打印机驱动 / 底层存储 三块，App 残留也有三块）。
+            // 不封顶的话整个 VStack 会高出窗口，SwiftUI 不是滚动而是**上下两头一起裁**——
+            // 分类标题、过滤/扫描那一排和底部「已选 / 清理」全部消失，这页就再也点不动了。
+            // 真机实测过这个坏法，所以列表区永远要留住自己的高度。
+            ScrollView {
+                subCategoryFilterBarIfNeeded
+            }
+            .frame(maxHeight: 340)
             contentArea(filtered: filtered, grouped: grouped)
             footer(filtered: filtered, visibleSelectedCount: visibleSelectedCount)
         }
@@ -511,9 +524,13 @@ struct CategoryDetailView: View {
                     .background(Surface.window)
                     .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
                 }
-                SystemDeepStorageView()
-                    .padding(.horizontal, Space.gutter)
-                    .padding(.vertical, Space.xs)
+                if showDeepStorageInspector {
+                    SystemDeepStorageView()
+                        .padding(.horizontal, Space.gutter)
+                        .padding(.vertical, Space.xs)
+                        .background(Surface.window)
+                        .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
             }
         }
     }
@@ -2136,6 +2153,7 @@ extension CategoryDetailView {
             HStack(spacing: Space.xs) {
                 spotlightOptimizerChip
                 printerDriverOptimizerChip
+                deepStorageInspectorChip
             }
             .padding(.trailing, Space.gutter)
         }
@@ -2143,19 +2161,20 @@ extension CategoryDetailView {
         .overlay(alignment: .bottom) { Hairline() }
     }
 
-    /// Spotlight 废弃索引与搜索数据库深度重建开关胶囊
-    private var spotlightOptimizerChip: some View {
+    /// 治理面板的展开胶囊。三块面板共用同一套外观与交互，`identifier` 沿用各自原有的
+    /// accessibilityIdentifier，自检与无障碍定位不受影响。
+    private func governanceChip(icon: String, title: String, help: String,
+                                identifier: String, isOn: Bool,
+                                toggle: @escaping () -> Void) -> some View {
         Button(action: {
-            withAnimation(Motion.standard) {
-                showSpotlightOptimizer.toggle()
-            }
+            withAnimation(Motion.standard) { toggle() }
         }) {
             HStack(spacing: 4) {
-                Image(systemName: "magnifyingglass")
+                Image(systemName: icon)
                     .font(.system(size: 10))
-                Text("Spotlight 索引")
+                Text(title)
                     .font(Typo.micro)
-                if showSpotlightOptimizer {
+                if isOn {
                     Circle()
                         .fill(Accent.tint)
                         .frame(width: 5, height: 5)
@@ -2163,42 +2182,43 @@ extension CategoryDetailView {
             }
             .padding(.horizontal, Space.xs)
             .padding(.vertical, 4)
-            .background(showSpotlightOptimizer ? Accent.tint.opacity(0.18) : Surface.sunken)
-            .foregroundColor(showSpotlightOptimizer ? Accent.tint : Ink.secondary)
+            .background(isOn ? Accent.tint.opacity(0.18) : Surface.sunken)
+            .foregroundColor(isOn ? Accent.tint : Ink.secondary)
             .clipShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("spotlightOptimizerToggle")
-        .help("展开/收起 Spotlight 废弃索引与搜索数据库深度重建面板")
+        .accessibilityIdentifier(identifier)
+        .help(help)
+    }
+
+    /// Spotlight 废弃索引与搜索数据库深度重建开关胶囊
+    private var spotlightOptimizerChip: some View {
+        governanceChip(icon: "magnifyingglass", title: "Spotlight 索引",
+                       help: "展开/收起 Spotlight 废弃索引与搜索数据库深度重建面板",
+                       identifier: "spotlightOptimizerToggle",
+                       isOn: showSpotlightOptimizer) {
+            showSpotlightOptimizer.toggle()
+        }
     }
 
     /// 废弃打印机驱动与 PPD 描述文件治理开关胶囊
     private var printerDriverOptimizerChip: some View {
-        Button(action: {
-            withAnimation(Motion.standard) {
-                showPrinterDriverOptimizer.toggle()
-            }
-        }) {
-            HStack(spacing: 4) {
-                Image(systemName: "printer.fill")
-                    .font(.system(size: 10))
-                Text("打印机驱动")
-                    .font(Typo.micro)
-                if showPrinterDriverOptimizer {
-                    Circle()
-                        .fill(Accent.tint)
-                        .frame(width: 5, height: 5)
-                }
-            }
-            .padding(.horizontal, Space.xs)
-            .padding(.vertical, 4)
-            .background(showPrinterDriverOptimizer ? Accent.tint.opacity(0.18) : Surface.sunken)
-            .foregroundColor(showPrinterDriverOptimizer ? Accent.tint : Ink.secondary)
-            .clipShape(Capsule())
+        governanceChip(icon: "printer.fill", title: "打印机驱动",
+                       help: "展开/收起废弃打印机驱动与 PPD 描述文件治理面板",
+                       identifier: "printerDriverOptimizerToggle",
+                       isOn: showPrinterDriverOptimizer) {
+            showPrinterDriverOptimizer.toggle()
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("printerDriverOptimizerToggle")
-        .help("展开/收起废弃打印机驱动与 PPD 描述文件治理面板")
+    }
+
+    /// APFS 快照与休眠镜像深度洞察开关胶囊
+    private var deepStorageInspectorChip: some View {
+        governanceChip(icon: "internaldrive.fill", title: "底层存储",
+                       help: "展开/收起 APFS 快照与休眠镜像深度洞察面板",
+                       identifier: "deepStorageInspectorToggle",
+                       isOn: showDeepStorageInspector) {
+            showDeepStorageInspector.toggle()
+        }
     }
 }
 
