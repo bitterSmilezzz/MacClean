@@ -337,3 +337,22 @@
     `try? … else continue`（工作目录不是仓库根就一个文件都读不到、恒真通过），
     且名单只列 18 个视图；改为穷举源码目录后立即抓到 2 处真实违规。
     另有十余处 `removeAllRules()` 直接写 `UserDefaults.standard`，若从 `.app` 内跑自检会清空用户白名单。
+- **v1.72.1（2026-09-21）**：v1.72 收敛之后的一轮交叉复核，**不新增清理规则**。
+  - **G3 极性回归**：`ClipboardPurger.cleanClipboardCaches` / `purgeAll` 与
+    `QuickLookThumbnailPurger.purge` 的 `toTrash` 默认值是 `false`，而卡片调用时不显式传参
+    → 主按钮实际语义是"直接彻底删除、无撤销"。剪贴板那条已改回 `true`
+    （`~/Library/TemporaryItems` 混着自动恢复草稿）；QuickLook 保留 `false` 但理由已写在代码里
+    （缩略图缓存可再生，且该卡片本来就有确认弹窗）——**两者区分对待，不要一刀切**。
+  - **菜单栏缺确认**：整个 `MenuBarView` 原先没有任何 `confirmationDialog`，
+    "释放本地快照"点一下就执行。本地快照在备份盘长期未接时可能是近期改动的唯一副本。
+  - **G6 补照片图库**：`~/Pictures/Photos Library.photoslibrary` 原先只在 `tccProtected`，
+    那是"读得到吗"的判据、**不构成删除拦截**；授予完全磁盘访问权限后库内真实文件即可通过
+    主目录护栏被判可清理。现同时进 `hardExclude`（`tccProtected` 管可读性，`hardExclude` 管可删性）。
+  - **动态治理域必须登记**：QuickLook 的 darwin 缓存域根是运行时发现的，原先就地构造
+    `GovernanceDomain` 而不进注册表 → 所有"遍历 `GovernanceDomain.all`"的穷举断言永远扫不到它，
+    "未登记一律拒绝"成了空承诺。现提供 `GovernanceDomain.register(_:)`。
+  - **历史上限**：200 条上限原先只写在 `AppState` 里，而写历史的入口已有 6 个 → 磁盘文件只增不减。
+    上限移到唯一写入口 `HistoryStore.save`。
+  - **本轮自己引入的两个回归**（记录以免重犯）：`ThumbnailCache` 只设条数上限未设体积上限
+    （1024px 单张 ≈7.8 MB × 500 → 峰值 ~3.9 GB）；`SafeProcess.invokedCommands` 无条件 append
+    而只有自检 reset（常驻进程下无界增长，且留存用户路径）。
