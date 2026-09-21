@@ -396,5 +396,37 @@ extension Selftest {
             return true
         }
 
+        // G5 运行态快照（v1.72.3）：四个访问器共用一份 5 秒快照。
+        // 要同时守住两件相反的事——**复用**（性能：原先每个清理项枚举一次运行中应用，
+        // 本机 1260 个日志项 = 2500+ 次 NSWorkspace 调用）与**可刷新**（安全：刚启动的
+        // App 必须很快被看见，否则它的在用缓存会被列成可清理）。
+        check("G5 运行态快照：TTL 内复用同一份，invalidate 后立刻重取且语义不丢") {
+            let first = CleanPaths.runningSnapshot
+            let second = CleanPaths.runningSnapshot
+            guard first.takenAt == second.takenAt else {
+                print("      TTL 内重复枚举了运行中应用（快照未复用）")
+                return false
+            }
+            // 语义不能因为合并而丢失：每个在跑的 bundle id 都必须进别名集合，
+            // 否则"目录名英文、App 显示中文"那一类又会漏判。
+            for bid in first.bundleIDs where !first.aliases.contains(CleanPaths.normalize(bid)) {
+                print("      bundle id 未进入别名集合: \(bid)")
+                return false
+            }
+            guard first.bundleIDs.isEmpty
+                    || first.namesByBundleID.count > 0 || first.displayNames.count > 0 else { return false }
+
+            CleanPaths.invalidateRunningSnapshot()
+            let refreshed = CleanPaths.runningSnapshot
+            guard refreshed.takenAt != first.takenAt else {
+                print("      invalidate 未生效")
+                return false
+            }
+            // 三个派生视图必须与快照同源
+            return CleanPaths.runningBundleIDs == refreshed.bundleIDs
+                && CleanPaths.runningAppAliases == refreshed.aliases
+                && CleanPaths.runningDisplayNames == refreshed.displayNames
+        }
+
     }
 }

@@ -123,6 +123,13 @@ enum FileSystem {
         measurementCache.removeAll(keepingCapacity: true)
         sampledOnlyKeys.removeAll()
         measurementLock.unlock()
+
+        // 新一轮扫描开始时丢弃运行态快照。
+        //
+        // `CleanPaths.runningSnapshot` 有 5 秒 TTL（为的是别在每个清理项上重枚举运行中
+        // 应用）。但"刚启动的 App 要能被看见"这条 G5 保证不该被那个缓存跨扫描拖住：
+        // 用户先开了 Xcode、再点扫描，这次扫描就必须看到 Xcode 在跑。
+        CleanPaths.invalidateRunningSnapshot()
     }
 
     /// 让若干路径的缓存失效。
