@@ -252,7 +252,42 @@ extension Selftest {
         // ── 规则 v2 四维权度（docs/CLEANUP-RULES-V2.md）──
         // 这一组只锁"登记是否自洽"，不改任何删除决策（那是步骤 3/4 的事）。
 
+        // G17 永不归属词元表
+        check("G17：系统级/共享状态词元一律不得判为某 app 的残留") {
+            // 这些名字都躺在 ~/Library/Application Support 或 Preferences 下，
+            // 删了不可重建：iOS 设备备份、系统知识库、崩溃取证材料、SwiftPM 状态。
+            let must = ["MobileSync", "mobilesync", "Knowledge", "CrashReporter",
+                        "com.apple.Spotlight", "org.swift.swiftpm", "ByHost",
+                        "com.google.Keystone.Agent", "WebKit", "Sparkle", "Sentry"]
+            var bad = must.filter { !CleanupRules.isNeverAttributable($0) }
+            // 反证：普通第三方 bundle 不许被顺手挡掉，否则整张表就是"恒真"在空转
+            let mayNot = ["com.acme.widgetstudio", "com.example.todo-app",
+                          "com.duckduckgo.macos", "org.videolan.vlc",
+                          // `.ShipIt.` 是 L6 认定的确定垃圾（T0），所以 ShipIt 标识
+                          // 绝不能被 G17 当成"永不归属"吞掉——这两条规则必须能共存。
+                          "com.minimax.agent.cn.ShipIt", "ai.opencode.desktop.ShipIt"]
+            bad += mayNot.filter { CleanupRules.isNeverAttributable($0) }.map { "误拒 " + $0 }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("G17：孤儿判定入口确实读到这张表（不是只存在于表里）") {
+            // 用一个"清单完整且不含该 id"的数据库直接打判定入口：
+            // 表加对了但没接线，这条会红。
+            let db = OrphanScanner.InstalledDatabase(
+                bundleIDs: ["com.acme.widgetstudio"], bundlePrefixes: ["com.acme"],
+                normalizedNames: ["widgetstudio"], executableNames: ["WidgetStudio"],
+                runningBundleIDs: [], inventoryComplete: true)
+            guard OrphanScanner.isInstalledOrProtected(identifier: "MobileSync", db: db),
+                  OrphanScanner.isInstalledOrProtected(identifier: "org.swift.swiftpm", db: db),
+                  OrphanScanner.isInstalledOrProtected(identifier: "com.apple.Spotlight", db: db)
+            else { return false }
+            // 反证：真孤儿仍然要能被查出来
+            return !OrphanScanner.isInstalledOrProtected(identifier: "com.gone.awayapp", db: db)
+        }
+
         check("规则 v2：每条规则的档位都与它自己的四维登记自洽") {
+
             var bad: [String] = []
             for rule in CleanupRules.all {
                 if let why = CleanupRules.tierViolation(rule) { bad.append("\(rule.id)：\(why)") }

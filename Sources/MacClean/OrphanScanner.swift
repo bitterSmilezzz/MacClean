@@ -81,6 +81,11 @@ enum OrphanScanner {
 
         let lower = identifier.lowercased()
 
+        // G17：命中"永不归属"词元 → 一律按受保护处理。
+        // 放在最前面：这些名字（MobileSync / Knowledge / CrashReporter / swiftpm …）
+        // 既不在已安装清单里、也不匹配任何 vendor 前缀，走后面的逻辑会被判成孤儿。
+        if CleanupRules.isNeverAttributable(lower) { return true }
+
         // 1. 系统 bundle 与守护进程硬白名单
         for prefix in systemBundlePrefixes where lower.hasPrefix(prefix) || lower == prefix.dropLast() {
             return true

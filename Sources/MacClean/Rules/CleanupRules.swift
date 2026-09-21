@@ -163,6 +163,39 @@ enum CleanupRules {
         }
     }
 
+    // MARK: - G17 永不归属词元表
+    //
+    // 这些名字看着像"某个 app 留下的残留"，实际是**系统级或多 app 共享**的状态。
+    // 命中即不得判为孤儿、不得进 T0/T1——归属这张表只用于**排除**，不用于准入。
+    //
+    // 为什么单独成表而不是塞进各扫描器的白名单：`OrphanScanner` 与 `Scanner` 的 A2
+    // 原先各有一份保护清单（一份 16 个守护进程名、一份 vendor 前缀），两份互不知情——
+    // 正是 v1.72 那轮"12 个模块各写一套护栏"的老毛病。词元表放在规则源头，两处共用。
+    //
+    // 依据：Pearcleaner 的 `skipReverse`（约 200 个永不归属词元）+ 本仓库真机教训：
+    // `MobileSync` 是 iOS 设备备份、`Knowledge` 是系统知识库、`CrashReporter` 是取证材料，
+    // 删了都不可重建，而它们全都躺在 `~/Library/Application Support/` 下等着被当成残留。
+    static let neverAttributionTokens: Set<String> = [
+        // 系统级状态与取证材料
+        "crashreporter", "diagnostic", "diagnostics", "knowledge", "analytics",
+        "byhost", "globalpreferences", "databases", "trash", "spotlight",
+        // 多 app 共享的运行库与框架
+        "webkit", "cef", "cefsharp", "electron", "qt", "icudata",
+        // 更新器与崩溃上报 SDK（装了哪家都有，不属于某个 app）
+        "sparkle", "sentry", "crashlytics", "keystone", "updater",
+        // 工具链自身的状态（删了要重拉全量，往往无法增量恢复）
+        "swiftpm", "coresimulator", "clang", "symbols", "mobilesync", "github",
+    ]
+
+    /// 该标识（bundle id、目录名或文件名主体）是否命中永不归属词元表。
+    /// 按 `.` 分段比对，所以 `com.apple.Spotlight`、`org.swift.swiftpm`、`CrashReporter` 都能命中。
+    static func isNeverAttributable(_ identifier: String) -> Bool {
+        let lower = identifier.lowercased()
+        guard !lower.isEmpty else { return true }
+        if neverAttributionTokens.contains(lower) { return true }
+        return lower.split(separator: ".").contains { neverAttributionTokens.contains(String($0)) }
+    }
+
     // MARK: - 全部规则登记（v1.1：6 大类 41 条）
 
     static let all: [Rule] = [

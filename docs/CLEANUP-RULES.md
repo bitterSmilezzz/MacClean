@@ -37,6 +37,7 @@
 | **G14** | **删除只有一个入口（v1.72）** | 任何删除动作都必须经 `ResidueDeletionGate`。主目录**之外**的目标必须先声明所属**治理域**（`GovernanceDomain`：精确根 + 最小层级 + 可选入口名单），由 `FileSystem.governanceVerdict(_:domain:)` 做唯一裁决：软链防跳板 → G8 → G6 → 用户白名单 → 域内且深度足够 → `canUnlink`。<br>**背景**：v1.53–v1.71 的十余个治理模块扫的是 `/Library/Fonts`、`/Library/Printers` 等主目录外位置，而 `isSafeToClean` 的常规允许根只有主目录与临时目录，于是各模块自造 `hasPrefix("/System")` 字符串护栏——**用户白名单与 G6 对它们完全失效**，且软链可绕。现在这些弱护栏一律删除。<br>**永不授权删域根本身**；`/Library/*` 在真机多为 root 只读，网关返回 `needsPrivilege`，UI 必须如实说明"本工具不提权"而不是含糊报"清理失败" |
 | **G15** | **子进程必须受控（v1.72）** | 外部命令一律走 `SafeProcess`：① 读端先挂后台排空再等退出（macOS 管道缓冲仅约 64 KB，反序即父子互等死锁）；② 必须有超时（TERM→KILL）；③ 启动失败绝不 `waitUntilExit()`（在未启动的 `Process` 上调用会抛异常崩溃）；④ 命令可用性先 `isAvailable` 判定，**没执行就不算成功**。自检经 `SafeProcess.runner` 注入，断言命令与参数而不真改系统状态 |
 | **G16** | **孤儿判定必须有正向证据（v1.72）** | "宿主已卸载"这类结论只能来自**可信清单**。`AppInventory.current()` 除集合外还导出 `unreadableRoots` / `isComplete`：根目录读不到时集合会是空的，若照旧比对"不在清单里 = 孤儿"，一次权限失败就会让**全盘残存一夜之间全成孤儿**。清单不可信时一律降级"需确认"，绝不默认勾选（`OrphanScanner.isInstalledOrProtected` 顶部即此守卫） |
+| **G17** | **永不归属词元表（v1.72.7，规则 v2 步骤 2）** | `CleanupRules.neverAttributionTokens` 是一份"看着像某个 app 的残留、其实是系统级或多 app 共享状态"的名字表（`MobileSync` iOS 备份、`Knowledge` 系统知识库、`CrashReporter` 取证材料、`swiftpm`/`clang`/`symbols` 工具链状态、`sparkle`/`sentry`/`keystone` 更新与崩溃 SDK…）。命中即**不得判为孤儿**。归属在这里只用于**排除**，不用于**准入**。必须早于"申请 FDA"落地：这些目录现在多数读不到（`size == 0` 被自然跳过），一旦授予 FDA 就全部可读，届时没有这张表就会把 iOS 备份当成残留列出来。依据：Pearcleaner 的 `skipReverse`（约 200 词元）+ 本仓库 A/B 实测（表里误放 `shipit` 时，App 残留被从 10 项压成 1 项，与 L6 的 `.ShipIt.` = T0 直接冲突） |
 
 ---
 

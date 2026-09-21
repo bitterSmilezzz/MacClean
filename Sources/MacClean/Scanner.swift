@@ -1276,6 +1276,9 @@ final class Scanner {
             let normalized = name.lowercased().replacingOccurrences(of: " ", with: "")
             // 共享框架目录：无法确定归属，直接跳过（Electron/CEF 等可能被多个 app 使用）
             if sharedFrameworkDirs.contains(normalized) { continue }
+            // G17：永不归属词元（MobileSync / Knowledge / CrashReporter / swiftpm …）
+            // 是系统级或多 app 共享状态，不得当作某个 app 的残留卖出去
+            if CleanupRules.isNeverAttributable(normalized) { continue }
             // 活跃度：180 天内有更新 → 在用数据，不列为残留（与 A2 同门槛）
             if let mdate = FileSystem.modificationDate(dir), mdate > residueCutoff { continue }
             // 兼容 bundle-id 形式目录名（com.qoder.app.stable → 各段与 app 名比对）
@@ -1328,6 +1331,9 @@ final class Scanner {
             guard child.hasSuffix(".plist"), FileSystem.isSafeToClean(child) else { continue }
             let bundle = (child as NSString).lastPathComponent.replacingOccurrences(of: ".plist", with: "")
             if systemBundles.contains(where: { bundle.hasPrefix($0) }) { continue }
+            // G17：永不归属词元（MobileSync / Knowledge / CrashReporter / swiftpm …）
+            // 是系统级或多 app 共享状态，不得当作某个 app 的残留卖出去
+            if CleanupRules.isNeverAttributable(bundle) { continue }
             // 单段名（sharedfilelistd/icloudmailagent/nsurlsessiond 等系统守护进程偏好）
             if !bundle.contains(".") { continue }
             // 通用框架 vendor 前缀（JetBrains/Qt/.NET 等可能仍在用）；
@@ -1394,6 +1400,9 @@ final class Scanner {
         for child in FileSystem.children(of: stateRoot) {
             guard child.hasSuffix(".savedState"), FileSystem.isSafeToClean(child) else { continue }
             let bundle = (child as NSString).lastPathComponent.replacingOccurrences(of: ".savedState", with: "")
+            // G17：永不归属词元（MobileSync / Knowledge / CrashReporter / swiftpm …）
+            // 是系统级或多 app 共享状态，不得当作某个 app 的残留卖出去
+            if CleanupRules.isNeverAttributable(bundle) { continue }
             if systemBundles.contains(where: { bundle.hasPrefix($0) }) { continue }
             if !bundle.contains(".") { continue }
             let segments = bundle.lowercased().split(separator: ".")
@@ -1432,6 +1441,9 @@ final class Scanner {
             guard child.hasSuffix(".plist"), FileSystem.isSafeToClean(child) else { continue }
             let filename = (child as NSString).lastPathComponent
             guard let bundle = CleanPaths.extractBundleFromByHostFilename(filename) else { continue }
+            // G17：永不归属词元（MobileSync / Knowledge / CrashReporter / swiftpm …）
+            // 是系统级或多 app 共享状态，不得当作某个 app 的残留卖出去
+            if CleanupRules.isNeverAttributable(bundle) { continue }
             if systemBundles.contains(where: { bundle.hasPrefix($0) }) { continue }
             if !bundle.contains(".") { continue }
             let segments = bundle.lowercased().split(separator: ".")

@@ -138,7 +138,7 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 - [ ] AI 面板：设置（baseURL/Key/模型）→ 连通性测试 → ✨ 提问 → 回答
 
 ## 3. 安全护栏
-- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G16）
+- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G17）
 - [ ] 新增"受限放行"时确认：**只放行具体路径/具名模式，未放行整个父目录**（G10）
 - [ ] 新增路径判定时**未使用 `standardizingPath`**——其行为依赖路径是否真实存在
       （`/private/var/db` 存在则被改成 `/var/db`，虚构路径则不变），
