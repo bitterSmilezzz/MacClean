@@ -25,6 +25,11 @@ struct MenuBarView: View {
     @State var danglingStartupItems: [StartupItem] = []
     @State var isCleaningSnapshots: Bool = false
     @State var isCleaningDangling: Bool = false
+    /// 菜单栏是"顺手一点"的入口，但这两个动作都会删东西：
+    /// 本地快照在备份盘长期没接时可能是近期改动的唯一副本，幽灵自启项是配置文件。
+    /// 原先从浮窗里点一下就立刻执行，没有任何一次确认——现在统一先问。
+    @State var pendingSnapshotRelease: Bool = false
+    @State var pendingDanglingClean: Bool = false
     @State var recentTrend: [(dayLabel: String, bytes: Int64)] = []
     @State var weekTotalFreed: Int64 = 0
 
@@ -68,6 +73,26 @@ struct MenuBarView: View {
         }
         .frame(width: 320, height: 530)
         .background(Surface.window)
+        .confirmationDialog(
+            "确认释放 APFS 本地快照",
+            isPresented: $pendingSnapshotRelease,
+            titleVisibility: .visible
+        ) {
+            Button("释放 \(localSnapshots.count) 个本地快照", role: .destructive) { performSnapshotRelease() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("本地快照是 Time Machine 在本机上保留的历史版本。备份盘长时间没接时，它们可能是近期改动文件的唯一副本。MacClean 不代你做取舍，请确认后再释放。")
+        }
+        .confirmationDialog(
+            "确认清理幽灵自启项",
+            isPresented: $pendingDanglingClean,
+            titleVisibility: .visible
+        ) {
+            Button("移入废纸篓（\(danglingStartupItems.count) 项）", role: .destructive) { performDanglingClean() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将把 \(danglingStartupItems.count) 个宿主已卸载的自启配置移入废纸篓，可随时放回。全局 /Library 下的项由 root 管理，本工具不提权、不会尝试删除。")
+        }
         .onAppear {
             app.refreshDisk()
             sysMonitor.refresh()
@@ -358,22 +383,7 @@ struct MenuBarView: View {
 
                     if !localSnapshots.isEmpty {
                         Button {
-                            isCleaningSnapshots = true
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                let res = SystemDeepStorageInspector.deleteAllLocalSnapshots(snapshots: localSnapshots)
-                                DispatchQueue.main.async {
-                                    isCleaningSnapshots = false
-                                    app.refreshDisk()
-                                    withAnimation(Motion.micro) {
-                                        // 成功数之外必须带上失败/跳过数：一键删除时只播报
-                                        // "已释放 N 个"，用户会以为剩下那些也清了。
-                                        app.lastCleanSummary = res.failedCount == 0
-                                            ? "已释放 \(res.succeededCount) 个 APFS 本地快照"
-                                            : "已释放 \(res.succeededCount) 个快照，\(res.failedCount) 个未成功（需逐条确认或已被系统回收）"
-                                    }
-                                    refreshQuickStatus()
-                                }
-                            }
+                            pendingSnapshotRelease = true
                         } label: {
                             if isCleaningSnapshots {
                                 ProgressView().controlSize(.mini)
@@ -407,17 +417,7 @@ struct MenuBarView: View {
 
                     if !danglingStartupItems.isEmpty {
                         Button {
-                            isCleaningDangling = true
-                            DispatchQueue.global(qos: .userInitiated).async {
-                                let res = StartupItemManager.shared.cleanAllDangling(items: danglingStartupItems)
-                                DispatchQueue.main.async {
-                                    isCleaningDangling = false
-                                    withAnimation(Motion.micro) {
-                                        app.lastCleanSummary = "已清理 \(res.removedCount) 个幽灵自启项"
-                                    }
-                                    refreshQuickStatus()
-                                }
-                            }
+                            pendingDanglingClean = true
                         } label: {
                             if isCleaningDangling {
                                 ProgressView().controlSize(.mini)
@@ -628,8 +628,44 @@ struct MenuBarView: View {
         }
     }
 
-    func refreshQuickStatus() {
+    /// 释放本地快照（由确认弹窗触发）。摘要必须带上失败/跳过数：
+    /// 只播报"已释放 N 个"会让用户以为剩下那些也清了。
+    private func performSnapshotRelease() {
+        isCleaningSnapshots = true
+        let targets = localSnapshots
         DispatchQueue.global(qos: .userInitiated).async {
+            let res = SystemDeepStorageInspector.deleteAllLocalSnapshots(snapshots: targets)
+            DispatchQueue.main.async {
+                isCleaningSnapshots = false
+                app.refreshDisk()
+                withAnimation(Motion.micro) {
+                    app.lastCleanSummary = res.failedCount == 0
+                        ? "已释放 \(res.succeededCount) 个 APFS 本地快照"
+                        : "已释放 \(res.succeededCount) 个快照，\(res.failedCount) 个未成功（需逐条确认或已被系统回收）"
+                }
+                refreshQuickStatus()
+            }
+        }
+    }
+
+    private func performDanglingClean() {
+        isCleaningDangling = true
+        let targets = danglingStartupItems
+        DispatchQueue.global(qos: .userInitiated).async {
+            let res = StartupItemManager.shared.cleanAllDangling(items: targets)
+            DispatchQueue.main.async {
+                isCleaningDangling = false
+                withAnimation(Motion.micro) {
+                    app.lastCleanSummary = res.failedCount == 0
+                        ? "已清理 \(res.removedCount) 个幽灵自启项（移入废纸篓）"
+                        : "已清理 \(res.removedCount) 个，\(res.failedCount) 个未成功（多为 root 托管，本工具不提权）"
+                }
+                refreshQuickStatus()
+            }
+        }
+    }
+
+    func refreshQuickStatus() {        DispatchQueue.global(qos: .userInitiated).async {
             let inventory = SystemDeepStorageInspector.snapshotInventory(volume: "/")
             let snaps = inventory.snapshots
             let startups = StartupItemManager.shared.scanAll().filter { $0.status.isDangling }

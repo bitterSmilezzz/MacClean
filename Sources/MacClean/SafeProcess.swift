@@ -32,14 +32,20 @@ enum SafeProcess {
     /// 生产路径永远为 nil。
     static var runner: ((String, [String], TimeInterval) -> Result?)?
 
-    /// 可被拦截的只读命令记录（供自检断言命令与参数）
+    /// 可被拦截的命令记录，供自检断言"调的是哪个可执行文件、带哪些参数"。
+    ///
+    /// **只在自检/CI（`MACCLEAN_STATE_DIR` 已设）下累积**：生产路径里 GUI 会反复调
+    /// `mdutil`/`launchctl`/`qlmanage`，`--autoclean` 更是常驻进程，无条件 append 会变成
+    /// 只增不减的数组，而且里面存着用户的完整路径。测试上下文才需要这份痕迹。
     private(set) static var invokedCommands: [(path: String, args: [String])] = []
     static func resetInvokedCommands() { invokedCommands.removeAll() }
+
+    private static var isRecording: Bool { MacCleanState.isIsolated }
 
     /// 运行命令并捕获 stdout+stderr。永不抛异常、永不无限等待。
     static func run(_ launchPath: String, _ arguments: [String] = [],
                     timeout: TimeInterval = 10) -> Result? {
-        invokedCommands.append((launchPath, arguments))
+        if isRecording { invokedCommands.append((launchPath, arguments)) }
         if let injected = runner { return injected(launchPath, arguments, timeout) }
 
         let p = Process()

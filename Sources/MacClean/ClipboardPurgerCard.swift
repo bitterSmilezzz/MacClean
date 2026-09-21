@@ -11,6 +11,14 @@ public struct ClipboardPurgerCard: View {
     @State private var isScanning: Bool = false
     @State private var isCleaning: Bool = false
     @State private var bannerFeedback: String? = nil
+    /// 两个会删文件的动作必须先确认：`~/Library/TemporaryItems` 里混着 Office /
+    /// 编辑器**自动恢复草稿**，原先点一下就立刻执行。
+    @State private var pendingAction: PurgeAction? = nil
+
+    enum PurgeAction: String, Identifiable {
+        case caches, all
+        var id: String { rawValue }
+    }
 
     public init(onClose: @escaping () -> Void, onTriggerClean: (() -> Void)? = nil) {
         self.onClose = onClose
@@ -22,6 +30,7 @@ public struct ClipboardPurgerCard: View {
             topHeader
             metricsSummaryBar
             contentListContainer
+            purgeConfirmation
             if let feedback = bannerFeedback {
                 bannerBar(feedback)
             }
@@ -268,6 +277,28 @@ public struct ClipboardPurgerCard: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
+    private var purgeConfirmation: some View {
+        EmptyView()
+            .confirmationDialog(
+                pendingAction == .all ? "确认全量净化剪贴板与临时缓存" : "确认清理剪贴板临时缓存",
+                isPresented: Binding(
+                    get: { pendingAction != nil },
+                    set: { if !$0 { pendingAction = nil } }
+                ),
+                titleVisibility: .visible,
+                presenting: pendingAction
+            ) { action in
+                Button(action == .all ? "清空并移入废纸篓" : "移入废纸篓", role: .destructive) {
+                    if action == .all { executePurgeAll() } else { executeCleanCaches() }
+                }
+                Button("取消", role: .cancel) {}
+            } message: { action in
+                Text(action == .all
+                     ? "将清空系统剪贴板内容，并把 \(report.cacheItems.count) 项临时缓存移入废纸篓（可放回）。这里可能包含正在编辑文档的自动恢复草稿，请确认你没有未保存的工作。"
+                     : "将把 \(report.cacheItems.count) 项临时缓存移入废纸篓（可放回）。归属不可识别或仍然新鲜的条目不会被处理。")
+            }
+    }
+
     // MARK: - 底栏
 
     private var actionFooterBar: some View {
@@ -281,7 +312,7 @@ public struct ClipboardPurgerCard: View {
 
             if !report.cacheItems.isEmpty {
                 Button("清理临时缓存") {
-                    executeCleanCaches()
+                    pendingAction = .caches
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
@@ -291,7 +322,7 @@ public struct ClipboardPurgerCard: View {
             Spacer()
 
             Button {
-                executePurgeAll()
+                pendingAction = .all
             } label: {
                 Label("全量净化 (Purge All)", systemImage: "trash.fill")
             }

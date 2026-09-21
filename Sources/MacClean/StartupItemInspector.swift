@@ -556,9 +556,11 @@ public final class StartupItemManager {
     }
 
     /// 一键批量安全清理所有幽灵残留项（**只有网关确认删除的**才计数）
-    public func cleanAllDangling(items: [StartupItem]) -> (removedCount: Int, freedBytes: Int64) {
+    /// 返回带 `failedCount`：调用方（菜单栏）必须能把"没删掉几项"如实播报，
+    /// 只回 removedCount 会让用户以为全部处理完了。
+    public func cleanAllDangling(items: [StartupItem]) -> (removedCount: Int, freedBytes: Int64, failedCount: Int) {
         let dangling = items.filter { $0.status.isDangling }
         let outcome = deleteOutcome(dangling, toTrash: true)
-        return (outcome.cleanedCount, outcome.freedBytes)
+        return (outcome.cleanedCount, outcome.freedBytes, outcome.errorCount)
     }
 }

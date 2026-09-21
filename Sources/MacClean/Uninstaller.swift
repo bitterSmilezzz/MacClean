@@ -315,6 +315,10 @@ final class UninstallerState: ObservableObject {
                     return f
                 }.filter { !$0.isSelected || !done.contains($0.id) }
                 self.isUninstalling = false
+                // 刚卸载掉的 App 必须立刻从"已安装清单"里消失。
+                // `AppInventory` 有 60 s TTL，不主动失效的话：卸载后马上转去查孤儿残留，
+                // 它的 Caches/Containers/偏好仍被判"宿主还在"，一个都列不出来。
+                if result.succeeded > 0 { AppInventory.invalidate() }
                 var parts = ["已卸载 \(result.succeeded) 项，释放 \(result.releasedBytes.byteStringCN)"]
                 if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
                 self.lastSummary = parts.joined(separator: "，")

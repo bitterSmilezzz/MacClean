@@ -391,5 +391,42 @@ extension Selftest {
             return CleanPaths.hardExclude.contains { FileSystem.normalizePath($0) == normalized }
                 && CleanPaths.tccProtected.contains { FileSystem.normalizePath($0) == normalized }
         }
+
+        // 17. 清单缓存必须能被主动失效：卸载 App 之后紧接着查孤儿，
+        // 若仍用 60 s TTL 里的旧清单，那个刚被卸载的 App 的所有残留都查不出来。
+        check("AppInventory：invalidate() 之后重新扫盘，不再复用 TTL 内的旧清单") {
+            let dirA = makeFixture("invA")
+            let dirB = makeFixture("invB")
+            defer { try? FileManager.default.removeItem(atPath: dirA);
+                    try? FileManager.default.removeItem(atPath: dirB) }
+            for dir in [dirA, dirB] {
+                try? FileManager.default.createDirectory(atPath: dir + "/Fake.app/Contents",
+                                                         withIntermediateDirectories: true)
+            }
+
+            let savedRoots = AppInventory.rootsOverride
+            let savedSnapshot = AppInventory.snapshotOverride
+            defer {
+                AppInventory.rootsOverride = savedRoots
+                AppInventory.snapshotOverride = savedSnapshot
+                AppInventory.invalidate()
+            }
+            AppInventory.snapshotOverride = nil
+
+            AppInventory.rootsOverride = [dirA]
+            let first = AppInventory.current(ttl: 600)   // 长 TTL：证明"命中缓存"而非"重扫"
+            guard first.unreadableRoots.isEmpty else { return false }
+
+            // 换根但不失效：必须仍返回旧清单（说明 TTL 缓存在起作用）
+            AppInventory.rootsOverride = [dirB]
+            let cachedAgain = AppInventory.current(ttl: 600)
+            guard cachedAgain.appPaths == first.appPaths else { return false }
+
+            // 失效之后必须重扫，看到新根里的条目
+            AppInventory.invalidate()
+            let refreshed = AppInventory.current(ttl: 600)
+            return refreshed.appPaths != first.appPaths
+                && refreshed.appPaths.contains(where: { $0.hasPrefix(dirB) })
+        }
     }
 }

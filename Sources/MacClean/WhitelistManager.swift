@@ -71,7 +71,7 @@ final class WhitelistManager: ObservableObject {
     @Published var rules: [WhitelistRule] = [] {
         didSet {
             Self.snapshotLock.lock()
-            cachedRules = rules
+            cachedIndex = RuleIndex(rules)
             Self.snapshotLock.unlock()
             save()
         }
@@ -85,12 +85,43 @@ final class WhitelistManager: ObservableObject {
     // 而不是"读到旧值"这么温和。主目录收敛之后治理模块也全走这里，读并发只会更高。
     // 因此给读侧提供一份加锁快照，写路径保持 `@Published` 不动（UI 仍需订阅）。
     private static let snapshotLock = NSLock()
-    private var cachedRules: [WhitelistRule] = []
+    private var cachedIndex = RuleIndex([])
 
-    private var rulesSnapshot: [WhitelistRule] {
+    private var rulesIndex: RuleIndex {
         Self.snapshotLock.lock()
         defer { Self.snapshotLock.unlock() }
-        return cachedRules
+        return cachedIndex
+    }
+
+    /// 预解析好的规则索引。
+    ///
+    /// 为什么要预解析：`isWhitelisted` 原先在**每条 path 规则的循环里**做一次
+    /// `realPath`（文件系统调用，实测 9.5 µs）。`DuplicateScanner` 对每个枚举到的
+    /// 文件都要查一次表，30 条规则 × 20 万文件实测会放大到约 63 秒——白名单本来是
+    /// 保护功能，结果成了扫描瓶颈。现在规则侧的解析随规则变更做一次，查表只做字符串比较。
+    ///
+    /// 代价（如实记录）：若用户把某条白名单规则本身指向的软链**在会话中途改指向**，
+    /// 缓存的是旧目标，保护范围会滞后到下一次规则增删。方向上是"少保护"而非"多删除"，
+    /// 且被删对象一侧的 `realPath` 仍然是实时解析的（软链跳板封堵不受影响）。
+    private struct RuleIndex {
+        let isEmpty: Bool
+        let pathCandidates: [[String]]
+        let appNames: Set<String>
+        let extensions: Set<String>
+
+        init(_ rules: [WhitelistRule]) {
+            pathCandidates = rules.compactMap { rule in
+                guard rule.type == .path else { return nil }
+                let raw = rule.standardPath
+                guard !raw.isEmpty else { return nil }
+                let resolved = FileSystem.normalizePath(FileSystem.realPath(raw))
+                return resolved == raw ? [raw] : [raw, resolved]
+            }
+            appNames = Set(rules.filter { $0.type == .appName }
+                .map { $0.pattern.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
+            extensions = Set(rules.filter { $0.type == .extension }.map(\.normalizedExtension))
+            isEmpty = rules.isEmpty
+        }
     }
 
     private static let storageKey = "MacClean_UserWhitelistRules_v1"
@@ -120,7 +151,7 @@ final class WhitelistManager: ObservableObject {
         // init 里的赋值不会触发 didSet，快照必须显式播种，
         // 否则启动后第一次后台扫描读到的是空名单 —— 那等于白名单暂时失效。
         Self.snapshotLock.lock()
-        cachedRules = result.rules
+        cachedIndex = RuleIndex(result.rules)
         Self.snapshotLock.unlock()
     }
 
@@ -226,22 +257,17 @@ final class WhitelistManager: ObservableObject {
     /// 注意这里**只增加候选、不做替换**：判定变宽 = 保护变强，方向上永远是安全的。
     /// 反向（用 realPath 替换掉字面路径）才危险——那会因路径是否存在而改变判定结果。
     func isWhitelisted(path: String) -> Bool {
-        let snapshot = rulesSnapshot
-        guard !snapshot.isEmpty else { return false }
+        let index = rulesIndex
+        guard !index.isEmpty else { return false }
         // 与 isSafeToClean 共用归一化口径（见 WhitelistRule.standardPath 说明）
         var targets = [FileSystem.normalizePath(path)]
         let resolvedTarget = FileSystem.normalizePath(FileSystem.realPath(path))
         if resolvedTarget != targets[0] { targets.append(resolvedTarget) }
 
-        for rule in snapshot where rule.type == .path {
-            var rulePaths = [rule.standardPath]
-            let resolvedRule = FileSystem.normalizePath(FileSystem.realPath(rule.standardPath))
-            if resolvedRule != rulePaths[0] { rulePaths.append(resolvedRule) }
-
+        for rulePaths in index.pathCandidates {
             for target in targets {
-                for rulePath in rulePaths where !rulePath.isEmpty && rulePath != "/" {
-                    if target == rulePath { return true }
-                    if target.hasPrefix(rulePath + "/") { return true }
+                for rulePath in rulePaths where rulePath != "/" {
+                    if target == rulePath || target.hasPrefix(rulePath + "/") { return true }
                 }
             }
         }
@@ -250,28 +276,17 @@ final class WhitelistManager: ObservableObject {
 
     /// 检查指定 App 名称是否被用户白名单命中
     func isAppWhitelisted(appName: String) -> Bool {
-        let snapshot = rulesSnapshot
-        guard !snapshot.isEmpty else { return false }
-        let norm = appName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        for rule in snapshot where rule.type == .appName {
-            if norm == rule.pattern.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
-                return true
-            }
-        }
-        return false
+        let index = rulesIndex
+        guard !index.isEmpty else { return false }
+        return index.appNames.contains(appName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// 检查指定文件路径的扩展名是否被排除白名单命中
     func isExtensionWhitelisted(path: String) -> Bool {
-        let snapshot = rulesSnapshot
-        guard !snapshot.isEmpty else { return false }
+        let index = rulesIndex
+        guard !index.isEmpty else { return false }
         let ext = (path as NSString).pathExtension.lowercased()
         guard !ext.isEmpty else { return false }
-        for rule in snapshot where rule.type == .extension {
-            if rule.normalizedExtension == ext {
-                return true
-            }
-        }
-        return false
+        return index.extensions.contains(ext)
     }
 }

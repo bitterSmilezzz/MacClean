@@ -353,5 +353,37 @@ extension Selftest {
             }
             return true
         }
+
+        // G3 极性锁：默认必须移入废纸篓。v1.72 之前 `cleanClipboardCaches` 与
+        // `purgeAll` 的默认值是 `toTrash: false`，而卡片调用时**没有显式传参**，
+        // 于是主按钮变成"直接彻底删除、无撤销"——而 TemporaryItems 里混着
+        // Office / 编辑器的自动恢复草稿。这条断言专门防止默认值被改回去。
+        check("Clipboard: 不传 toTrash 时默认移入废纸篓（G3 极性不可回退）") {
+            let fm = FileManager.default
+            let dir = "/tmp/macclean_clip_polarity_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: dir) }
+
+            let victim = (dir as NSString).appendingPathComponent("pboard_default_trash.tmp")
+            let payload = Data(repeating: 0x7E, count: 2048)
+            try? payload.write(to: URL(fileURLWithPath: victim))
+            try? fm.setAttributes([.modificationDate: Date().addingTimeInterval(-3 * 3600)],
+                                  ofItemAtPath: victim)
+
+            let item = ClipboardCacheItem(id: victim, name: (victim as NSString).lastPathComponent,
+                                          path: victim, size: Int64(payload.count), note: "自检")
+            let res = ClipboardPurger.shared.cleanClipboardCaches(items: [item], journal: .none)
+
+            guard res.cleanedCount == 1 else {
+                print("    未清理：rejected=\(res.rejectedNames) errors=\(res.errorCount)")
+                return false
+            }
+            let snapshots = res.outcome.trashedSnapshots
+            guard snapshots.count == 1, !snapshots[0].trashPath.isEmpty,
+                  !FileManager.default.fileExists(atPath: victim) else { return false }
+            // 收尾：把自检产物从废纸篓里清掉
+            try? fm.removeItem(atPath: snapshots[0].trashPath)
+            return true
+        }
     }
 }

@@ -315,9 +315,12 @@ public final class ClipboardPurger {
     /// `TemporaryItems` 这类**目录**条目会展开成逐子项候选，
     /// 每条候选都要过：统一网关（G8/G6/白名单/软链/权限） + 本模块业务判据
     /// （归属可识别、足够陈旧、未被当前剪贴板引用）。
+    /// `toTrash` 默认 **true**（G3：默认移入废纸篓）。这里的东西看着像缓存，
+    /// 实际混着 Office / 文本编辑器的**自动恢复草稿**——删错了不可恢复，
+    /// 所以宁可多占一次废纸篓空间，也不做"看起来更快"的直接彻底删除。
     func cleanClipboardCaches(
         items: [ClipboardCacheItem],
-        toTrash: Bool = false,
+        toTrash: Bool = true,
         journal: ResidueDeletionGate.Journal = .module(categoryName: ClipboardPurger.historyCategory),
         now: Date = Date(),
         references: ClipboardPurger.PasteboardReferences? = nil
@@ -408,7 +411,7 @@ public final class ClipboardPurger {
     ///
     /// 内存侧结论必须来自 `clearPasteboard()` 的真实返回值；失败时**不得**写成"已清空"。
     func purgeAll(
-        toTrash: Bool = false,
+        toTrash: Bool = true,
         journal: ResidueDeletionGate.Journal = .module(categoryName: ClipboardPurger.historyCategory)
     ) -> (clearedMemory: Bool, memoryFailure: String?, cleanedCacheCount: Int,
           freedCacheBytes: Int64, cacheResult: ClipboardCleanResult) {

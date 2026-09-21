@@ -14,12 +14,27 @@ final class ThumbnailCache {
     static let shared = ThumbnailCache()
 
     private let cache = NSCache<NSString, NSImage>()
+    /// 解码失败的键。不可解码的文件若不记一笔，每次 body 重绘都会重新走一遍后台解码
+    /// ——那正是本轮要消灭的"每帧打盘"，只是换了个触发条件。
+    private let failures = NSCache<NSString, NSNumber>()
     private var inFlight: Set<String> = []
     private let lock = NSLock()
-    private let queue = DispatchQueue(label: "com.macclean.thumbnail",
-                                      qos: .userInitiated, attributes: .concurrent)
+    private let queue = DispatchQueue(label: "com.macclean.thumbnail", attributes: .concurrent)
 
-    private init() { cache.countLimit = 500 }   // 按个数限制，够一屏 + 滚动余量
+    /// 解码并发上限。`attributes: .concurrent` 的队列默认并发宽度是系统决定的，
+    /// 一屏几十张图同时进来会把 CPU 与磁盘打满，反而让首屏更慢。
+    private let decodeGate = DispatchSemaphore(value: 4)
+
+    private init() {
+        // **必须按体积限制，不能只按条数**：对比视图请求的是 1024px 缩略图，
+        // 实测单张 NSImage ≈ 7.8 MB；只设 countLimit=500 的话峰值可达 ~3.9 GB。
+        cache.totalCostLimit = 64 * 1024 * 1024   // 64 MB
+        cache.countLimit = 500
+        failures.countLimit = 4000
+    }
+
+    /// NSCache 的 cost：按像素字节数估算（RGBA）。
+    private static func cost(pixelSize: Int) -> Int { max(4096, pixelSize * pixelSize * 4) }
 
     /// 缓存键：同一文件可能被不同尺寸请求（列表 26pt 用 64px、对比视图用 1024px），
     /// 不区分尺寸就会让大图挤掉小图或反过来显示错尺寸。
@@ -36,24 +51,33 @@ final class ThumbnailCache {
     /// 同一路径的并发请求只会真正解码一次。
     func image(for path: String, asIcon: Bool = false, maxPixelSize: Int = 64,
                completion: @escaping (NSImage) -> Void) {
-        let cacheKey = key(path, asIcon: asIcon, maxPixelSize: maxPixelSize)
-        if let hit = cache.object(forKey: cacheKey as NSString) {
+        let cacheKey = key(path, asIcon: asIcon, maxPixelSize: maxPixelSize) as NSString
+        if let hit = cache.object(forKey: cacheKey) {
             completion(hit)
             return
         }
+        // 已知解不出来的键不再反复重试；视图保持占位，不会因此白跑一趟磁盘
+        if failures.object(forKey: cacheKey) != nil { return }
         lock.lock()
-        let duplicate = inFlight.contains(cacheKey)
-        if !duplicate { inFlight.insert(cacheKey) }
+        let duplicate = inFlight.contains(cacheKey as String)
+        if !duplicate { inFlight.insert(cacheKey as String) }
         lock.unlock()
         guard !duplicate else { return }
 
         queue.async { [weak self] in
+            guard let self else { return }
+            self.decodeGate.wait()
+            defer { self.decodeGate.signal() }
             let decoded = Self.decode(path: path, asIcon: asIcon, maxPixelSize: maxPixelSize)
-            self?.lock.lock()
-            self?.inFlight.remove(cacheKey)
-            self?.lock.unlock()
-            guard let decoded else { return }
-            self?.cache.setObject(decoded, forKey: cacheKey as NSString)
+            self.lock.lock()
+            self.inFlight.remove(cacheKey as String)
+            self.lock.unlock()
+            guard let decoded else {
+                self.failures.setObject(1, forKey: cacheKey)
+                return
+            }
+            self.cache.setObject(decoded, forKey: cacheKey,
+                                 cost: Self.cost(pixelSize: maxPixelSize))
             DispatchQueue.main.async { completion(decoded) }
         }
     }

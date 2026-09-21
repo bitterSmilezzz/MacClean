@@ -85,14 +85,23 @@ enum AppInventory {
     static func current(ttl: TimeInterval = 60, forceRefresh: Bool = false) -> Snapshot {
         if let override = snapshotOverride { return override }
         lock.lock()
-        defer { lock.unlock() }
-        if !forceRefresh, let cached, let at = cachedAt,
-           Date().timeIntervalSince(at) < ttl {
+        if !forceRefresh, let cached, let at = cachedAt, Date().timeIntervalSince(at) < ttl {
+            lock.unlock()
             return cached
         }
-        let built = build(roots: rootsOverride ?? defaultRoots)
+        let roots = rootsOverride ?? defaultRoots
+        lock.unlock()
+
+        // **建清单时不持锁**：它要枚举 4 个 Applications 根并读几百份 `Info.plist`
+        // （实测 13.6 ms）。`Scanner.scanAllCategories` 用 `concurrentPerform` 并发跑 6 个
+        // 分类，持锁会把并行扫描退化成"排队等锁"，缓存反而成了新的串行点。
+        // 两个线程同时构建只是多做一次 I/O，结果一致（后写覆盖先写）。
+        let built = build(roots: roots)
+
+        lock.lock()
         cached = built
         cachedAt = Date()
+        lock.unlock()
         return built
     }
 

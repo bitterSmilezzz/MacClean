@@ -171,6 +171,10 @@ struct UninstallerView: View {
             Text("App 卸载与残留排查")
                 .font(Typo.title)
                 .foregroundStyle(Ink.primary)
+                // 标题不参与换行：原先在默认窗口宽度下被 6 段模式切换挤成三行
+                // （"App / 卸载与 / 残留排查"）。让右侧分段控件可压缩，标题保持一行。
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
             Spacer()
 
@@ -183,7 +187,7 @@ struct UninstallerView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 640)
+            .frame(maxWidth: 640)
             .accessibilityIdentifier("uninstallerTabPicker")
 
             Spacer()
