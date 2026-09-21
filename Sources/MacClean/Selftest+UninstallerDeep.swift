@@ -170,5 +170,21 @@ extension Selftest {
 
             return true
         }
+
+        // v1.72 性能：`scanApps` 原先串行对每个 `.app` 做一次全量递归算体积，
+        // 本机 28 个第三方 App 冷启动实测 2013 ms——打开卸载器就卡在那。现改为并行。
+        //
+        // 注意这里**测不到那个 2013 ms**：自检同一轮里前面的套件已经把体积测过一遍，
+        // 会话缓存与跨会话指纹缓存都是热的（下面先清会话缓存，至少不让会话级缓存帮忙）。
+        // 所以这条只当"别退回串行 / 别变成 N 次重扫"的宽上界，
+        // 真正的冷启动收益要按干净环境实测，别拿这里的数字当结论。
+        check("卸载器：已安装 App 清单并行取体积（宽上界，冷启动耗时另测）") {
+            FileSystem.beginMeasurementSession()
+            let start = Date()
+            let apps = UninstallerScanner.scanApps()
+            let elapsed = Date().timeIntervalSince(start)
+            print("      scanApps：\(apps.count) 个第三方 App，\(String(format: "%.0f", elapsed * 1000)) ms（缓存已非冷态，仅供横向比对）")
+            return elapsed < 5.0
+        }
     }
 }

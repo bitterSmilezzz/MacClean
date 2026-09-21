@@ -454,39 +454,47 @@ extension Selftest {
         }
 
         // v1.72.0 性能回归锁：规则侧 `realPath` 改为随规则变更预解析之后，
-        // 查表必须是纯字符串比较。原先每条 path 规则都要解析一次文件系统，
-        // 而 `DuplicateScanner` 对**每个枚举到的文件**都查一次表 ——
+        // 查表必须是纯字符串比较。原先每条 path 规则都要解析一次文件系统，而
+        // `DuplicateScanner` 对**每个枚举到的文件**都查一次表 ——
         // 30 条规则 × 20 万文件实测会放大到约 63 秒。
-        // 断言用"两次运行的比值"而不是绝对毫秒数，避免机器负载波动导致假红。
-        check("白名单：30 条规则下批量查表为纯字符串比较（规则解析已预计算）") {
+        //
+        // 断言用**比值**：1 条规则 vs 30 条规则。旧实现每次查表要做 30 趟文件系统
+        // 解析，比值接近 30×；预解析后只剩字符串比较，比值应≈1。
+        // 用比值而不是绝对毫秒数，是因为绝对值会被同机负载放大成假红——
+        // 本机两个并行构建抢 CPU 时，同一份代码从 25 µs/次 抖到 60 µs/次 以上。
+        check("白名单：批量查表成本与规则条数解耦（规则解析已预计算）") {
             let wm = WhitelistManager.shared
             let saved = wm.rules
             defer {
                 wm.removeAllRules()
                 wm.rules = saved
             }
-            wm.removeAllRules()
-            for i in 0..<30 {
-                wm.addPathRule("/Users/Shared/macclean-bench-\(i)/sub", comment: "自检")
-            }
             let probe = "/Users/Shared/macclean-bench-probe/file.bin"
-            // 预热：让首次的规则索引构建不计入测量
-            _ = wm.isWhitelisted(path: probe)
-
             let iterations = 20_000
-            let start = Date()
-            var hits = 0
-            for _ in 0..<iterations {
-                if wm.isWhitelisted(path: probe) { hits += 1 }
+
+            func timeWithRules(_ count: Int) -> Double {
+                wm.removeAllRules()
+                for i in 0..<count {
+                    wm.addPathRule("/Users/Shared/macclean-bench-\(i)/sub", comment: "自检")
+                }
+                guard wm.isWhitelisted(path: probe) == false else { return -1 }   // 预热 + 自检索引构建
+                let t0 = Date()
+                var hits = 0
+                for _ in 0..<iterations {
+                    if wm.isWhitelisted(path: probe) { hits += 1 }
+                }
+                let elapsed = Date().timeIntervalSince(t0)
+                return hits == 0 ? elapsed : -1
             }
-            let elapsed = Date().timeIntervalSince(start)
-            let perCallMicros = elapsed / Double(iterations) * 1_000_000
-            print("      白名单查表：\(iterations) 次 / \(String(format: "%.0f", elapsed * 1000)) ms（\(String(format: "%.1f", perCallMicros)) µs/次，命中 \(hits)）")
-            // 实测 ~25 µs/次（本机、且有两个并行构建在抢 CPU）。剩下的开销来自
-            // **被删对象一侧**的实时 `realPath` —— 那是软链跳板封堵，不能缓存也不能省。
-            // 改造前是 ~300 µs/次（30 条规则各解析一遍），20 万文件即 63 秒。
-            // 阈值取 60 µs：既能挡住"退回逐规则解析"的回归，又不会因机器负载假红。
-            return hits == 0 && perCallMicros < 60
+
+            let oneRule = timeWithRules(1)
+            let thirtyRules = timeWithRules(30)
+            guard oneRule > 0, thirtyRules > 0 else { return false }
+            let ratio = thirtyRules / oneRule
+            print("      白名单查表 20k 次：1 条规则 \(String(format: "%.0f", oneRule * 1000)) ms / "
+                  + "30 条规则 \(String(format: "%.0f", thirtyRules * 1000)) ms（比值 \(String(format: "%.1f", ratio))×）")
+            // 旧实现比值≈30；预解析后规则条数几乎不影响耗时，留 4× 余量
+            return ratio < 4.0
         }
 
     }

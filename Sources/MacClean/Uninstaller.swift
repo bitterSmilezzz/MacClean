@@ -573,19 +573,29 @@ enum UninstallerScanner {
 
     /// 扫描已安装 App（排除系统 App；含 /Applications、~/Applications）
     static func scanApps() -> [InstalledApp] {
-        var apps: [InstalledApp] = []
+        var paths: [String] = []
         for dir in ["/Applications", "~/Applications"] {
-            let dirPath = CleanPaths.expand(dir)
-            for child in FileSystem.children(of: dirPath) where child.hasSuffix(".app") {
-                let name = (child as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
-                let plist = (child as NSString).appendingPathComponent("Contents/Info.plist")
-                let bundleID = (NSDictionary(contentsOfFile: plist)?["CFBundleIdentifier"] as? String)
-                let app = InstalledApp(name: name, path: child, bundleID: bundleID,
-                                       size: FileSystem.size(at: child))
-                if !app.isSystemApp { apps.append(app) }
-            }
+            paths += FileSystem.children(of: CleanPaths.expand(dir)).filter { $0.hasSuffix(".app") }
         }
-        return apps.sorted { $0.name.lowercased() < $1.name.lowercased() }
+
+        // 每个 `.app` 的体积都是一次全量递归。原先串行算，本机 28 个第三方 App 实测
+        // **2013 ms**——打开卸载器就卡在那里。各 App 之间互不依赖，改成并行；
+        // `FileSystem` 的测量缓存本身是加锁的，可以并发调用。
+        var results = [InstalledApp?](repeating: nil, count: paths.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: paths.count) { i in
+            let child = paths[i]
+            let name = (child as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
+            let plist = (child as NSString).appendingPathComponent("Contents/Info.plist")
+            let bundleID = (NSDictionary(contentsOfFile: plist)?["CFBundleIdentifier"] as? String)
+            let app = InstalledApp(name: name, path: child, bundleID: bundleID,
+                                   size: FileSystem.size(at: child))
+            guard !app.isSystemApp else { return }
+            lock.lock()
+            results[i] = app
+            lock.unlock()
+        }
+        return results.compactMap { $0 }.sorted { $0.name.lowercased() < $1.name.lowercased() }
     }
 
     /// 查找某 App 的全部关联文件（全维度 12 级深度匹配：Bundle ID + App 名称 + 厂商子目录 + 隐蔽系统存储）
