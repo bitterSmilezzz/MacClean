@@ -874,78 +874,115 @@ struct CategoryDetailView: View {
 
     private func itemList(filtered: [CleanItem],
                           grouped: [Recommendation.Kind: [CleanItem]]) -> some View {
-        ScrollView {
-            LazyVStack(spacing: Space.lg) {
-                // 按结论分组：可清理 / 使用中 / 需确认 / 不建议删除
-                ForEach(VerdictGroup.allCases, id: \.self) { group in
-                    let groupItems = grouped[group.kind] ?? []
-                    if !groupItems.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            // 分组标题
-                            HStack(spacing: 8) {
-                                Circle().fill(group.color).frame(width: 7, height: 7)
-                                Text(group.title)
-                                    .font(Typo.section)
-                                    .foregroundColor(Ink.secondary)
-                                Text(group.subtitle)
-                                    .font(Typo.caption)
-                                    .foregroundColor(Ink.tertiary)
-                                Text("\(groupItems.count) 项 · \(groupItems.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
-                                    .font(Font.mcNumeric(11))
-                                    .foregroundColor(Ink.tertiary)
-                                    .monospacedDigit()
-                                Spacer()
-                                // 组级快捷勾选：只有"可清理"组开放。
-                                // "使用中"不给一键勾选——那正是用户最容易被误伤的一档。
-                                if group.allowsBulkSelection {
-                                    Button(groupItems.allSatisfy(\.isSelected) ? "取消本组" : "勾选本组") {
-                                        let target = !groupItems.allSatisfy(\.isSelected)
-                                        for item in groupItems {
-                                            st.setSelected(item.id, target)
-                                        }
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .font(Typo.micro)
-                                    .foregroundColor(Accent.tint)
-                                }
-                            }
-                            .padding(.horizontal, 4)
+        // 摊平成"标题 / 行"一维序列，见 `FeedEntry` 的说明
+        let entries = Self.feedEntries(grouped: grouped)
 
-                            // 原生分组容器（组内各行由精细分割线隔开）
-                            let displayItems = group.kind == .safe ? groupItems.sorted { a, b in
-                                if a.recommendationScore.tier != b.recommendationScore.tier {
-                                    return a.recommendationScore.tier > b.recommendationScore.tier
-                                }
-                                return a.recommendationScore.totalScore > b.recommendationScore.totalScore
-                            } : groupItems
-
-                            VStack(spacing: 0) {
-                                ForEach(Array(displayItems.enumerated()), id: \.element.id) { index, item in
-                                    if index > 0 {
-                                        Divider()
-                                            .overlay(Surface.hairline.opacity(0.35))
-                                            .padding(.leading, 38)
-                                    }
-                                    ItemRowView(
-                                        item: item,
-                                        isSelected: item.isSelected,
-                                        onToggle: { selected in st.setSelected(item.id, selected) },
-                                        onAskAI: { app.ai.askAbout(item: item) },
-                                        isDisabled: app.ai.isLoading,
-                                        aiReview: app.aiReview.review(for: item),
-                                        onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) },
-                                        onAddExtensionToWhitelist: { ext in app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件") },
-                                        onPreview: { url in quickLookURL = url }
-                                    )
-                                }
-                            }
+        return ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    switch entry {
+                    case .header(let group, let items):
+                        groupHeader(group: group, items: items)
+                            .padding(.top, index == 0 ? 0 : Space.lg)
+                            .padding(.bottom, 6)
+                    case .row(let item, let showsDivider):
+                        // 每个 ForEach 子项只含"分割线 + 一行"两个视图，惰性不受影响；
+                        // 要避免的是"一个子项里装着整组 1400 行"。
+                        if showsDivider {
+                            Divider()
+                                .overlay(Surface.hairline.opacity(0.35))
+                                .padding(.leading, 38)
                         }
+                        ItemRowView(
+                            item: item,
+                            isSelected: item.isSelected,
+                            onToggle: { selected in st.setSelected(item.id, selected) },
+                            onAskAI: { app.ai.askAbout(item: item) },
+                            isDisabled: app.ai.isLoading,
+                            aiReview: app.aiReview.review(for: item),
+                            onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) },
+                            onAddExtensionToWhitelist: { ext in app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件") },
+                            onPreview: { url in quickLookURL = url }
+                        )
                     }
                 }
             }
             .padding(Space.md)
         }
         .background(Surface.window)
+    }
+
+    /// 分组标题（含组级快捷勾选）。
+    @ViewBuilder
+    private func groupHeader(group: VerdictGroup, items: [CleanItem]) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(group.color).frame(width: 7, height: 7)
+            Text(group.title)
+                .font(Typo.section)
+                .foregroundColor(Ink.secondary)
+            Text(group.subtitle)
+                .font(Typo.caption)
+                .foregroundColor(Ink.tertiary)
+            Text("\(items.count) 项 · \(items.reduce(Int64(0)) { $0 + $1.size }.byteStringCN)")
+                .font(Font.mcNumeric(11))
+                .foregroundColor(Ink.tertiary)
+                .monospacedDigit()
+            Spacer()
+            // 组级快捷勾选：只有"可清理"组开放。
+            // "使用中"不给一键勾选——那正是用户最容易被误伤的一档。
+            if group.allowsBulkSelection {
+                Button(items.allSatisfy(\.isSelected) ? "取消本组" : "勾选本组") {
+                    let target = !items.allSatisfy(\.isSelected)
+                    for item in items {
+                        st.setSelected(item.id, target)
+                    }
+                }
+                .buttonStyle(.borderless)
+                .font(Typo.micro)
+                .foregroundColor(Accent.tint)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    /// 列表的一行：要么是分组标题，要么是一个清理项。
+    private enum FeedEntry: Identifiable {
+        case header(VerdictGroup, [CleanItem])
+        case row(CleanItem, Bool)
+
+        var id: String {
+            switch self {
+            case .header(let group, _): return "header-\(group)"
+            case .row(let item, _): return "row-\(item.id.uuidString)"
+            }
+        }
+    }
+
+    /// 按结论分组：**分组标题与该组所有行**摊平成一维序列。
+    ///
+    /// 为什么非得摊平：`LazyVStack` 只按可见性惰性构建它的**直接子项**。原先每个组的
+    /// 行各自包在一个 `VStack` 里，整组才是"一个子项"——于是「需确认」组一滚进视口，
+    /// 本机实测的 1444 行（一行约 10 个视图）当场全部构造出来：切分类卡、内存随之涨，
+    /// 无障碍树大到外部读取直接超时。摊平后每个子项最多两个视图，滚到哪建到哪。
+    ///
+    /// 排序语义保持原样：只有"可清理"组按智能推荐加权排序，其余按扫描顺序。
+    private static func feedEntries(grouped: [Recommendation.Kind: [CleanItem]]) -> [FeedEntry] {
+        var entries: [FeedEntry] = []
+        for group in VerdictGroup.allCases {
+            let items = grouped[group.kind] ?? []
+            guard !items.isEmpty else { continue }
+            let ordered = group.kind == .safe ? items.sorted { a, b in
+                if a.recommendationScore.tier != b.recommendationScore.tier {
+                    return a.recommendationScore.tier > b.recommendationScore.tier
+                }
+                return a.recommendationScore.totalScore > b.recommendationScore.totalScore
+            } : items
+            entries.append(.header(group, items))
+            for (index, item) in ordered.enumerated() {
+                entries.append(.row(item, index > 0))
+            }
+        }
+        return entries
     }
 
     /// 结论分组。四档，与 `Recommendation.Kind` 一一对应——**不再有独立的"使用频率"分组**，
