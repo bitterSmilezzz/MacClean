@@ -11,6 +11,8 @@ public struct LoginItemCleanerCard: View {
     @State private var isScanning: Bool = false
     @State private var isCleaning: Bool = false
     @State private var bannerFeedback: String? = nil
+    @State private var bannerIsWarning: Bool = false
+    @State private var gateNotes: [String] = []
     @State private var showConfirmClean: Bool = false
     @State private var showOrphansOnly: Bool = true
 
@@ -42,6 +44,9 @@ public struct LoginItemCleanerCard: View {
             if let feedback = bannerFeedback {
                 bannerBar(feedback)
             }
+            if !gateNotes.isEmpty {
+                gateNotesPanel
+            }
 
             contentListContainer
             actionFooterBar
@@ -53,15 +58,15 @@ public struct LoginItemCleanerCard: View {
             loadData()
         }
         .confirmationDialog("确认清理选中的死链自启项", isPresented: $showConfirmClean, titleVisibility: .visible) {
-            Button("安全移入废纸篓并卸载", role: .destructive) {
+            Button("安全移入废纸篓（删除成功后才卸载）", role: .destructive) {
                 executeClean(toTrash: true)
             }
-            Button("彻底删除并卸载", role: .destructive) {
+            Button("彻底删除（删除成功后才卸载）", role: .destructive) {
                 executeClean(toTrash: false)
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将注销并移除选中的 \(selectedCount) 个死链自启项。这些启动项的目标应用程序均已被卸载，清理后可消除开机控制台报错。")
+            Text("将移除选中的 \(selectedCount) 个死链自启项（目标应用程序均已卸载）。顺序是先删除配置、删除成功的那一项才向 launchd 卸载；删除被拦或失败的项目**完全不碰 launchd**，因此从废纸篓还原后仍然是可用状态。")
         }
     }
 
@@ -118,6 +123,10 @@ public struct LoginItemCleanerCard: View {
             metricItem(title: "扫描总启动项", value: "\(summary.items.count)", detail: "三大自启目录", color: Ink.primary)
             Divider().frame(height: 28)
             metricItem(title: "可清理项", value: "\(selectedCount) 项", detail: "已勾选", color: selectedCount > 0 ? Accent.tint : Ink.secondary)
+            Divider().frame(height: 28)
+            metricItem(title: "证据不足", value: "\(summary.needsReviewCount)", detail: "需确认", color: summary.needsReviewCount > 0 ? Signal.caution : Ink.tertiary)
+            Divider().frame(height: 28)
+            metricItem(title: "root 托管", value: "\(summary.rootManagedCount)", detail: "本工具不提权", color: summary.rootManagedCount > 0 ? Signal.caution : Ink.tertiary)
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, Space.xs)
@@ -140,6 +149,38 @@ public struct LoginItemCleanerCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statusTag(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(Typo.micro)
+            .foregroundStyle(color)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+
+    /// 网关与被拦项的真实原因（含"该位置由 root 管理，本工具不提权"）
+    private var gateNotesPanel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(gateNotes.enumerated()), id: \.offset) { _, note in
+                HStack(alignment: .top, spacing: Space.xs) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Signal.caution)
+                    Text(note)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, 5)
+        .background(Surface.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
     // MARK: - 子组件：列表容器
@@ -187,13 +228,11 @@ public struct LoginItemCleanerCard: View {
                                         .foregroundStyle(Ink.primary)
 
                                     if item.issue.isOrphan {
-                                        Text("死链残留")
-                                            .font(Typo.micro)
-                                            .foregroundStyle(Signal.caution)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1)
-                                            .background(Signal.caution.opacity(0.12))
-                                            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                                        statusTag("死链残留", color: Signal.caution)
+                                    } else if item.issue == .appleManaged {
+                                        statusTag("Apple 官方", color: Signal.positive)
+                                    } else if item.issue == .needsReview {
+                                        statusTag("需确认", color: Signal.caution)
                                     }
 
                                     Text(item.kind.rawValue)
@@ -213,6 +252,13 @@ public struct LoginItemCleanerCard: View {
                                         .foregroundStyle(Ink.quaternary)
                                         .lineLimit(1)
                                         .truncationMode(.middle)
+                                }
+
+                                if let note = item.note {
+                                    Text(note)
+                                        .font(Typo.caption)
+                                        .foregroundStyle(Ink.tertiary)
+                                        .lineLimit(2)
                                 }
                             }
 
@@ -243,9 +289,9 @@ public struct LoginItemCleanerCard: View {
 
     private func bannerBar(_ message: String) -> some View {
         HStack(spacing: Space.xs) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: bannerIsWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 12))
-                .foregroundStyle(Signal.positive)
+                .foregroundStyle(bannerIsWarning ? Signal.caution : Signal.positive)
             Text(message)
                 .font(Typo.caption)
                 .foregroundStyle(Ink.primary)
@@ -253,7 +299,7 @@ public struct LoginItemCleanerCard: View {
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, 6)
-        .background(Signal.positive.opacity(0.12))
+        .background((bannerIsWarning ? Signal.caution : Signal.positive).opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
@@ -307,29 +353,56 @@ public struct LoginItemCleanerCard: View {
     private func toggleSelectAll() {
         let target = selectedCount != displayedItems.count
         for i in 0..<summary.items.count {
-            if showOrphansOnly {
-                if summary.items[i].issue.isOrphan {
-                    summary.items[i].isSelected = target
-                }
-            } else {
-                summary.items[i].isSelected = target
+            let showable = showOrphansOnly ? summary.items[i].issue.isOrphan : true
+            // 只勾"有死链判据且位置删得动"的项；root 托管位置预选等于给个注定失败的勾
+            guard showable, summary.items[i].issue.providesDeletionEvidence,
+                  LoginItemCleaner.governanceDomain(forPath: summary.items[i].path) == nil else {
+                if target { summary.items[i].isSelected = false }
+                continue
             }
+            summary.items[i].isSelected = target
         }
     }
 
     private func executeClean(toTrash: Bool) {
         isCleaning = true
+        gateNotes = []
         let targets = displayedItems.filter(\.isSelected)
 
         DispatchQueue.global(qos: .userInitiated).async {
             let res = LoginItemCleaner.shared.clean(items: targets, toTrash: toTrash)
+            let notes = LoginItemCleanerCard.explanationNotes(from: res)
+            let cleaned = res.cleanedCount
+            let blocked = res.errorCount
+
             DispatchQueue.main.async {
                 self.isCleaning = false
+                self.gateNotes = notes
+                self.bannerIsWarning = (cleaned == 0 && blocked > 0) || !notes.isEmpty
                 let mode = toTrash ? "移入废纸篓" : "彻底删除"
-                self.bannerFeedback = "已成功注销并\(mode) \(res.cleanedCount) 项死链自启动配置"
+                self.bannerFeedback = cleaned == 0
+                    ? "未删除任何自启配置（\(blocked) 项被拒或失败）：\(notes.joined(separator: "；"))"
+                    : "已\(mode) \(cleaned) 项死链自启动配置，并按需向 launchd 卸载"
+                    + (blocked > 0 ? "；另有 \(blocked) 项未通过网关" : "")
                 self.loadData()
                 self.onTriggerClean?()
             }
         }
+    }
+
+    /// 把网关拦截项与 launchd 卸载失败整理成给用户看的条目
+    static func explanationNotes(from outcome: LoginItemCleaner.LoginItemCleanOutcome) -> [String] {
+        var notes: [String] = []
+        for priv in outcome.needsPrivilege {
+            notes.append("「\(priv.name)」未删除：该位置由 root 管理，本工具不提权")
+        }
+        for rejection in outcome.gate.rejected where rejection.reason != .needsPrivilege {
+            notes.append("「\(rejection.name)」未删除：\(rejection.message)")
+        }
+        for failure in outcome.gate.failed {
+            notes.append("「\(failure.name)」删除失败：\(failure.message)（未向 launchd 卸载）")
+        }
+        notes.append(contentsOf: outcome.unloadWarnings)
+        return Array(notes.prefix(6))
     }
 }

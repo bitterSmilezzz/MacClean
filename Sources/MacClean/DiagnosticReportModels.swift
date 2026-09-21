@@ -47,6 +47,14 @@ public struct DiagnosticReportItem: Identifiable, Equatable, Codable {
     public var exceptionSummary: String?
     public var isOrphan: Bool
     public var isSelected: Bool
+    /// v1.74.0：判孤儿的证据源不可信（已安装清单读不到 / 报告头解析不出来）时的**降级态**。
+    /// 该状态既不算孤儿、也不算可删：不默选，卡片只能给"需确认"。
+    public var needsConfirmation: Bool
+    /// 归属位置：`/Library/Logs/DiagnosticReports` 由 root 管理，本工具不提权，
+    /// 只能定位并给出建议（删除必然得到 `needsPrivilege`）。
+    public var isGlobalScope: Bool
+    /// 展示给用户的补充说明（为什么需确认 / 为什么删不掉）
+    public var note: String?
 
     public init(id: String = UUID().uuidString,
                 fileName: String,
@@ -59,7 +67,10 @@ public struct DiagnosticReportItem: Identifiable, Equatable, Codable {
                 kind: DiagnosticReportKind = .crash,
                 exceptionSummary: String? = nil,
                 isOrphan: Bool = false,
-                isSelected: Bool = false) {
+                isSelected: Bool = false,
+                needsConfirmation: Bool = false,
+                isGlobalScope: Bool = false,
+                note: String? = nil) {
         self.id = id
         self.fileName = fileName
         self.path = path
@@ -72,6 +83,9 @@ public struct DiagnosticReportItem: Identifiable, Equatable, Codable {
         self.exceptionSummary = exceptionSummary
         self.isOrphan = isOrphan
         self.isSelected = isSelected
+        self.needsConfirmation = needsConfirmation
+        self.isGlobalScope = isGlobalScope
+        self.note = note
     }
 
     /// 是否为 30 天以上的陈旧报告
@@ -84,9 +98,18 @@ public struct DiagnosticReportItem: Identifiable, Equatable, Codable {
         ageDays <= 7
     }
 
+    /// 本条目走的治理域：全局报告目录用已登记域（会得到 `needsPrivilege`），
+    /// 用户域（`~/Library/Logs/DiagnosticReports`）走主目录护栏。
+    /// internal：`GovernanceDomain` 是内部类型，不能出现在 public 属性上。
+    var governanceDomain: GovernanceDomain? {
+        isGlobalScope ? .diagnosticReportsGlobal : nil
+    }
+
     /// 状态徽章文案
     public var statusBadgeText: String {
-        if isOrphan {
+        if needsConfirmation {
+            return "❓ 需确认"
+        } else if isOrphan {
             return "👻 已卸载孤儿"
         } else if isStale {
             return "🍂 陈旧 (\(ageDays)天)"
@@ -99,7 +122,9 @@ public struct DiagnosticReportItem: Identifiable, Equatable, Codable {
 
     /// 状态徽章色彩
     public var statusBadgeColor: Color {
-        if isOrphan {
+        if needsConfirmation {
+            return Signal.caution
+        } else if isOrphan {
             return Color.purple
         } else if isStale {
             return Signal.caution

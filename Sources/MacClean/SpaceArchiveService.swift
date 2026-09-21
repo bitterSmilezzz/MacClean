@@ -171,6 +171,16 @@ final class SpaceArchiveService {
 
         var didDelete = false
         if deleteOriginal {
+            // 压缩包按设计就比原件小，没法用体积比判"复制完整"，改判 ZIP 结构：
+            // 中途写失败会留下**没有中央目录**的残缺包，看着生成成功、实际一个文件
+            // 都解不出来。校验不过就保留原件，并清掉这个会误导用户的残缺包。
+            guard isZipStructurallyIntact(destZipPath, size: archiveSize) else {
+                try? fm.removeItem(atPath: destZipPath)
+                return ArchiveResult(
+                    success: false, archivePath: "", originalSize: originalSize,
+                    archiveSize: 0, savedBytes: 0, deletedOriginal: false,
+                    errorMessage: "压缩包校验未通过（缺少中央目录），原件已保留")
+            }
             do {
                 var resultingURL: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: expanded), resultingItemURL: &resultingURL)
@@ -245,6 +255,17 @@ final class SpaceArchiveService {
 
         var didDelete = false
         if deleteOriginal {
+            // 删原件之前先验复制完整性：`ditto` 退出码 0 不代表目标字节数对得上
+            // （外接卷在写入过程中被填满、中途拔盘都可能留下截断副本）。
+            // 跨卷的块大小不同会让"分配体积"有出入，因此用 95% 下限而不是严格相等，
+            // 宁可少删一次（用户可重试），也不能把原件删成一个残缺副本。
+            let copied = FileSystem.size(at: destPath)
+            guard copied > 0, copied >= sourceSize * 95 / 100 else {
+                return MigrationResult(
+                    success: false, destinationPath: destPath, migratedBytes: copied,
+                    deletedOriginal: false,
+                    errorMessage: "副本校验未通过（源 \(sourceSize.byteStringCN) / 副本 \(copied.byteStringCN)），原件已保留")
+            }
             do {
                 var resultingURL: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: expanded), resultingItemURL: &resultingURL)
@@ -313,25 +334,41 @@ final class SpaceArchiveService {
 
     // MARK: - 辅助与安全校验
 
-    private func isSafeToArchive(_ path: String) -> Bool {
-        // 禁止对系统只读/关键根目录进行归档打包
-        let dangerousRoots = [
-            "/", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc",
-            "/var", "/Volumes", "/Network", "/cores"
-        ]
-
-        let norm = (path as NSString).standardizingPath
-        for r in dangerousRoots {
-            if norm == r { return false }
+    /// ZIP 结构完整性核验：末尾是否含中央目录结束标记（EOCD，`PK\x05\x06`）。
+    private func isZipStructurallyIntact(_ path: String, size: Int64) -> Bool {
+        guard size > 22 else { return false }
+        // EOCD 定长 22 字节 + 最多 65535 字节注释，只需回看尾部这一小段
+        let tail = min(size, 65_557)
+        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toFileOffset: UInt64(size - tail))
+            guard let data = try handle.read(upToCount: Int(tail)), data.count >= 22 else { return false }
+            return data.range(of: Data([0x50, 0x4B, 0x05, 0x06]), options: [.backwards]) != nil
+        } catch {
+            return false
         }
+    }
 
-        // 禁止压缩用户主目录本身
-        if norm == NSHomeDirectory() { return false }
-
-        // 禁止压缩软链自身
-        if FileSystem.isSymlink(norm) { return false }
-
-        return true
+    /// 归档/迁移的强度必须等同**删除**护栏：这两条路径在复制成功后都会把原件
+    /// 移进废纸篓（`deleteOriginal` 默认 true）。
+    ///
+    /// 原实现只挡住几个危险根的**字面相等**（`norm == "/Library"`），于是
+    /// `/Library/Printers`、`~/Library/Mail`、`~/Library/Keychains` 全都放行；
+    /// 用的又是 `standardizingPath`（会依路径是否存在改变形态，`/private/var` 与
+    /// `/var` 匹配不上），也不查 G6 用户数据硬排除与用户白名单。
+    private func isSafeToArchive(_ path: String) -> Bool {
+        if FileSystem.isSymlink(path) { return false }
+        let real = FileSystem.normalizePath(FileSystem.realPath(path))
+        guard !real.isEmpty, real != "/" else { return false }
+        // G8 系统硬保护 + G6 用户数据硬排除 + 用户自定义白名单
+        if FileSystem.coreGuardVerdict(real) != nil { return false }
+        // 主目录与临时目录内：直接吃统一护栏（含"不许是家目录本身"）
+        if FileSystem.governanceVerdictWithinHome(path).isAllowed { return true }
+        // 外接卷：只允许卷下的具体条目（禁卷根），且已通过上面三道护栏
+        let volumes = FileSystem.normalizePath("/Volumes")
+        guard real.hasPrefix(volumes + "/") else { return false }
+        return real.dropFirst(volumes.count).split(separator: "/").count >= 2
     }
 
     private func generateUniqueZipPath(for sourcePath: String) -> String {

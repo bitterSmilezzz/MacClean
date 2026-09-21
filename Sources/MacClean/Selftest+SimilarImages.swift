@@ -152,5 +152,48 @@ extension Selftest {
             return true
         }
 
+        check("相似图片分桶：候选对与两两全比对完全等价（O(n²) 优化不漏判）") {
+            // 这条守住的是优化本身：分桶换掉全比对之后，**任何一对距离 ≤ 8 的哈希
+            // 仍必须被找到**。漏一对就是真实的相似图片没被归组，属于静默正确性回归。
+            let maxDistance = 8
+            var seed: UInt64 = 0x9E37_79B9_7F4A_7C15
+            func next() -> UInt64 {
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+                return seed
+            }
+            var hashes: [UInt64] = []
+            let base = next()
+            for bit in 0..<64 { hashes.append(base ^ (UInt64(1) << UInt64(bit))) }
+            // 扰动 8 位的成对样本：正好压在阈值边界上，最容易漏
+            for bit in 0..<64 { hashes.append((base ^ (UInt64(1) << UInt64(bit))) ^ (base >> 32)) }
+            for _ in 0..<200 { hashes.append(next()) }
+
+            func pairKey(_ i: Int, _ j: Int) -> String { "\(min(i, j))-\(max(i, j))" }
+            var brute = Set<String>()
+            for i in 0..<(hashes.count - 1) {
+                for j in (i + 1)..<hashes.count where ImageHash.isSimilar(hashes[i], hashes[j], maxDistance: maxDistance) {
+                    brute.insert(pairKey(i, j))
+                }
+            }
+            guard !brute.isEmpty else { return false }
+
+            var buckets: [UInt64: [Int]] = [:]
+            for (idx, hash) in hashes.enumerated() {
+                let keys = ImageHash.bandKeys(of: hash, bands: maxDistance + 1)
+                guard keys.count == maxDistance + 1, Set(keys).count == keys.count else { return false }
+                for key in keys { buckets[key, default: []].append(idx) }
+            }
+            var bucketed = Set<String>()
+            for indices in buckets.values where indices.count > 1 {
+                for a in 0..<(indices.count - 1) {
+                    for b in (a + 1)..<indices.count
+                    where ImageHash.isSimilar(hashes[indices[a]], hashes[indices[b]], maxDistance: maxDistance) {
+                        bucketed.insert(pairKey(indices[a], indices[b]))
+                    }
+                }
+            }
+            return bucketed == brute
+        }
+
     }
 }

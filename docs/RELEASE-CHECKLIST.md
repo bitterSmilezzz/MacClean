@@ -52,8 +52,23 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 ## 1. 代码与测试
 - [ ] `swift build` 无 error **且无 warning**（历史遗留的 4 条 warning 已清零：Scanner 的两处
       死代码、AIReviewState 的两处捕获语义不一致——不要再引入新的）
-- [ ] `.build/debug/MacClean --selftest` 全过（退出码 0，当前 115 项）
+- [ ] `.build/debug/MacClean --selftest` 全过（退出码 0）。自检会自动把历史/撤销快照/
+      增量指纹缓存重定向到临时目录（`MACCLEAN_STATE_DIR`，见 `MacCleanState`），
+      **不要**在未隔离的状态下从 `.app` 内跑自检——那会读写用户真实的清理历史与白名单
 - [ ] `.build/debug/MacClean --scan` 冒烟（扫描不崩溃、结果合理）
+- [ ] **新增治理模块时的四条硬要求（v1.72，G14–G16）**：
+      ① 删除必须走 `ResidueDeletionGate`，**禁止**出现 `hasPrefix("/System")` 式字符串护栏
+         与裸 `FileManager.removeItem`/`trashItem`；
+      ② 触及主目录之外的位置必须先在 `GovernanceDomain` 登记精确根（含最小层级），
+         未登记的域网关一律拒绝——这是故意的，不要为了跑通而放宽；
+      ③ 外部命令必须走 `SafeProcess`（超时 + 先排空管道 + 启动失败不 wait）；
+      ④ "已安装应用"必须取 `AppInventory.current()`，并在 `isComplete == false` 时
+         把孤儿结论降级为"需确认"。**不许**自己 `try? contentsOfDirectory` 一份清单，
+         读失败会得到空集，进而把全盘残存判成孤儿并默认勾选
+- [ ] 治理卡片必须如实呈现网关给的拒绝原因，特别是 `needsPrivilege`
+      （真机 `/Library/*` 多为 root 只读：`/Library/Printers`、`/Library/QuickLook`、
+      `/Library/Audio/Plug-Ins/HAL` 实测都不可写，只有 `/Library/Fonts` 因属
+      `drwxrwxr-t root:admin` 而 admin 可写）。**不许**把"没权限删"报成"已清理"
 - [ ] 改动涉及 UI 时：`--selftest` 中视图用例已覆盖或手动确认，并对照 `docs/DESIGN.md`
       检查是否引入了新的"AI 仪表盘"痕迹（图标彩色底板 / 卡片套卡片 / 多强调色 / emoji 文案）
 - [ ] **改动了并发/共享状态时**：跑一遍 Thread Sanitizer，必须零报告

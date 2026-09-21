@@ -36,13 +36,8 @@ enum HistoryStore {
 
     static var fileURL: URL {
         if let override = fileURLOverride { return override }
-        // 不用 `.first!`：这个 API 在正常环境下必定返回一个元素，但"环境不正常"
-        // （沙盒异常、容器损坏）时崩的是整个 App。退到 ~/Library/Application Support 即可。
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("MacClean", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("history.json")
+        // 落点统一由 MacCleanState 决定：自检/CI 设了 MACCLEAN_STATE_DIR 时不碰用户历史
+        return MacCleanState.stateDirectory.appendingPathComponent("history.json")
     }
 
     static func load() -> [CleanRecord] {

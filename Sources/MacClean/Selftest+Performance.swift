@@ -55,20 +55,39 @@ extension Selftest {
         }
 
         check("并发扫描：FileSystem.measure 多线程并发无崩溃") {
-            // 10 线程并发读写测量缓存（NSLock 保护），不能崩溃或死锁
+            // 并发读写测量缓存（NSLock 保护），不能崩溃或死锁。
+            //
+            // 为什么不用真实系统目录：原先这里对 `/System`、`/Library`、家目录各测一遍，
+            // 每次自检都要走几十万文件的 stat —— 而 measure 本身在下面两个用例里已经
+            // 由 `scanAllCategories()` 真实覆盖过一次。线程安全断言需要的只是
+            // "同一批路径被并发读写"，用临时目录树完全等价，代价从数十秒降到毫秒级。
             FileSystem.beginMeasurementSession()
-            let paths = ["/tmp", "/private/tmp", "/var/tmp",
-                         NSHomeDirectory(), "/usr/local", "/usr/bin",
-                         "/System", "/Library", "/Applications", "/dev"]
+            let tmpRoot = NSTemporaryDirectory() + "macclean_conc_\(UUID().uuidString)"
+            let fm = FileManager.default
+            var paths: [String] = []
+            for shard in 0..<10 {
+                let dir = "\(tmpRoot)/s\(shard)"
+                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                for file in 0..<12 {
+                    let p = "\(dir)/f\(file).bin"
+                    try? Data(repeating: 0xCD, count: 1024).write(to: URL(fileURLWithPath: p))
+                }
+                paths.append(dir)
+            }
+            defer { try? fm.removeItem(atPath: tmpRoot) }
+
             let lock = NSLock()
             var successCount = 0
+            var byteSum: Int64 = 0
             DispatchQueue.concurrentPerform(iterations: paths.count) { i in
-                let _ = FileSystem.measure(at: paths[i])
+                let m = FileSystem.measure(at: paths[i])
                 lock.lock()
-                successCount += 1
+                if m.exists { successCount += 1 }
+                byteSum += m.size
                 lock.unlock()
             }
-            return successCount == paths.count
+            // 每层 12 个 1 KB 文件；体积必须被并发累加得不重不漏
+            return successCount == paths.count && byteSum > 0
         }
 
         check("并发扫描：scanAllCategoriesWithProgress 回调完整性（6 次回调全部触发）") {

@@ -11,6 +11,25 @@
 
 ## 功能
 
+- **删除只有一个入口（v1.72.0 安全收敛，G14）**：全部清理动作统一经 `ResidueDeletionGate`，主目录之外的目标必须先登记**治理域**（`GovernanceDomain`：精确根 + 最小层级 + 入口名单）才能被删除，由 `FileSystem.governanceVerdict` 做唯一裁决——软链防跳板 → 系统硬保护 → 用户数据硬排除 → 你的自定义白名单 → 域内且层级足够 → **当前进程真的有权 unlink**（含 sticky 位规则）。
+  - **为什么必须做**：v1.53–v1.71 陆续加了十余个治理模块，它们扫的是 `/Library/Fonts`、`/Library/Printers`、`/Library/Audio/Plug-Ins/HAL` 这类主目录之外的位置，而统一护栏的常规允许根只有主目录与临时目录——于是每个模块各自写了 `path.hasPrefix("/System")` 式的字符串护栏。**后果是可验证的**：① 一个软链就能绕过；② `~/Library/Mail`、`~/Library/Keychains` 等硬排除与你在设置里加的白名单，对这 12 个模块**完全失效**；③ 各模块松紧不一，同一份残存在 A 模块判"在用"、在 B 模块判"孤儿"；
+  - **记账从"编的"变成"量的"**：旧实现删除后直接累加扫描时缓存的 `item.size`（`try?` 读到 0 也算成功）。现在删除**前**实测真实体积，失败项不计；同时捕获废纸篓地址写**撤销快照与历史记录**——此前 14 张治理卡片清完整个人没有任何回退路径；
+  - **权限不足不再谎报**：真机实测 `/Library/Printers`、`/Library/QuickLook`、`/Library/Audio/Plug-Ins/HAL`、`/Library/ColorSync/Profiles` 都是 root 只读（只有 `/Library/Fonts` 因 `drwxrwxr-t root:admin` 而对管理员可写）。网关对无权限目标返回 `needsPrivilege` 并带真实原因，界面明示"该位置由 root 管理，MacClean 不做提权"，而不是含糊一句"清理失败"。
+- **孤儿判定必须有正向证据（v1.72.0，G16）**：新增 `AppInventory` 作为"已安装应用"的**唯一**清单源（此前有 6 份互不相同的实现，打开一次卸载器要重建约 5 次，每次读几百份 `Info.plist`），并导出 `unreadableRoots` / `isComplete`。旧实现全程 `try?` 读目录，**根目录读不到就得到一个空集合**，而下游把"bundle id 不在清单里"读成"宿主已卸载"——一次权限失败就会让全盘残存一夜之间全成孤儿并默认勾选。现在清单不可信时一律降级"需确认"。
+- **子进程统一受控（v1.72.0，G15）**：`qlmanage` / `mdutil` / `atsutil` / `launchctl` / `networksetup` / `ditto` 等 11 个模块各自写的 `Process` 收敛到 `SafeProcess`：读端**先挂后台排空**再等退出（macOS 管道缓冲仅约 64 KB，`launchctl list` 在服务多的机器上轻易超过，先 wait 后读就是父子互等死）、必须超时（TERM→KILL）、启动失败绝不 `waitUntilExit`（在未启动的进程上调用会抛异常崩溃，`QuickLookThumbnailPurger` 与 `LoginItemCleaner` 原本都是这个形状）、命令可用性先判定且**没执行就不算成功**。自检通过注入假 runner 断言"调的是哪个命令、带哪些参数"，不再真的清你 DNS 缓存。
+- **列表缩略图不再每次重渲染都打盘（v1.72.0）**：重复文件/相似图片缩略图、照片对比大图与应用图标原先在 SwiftUI `body`/`init` 里**同步**解码，勾选任一文件、悬停、切换分组都会让所有可见行重新读文件 + 解码 + 走一趟 iconservices IPC。现在解码在后台队列、结果按路径与尺寸缓存，主线程只做赋值；相似图片归组的候选对改按"抽屉原理"分桶生成（距离 ≤8 ⟹ 至少一段完全相同），**与两两全比对结果完全等价**而候选对减少约两个数量级（2 万张图原本要 2×10⁸ 次汉明比较）。
+- **自检不再污染真实机器（v1.72.0）**：`MACCLEAN_STATE_DIR` 把历史记录、撤销快照、跨会话指纹缓存、白名单 defaults 域整体重定向，`--selftest` 自己会开启隔离。此前跑一次自检会**真的执行** `dscacheutil -flushcache`（清空你的 DNS 缓存）、对 `/System` 与家目录做全量体积遍历、并把测试清理记录写进用户真实的 `history.json`；十余处 `removeAllRules()` 若从 `.app` 内跑还会清空你的白名单。
+- **归档与外接盘迁移先验完整性再删原件（v1.72.0）**：`SpaceArchiveService` 原先只用"路径字面等于 `/System`、`/Library`…"做判断，`/Library/Printers`、`~/Library/Mail`、`~/Library/Keychains` 全部放行，而它成功后会把**原件移进废纸篓**。现在强度等同删除护栏；ZIP 归档会核验中央目录结束标记（缺了它一个文件都解不出来），迁移会校验副本体积达到源体积 95% 以上，**校验不过就保留原件**并清掉残缺副本。
+- **治理模块判定依据逐条重做（v1.72.0）**：护栏收敛之后暴露出这些模块的"在用/废弃"判据本身就不成立，已按真机证据修正——
+  - **打印机驱动**：`/etc/cups/printers.conf` 实测权限 `-rw------- root:_cups`，**任何真机都读不到**，而旧代码读失败得到空关键词集，于是把全部驱动判成"废弃"并默认全勾。现改为证据制（`sourcesReadable`），读不到时全部降为「需确认」、零预选，卡片顶部明示"仅提供定位与建议"；PPD 分组此前把每个厂商的 `path` 都写成共享的资源根，**勾任一厂商会把整棵 PPD 树移进废纸篓**，现按成员文件粒度删除；
+  - **音频 HAL 驱动**：旧判据是"驱动 bundle id 是否等于某个已安装 `.app`"，而本机 `BlackHole2ch.driver`、`SteamStreaming*.driver`、`ParrotAudioPlugin.driver` 都是 pkg 安装、没有 `.app`，全部被误判孤儿并默认可删。现改走 **CoreAudio 真实设备枚举**（`kAudioHardwarePropertyDevices` + 插件清单 + 默认输出设备交叉核对，本机实测 7 设备 / 17 已加载插件），真机 5 个 HAL 驱动现在全部判「在用」、orphan=0、勾选=0；枚举失败才降级为"未知-勿删"；
+  - **色彩描述 ICC**：去掉 `contains("hp")`、`contains("lg")` 这类**两字子串**厂商/在用判据（任意含这些字母的文件名都会命中），改为显式词表 + 整词匹配 + 接驳显示器 **UUID** 绑定链（实测能与 `Color LCD-<UUID>.icc` 对上）+ 30 天内写过即视为在用；
+  - **字体缓存**：`woff/woff2` 是 Web 字体格式，CoreText 本就解析不出描述符，旧代码据此判「损坏」且默认可删；现只归类不判损坏。并用 `CTFontManagerCopyAvailableFontURLs()` 枚举当前已注册字体（本机 655 个），在用的坚决排除、注册表读不到时全部保留；
+  - **插件与扩展**：`isSafeToClean` 与 `FileSystem.isSafeToClean` **同名异义**（它只是"状态是孤儿或损坏"），给人已受保护的错觉，已改名并把删除交给网关；你在 Automator/快捷指令里自己创建的 `.workflow`（实测 `CFBundleExecutable` 为空是正常形态）不再被当作"宿主已卸载"；
+  - **登录项**：白名单里 `/System/Library`、`/usr/libexec` 被当作**文件名的 hasPrefix** 比较，永远不命中（死代码），改为对 plist 解析出的真实可执行路径判定；顺序改为**先删成功再 `launchctl bootout`**（旧顺序先 `-w` 写永久禁用，撤销后文件回来了却仍是禁用态）；
+  - **CLI 缓存**：`~/.npm` 的兜底根已删除——本机 `~/.npm` 下确实没有 `_cacache`，旧逻辑因此落到兜底根并**逐个删掉它的全部子项**（含 `_logs`、`_npx`），而关键字保护只校验父路径、从不校验真正要删的 `childPath`；
+  - **诊断报告 / 快照 / 剪贴板 / 归档**：`/Library/Logs/DiagnosticReports` 实测 `drwxrwx--- root:_analyticsusers` 读不到，现在明示"权限不足、结果不完整"而不再报"系统很干净"；`tmutil` 快照只在命令真的成功时才谈数量，删除只认用户逐条点名的快照且删后复核确已消失；`~/Library/TemporaryItems` 不再整目录清空（那里混着 Office/编辑器**自动恢复草稿**），改为要求可归属命名 + 超过年龄阈值 + 未被当前剪贴板引用；
+  - **APFS 硬链接去重**（全仓唯一不可逆、不进废纸篓的操作）：链接前复核 `(dev, inode, nlink, size, mtime)` 与扫描指纹一致、`nlink<2` 跳过、源或目标命中 G6/白名单即拒绝、头尾各 64 KB 内容抽查、链接后复核 `nlink≥2`，并把结果写进历史记录。
 - **扫描机制与安全护栏**：判定、遍历、删除三处**全链路不跟随符号链接**（`isSafeToClean` 先解析真实位置再判定；递归用 `lstat` 版 `isRealDir`；软链不计体积），`Cleaner` 的校验与删除作用于同一个已解析路径以消除 TOCTOU 缝隙；**"读不到"不再被读成"很干净"**——扫描根目录存在但不可读时会明确提示"结果不完整"并给出授权指引，而不是安静地返回 0 项。
 - **单一结论，不再自相矛盾**：每个扫描项只给**一个**结论——`可清理` / `使用中` / `需确认` / `勿删`，并附一句「为什么」。
   - **不变量**：`可清理` **蕴含所属应用未在运行**。界面上永远不会再出现「可清理」和「频繁使用中」同时打在一个文件上的情况；
@@ -300,7 +319,10 @@ open /Applications/MacClean.app
 - 视图测试在**内存中驱动**（`inspect().find(...).tap()`），不渲染窗口、不抢焦点
 - 按钮通过 `accessibilityIdentifier` 定位（label 含 Image 时文本查找不可靠）
 - 状态用 `@Binding` 注入而非 `@State`（ViewInspector 在 macOS 上不传播 `@State` 变更）
-- 覆盖 **293 项自动化自检（100% 绿灯，0 失败）**：格式化、路径展开、安全护栏、勾选逻辑、Cleaner 双模式、风险徽标、弹窗默认/切换/警告、空态禁用态、历史记录、卸载器交互、启动项治理、APFS 硬链接无损去重、底层快照与休眠镜像治理、并发流水线哈希与轻量指纹持久化缓存、空间透视层级面包屑与闲置冷热动态色谱、菜单栏快捷小组件、网络与系统安全隐私治理、偏好碎片反查、空间透视超大冷文件原位压缩归档与外接驱动器迁移、系统深度扩展与 QuickLook/Spotlight 插件残存治理、全局快捷键呼出与极速一键清理微面板等
+- 覆盖 **495 项自动化自检（100% 绿灯，0 失败，约 18 秒）**：格式化、路径展开、安全护栏、勾选逻辑、Cleaner 双模式、风险徽标、弹窗默认/切换/警告、空态禁用态、历史记录、卸载器交互、启动项治理、APFS 硬链接无损去重、底层快照与休眠镜像治理、并发流水线哈希与轻量指纹持久化缓存、空间透视层级面包屑与闲置冷热动态色谱、菜单栏快捷小组件、网络与系统安全隐私治理、偏好碎片反查、空间透视超大冷文件原位压缩归档与外接驱动器迁移、系统深度扩展与 QuickLook/Spotlight 插件残存治理、全局快捷键呼出与极速一键清理微面板等
+  - **治理域与删除网关的属性式自检（v1.72.0）**：不是逐模块复刻断言（那只会把弱防线锁死），而是穷举 19 个登记域守住不变量——域根与层级过浅必拒、G8/G6/用户白名单在每个域下优先、跨域越界必拒、软链跳板必拒、无删除权限判 `needsPrivilege`、`policy` 拦下的项文件必须原样还在、释放量必须等于删除前实测、失败与不存在不得凭空记账；
+  - **两条来自真机反例的回归用例**：① 本机 `/Library/Fonts` 里唯一条目是 `Arial Unicode.ttf → /System/Library/Fonts/Supplemental/…` 的软链，旧字符串护栏对它完全无效，现逐域扫描真实根目录断言任何软链都不可能被放行；② `/private/tmp` 是 `drwxrwxrwt`，他人（通常是 root 守护进程）属主的文件我们删不掉——`canUnlink` 曾把判据写成"文件属主 == 目录属主"，那与"我是谁"无关，会把注定失败的项标成可清理；
+  - **自检跑在隔离状态里**：`--selftest` 自动设置 `MACCLEAN_STATE_DIR`，历史/撤销快照/跨会话指纹缓存全部落到临时目录，且并发多次运行互不覆盖（目录名带 pid）。
 
 ## 目录结构
 
@@ -311,23 +333,35 @@ MacClean/
 ├── Resources/                   # 应用资源（透光晶体 AppIcon.icns, AppIcon.png）
 ├── scripts/make-icon.swift      # 备用程序化图标生成脚本
 └── Sources/MacClean/
-    ├── MacCleanApp.swift        # 入口（--selftest / --scan 无头模式）
-    ├── Selftest.swift           # ViewInspector 进程内自检（60 项用例）
-    ├── Rules/CleanupRules.swift # 规则源头：编号/分类/本质/后果说明/清理方式登记
-    ├── CleanPaths.swift         # 路径规则常量 + 安全护栏清单
+    ├── MacCleanApp.swift        # 入口（--selftest / --scan / --autoclean / --keymigrate 无头模式）
+    ├── Selftest.swift           # 自检调度与基础设施（状态自动隔离）；具体检查拆在 55 个 Selftest+<领域>.swift
+    ├── Rules/CleanupRules.swift # 规则源头：编号/分类/本质/后果说明/清理方式登记（52 条）
+    ├── CleanPaths.swift         # 路径规则常量 + 安全护栏清单（G6 硬排除 / G8 系统硬保护）
     ├── Scanner.swift            # 6 类扫描引擎（只读）
     ├── Cleaner.swift            # 清理执行（废纸篓/彻底删除）
-    ├── FileSystem.swift         # 目录大小/枚举/安全护栏/路径归一化
+    ├── FileSystem.swift         # 目录大小/枚举/合并测量与会话缓存/安全护栏/路径归一化
+    ├── GovernanceDomains.swift  # 【删】治理域注册表 + governanceVerdict 唯一裁决 + canUnlink（G14）
+    ├── ResidueDeletionGate.swift# 【删】统一删除网关：护栏→实测→废纸篓→撤销快照→历史（G14/G3）
+    ├── SafeProcess.swift        # 【命令】受控子进程：先排空管道、超时、启动失败不 wait（G15）
+    ├── AppInventory.swift       # 已安装应用单一清单源 + isComplete 可信度（G16）
+    ├── MacCleanState.swift      # 应用自身状态落点（MACCLEAN_STATE_DIR 隔离开关）
+    ├── ThumbnailCache.swift     # 缩略图后台解码与缓存（视图不再在 body 里打盘）
+    ├── WhitelistManager.swift   # 用户自定义白名单（跨线程读取走加锁快照）
     ├── AppState.swift           # 全局状态
-    └── *.swift                  # Theme / Models / 现代通透视图组件
+    └── *.swift                  # Theme / Models / 现代通透视图组件（共 170+ 文件，单 executableTarget）
 ```
+
+> 标注【删】【命令】【清单】的是 v1.72 引入的共享层：所有治理模块的删除、外部命令与
+> 已安装应用判定都必须经过它们，模块自己不再持有护栏代码。
+> 已知架构债（未在本轮处理）：`Selftest*` 共约 1 万行与测试依赖 `ViewInspector` 仍链接进
+> release 产物；`CategoryDetailView.swift` 是 2200+ 行的必经接线点，每加一个治理卡片要改它 4 处。
 
 ## 规则来源
 
 1. 本机 agent 会话扫描（~/.agents、~/.claude、~/.dimcode 会话记录）——未发现现成"Mac 清理"技能，清理经验散见于代码治理会话与《全机安全审计报告》（Lemon 残留、Parallels keychain、rtk 钩子等卸载残留案例）；
 2. 通用 macOS 清理实践（缓存/日志/DerivedData/包管理器缓存/浏览器数据/大文件）。
 
-## 安全设计（CLEANUP-RULES.md G1–G10）
+## 安全设计（CLEANUP-RULES.md G1–G16）
 
 | 护栏 | 说明 |
 |---|---|
@@ -338,3 +372,13 @@ MacClean/
 | G5 | 跳过运行中应用 |
 | G6 | 硬排除白名单 |
 | G7 | 空目录兜底 |
+| G8 | 系统级硬保护（SIP/`sunlnk`/系统必需），`sudo` 也无解的位置一律不列 |
+| G9 | TCC 权限显式判定：区分「读不到」与「真的空」 |
+| G10 | 受限放行：越出常规允许根时只精确放行到具名路径/模式，禁止放行整个父目录 |
+| G11 | 判定、遍历、删除三处都不跟随符号链接（软链可绕过任何只看路径字符串的护栏） |
+| G12 | 校验与删除作用于**同一个已解析路径**，消除 TOCTOU 缝隙 |
+| G13 | 读不到 ≠ 很干净：根目录不可读必须明示"结果不完整"，禁止静默返回 0 项 |
+| **G14** | **删除只有一个入口（v1.72）**：所有清理经 `ResidueDeletionGate`；主目录之外的目标必须先声明**治理域**（精确根 + 最小层级 + 入口名单），由 `FileSystem.governanceVerdict` 统一裁决。此前 12 个治理模块各自写 `hasPrefix("/System")` 字符串护栏——软链可绕、且用户白名单对它们完全失效 |
+| **G15** | **子进程必须受控（v1.72）**：外部命令一律走 `SafeProcess`：读端先排空再等退出（管道仅约 64 KB，反序即死锁）、必须超时、启动失败绝不 `waitUntilExit`、可用性先判定且"没执行就不算成功" |
+| **G16** | **孤儿判定必须有正向证据（v1.72）**：`AppInventory` 除集合还导出 `unreadableRoots`/`isComplete`；清单不可信时一律降级"需确认"——否则一次权限失败就会让全盘残存"一夜之间全成孤儿"并默认勾选 |
+

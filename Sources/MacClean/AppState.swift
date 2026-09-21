@@ -203,7 +203,10 @@ final class AppState: ObservableObject {
     ///   缓存复用彻底失效（实测让整轮扫描慢一倍）。会话边界由 `scanAll` 统一划定一次。
     private func scan(_ cat: CleanCategory, resetMeasurementSession: Bool) {
         let st = state(for: cat)
-        guard !st.isScanning else { return }
+        // 清理进行中不允许起扫描：后台扫描回包会整体覆盖 `st.items`，
+        // 与并行的 `cleanSelected` 互不排斥时会出现"已删项在界面上复活"、
+        // 释放量记账错乱。两个方向都要挡（见 cleanSelected 里的对称守卫）。
+        guard !st.isScanning, !isCleaning else { return }
         st.isScanning = true
         st.lastError = nil
         // 重新扫描后该分类旧 AI 结论失效（item id 变化）——仅清当前分类的筛查结果
@@ -236,7 +239,7 @@ final class AppState: ObservableObject {
     /// 实现真正的多核并发扫描。每个分类完成后立即刷新对应 UI（渐进式），
     /// 而不是等全部做完才一次性显示。同时记录整轮扫描耗时供 Dashboard 展示。
     func scanAll() {
-        guard !isScanningAll else { return }
+        guard !isScanningAll, !isCleaning else { return }
 
         // 重置进度与增量缓存统计
         isScanningAll = true
@@ -394,6 +397,12 @@ final class AppState: ObservableObject {
         let st = state(for: cat)
         let selected = st.selectedItems
         guard !selected.isEmpty, !isCleaning else { return }
+        // 反向守卫（与 scan 侧对称）：扫描在飞时不要开始清理，
+        // 否则扫描回包会把刚删掉的项重新写回 `st.items`。
+        guard !categories.contains(where: { $0.isScanning }) else {
+            st.lastError = "扫描尚未结束，请稍后再清理"
+            return
+        }
         // M3：清理前实时校验运行态——扫描后新启动的浏览器项要跳过
         // LOW-1（终检）：部分跳过时记录被跳项，完成回调取消勾选并提示
         let runningBlocked = selected.filter { Self.browserNowRunning($0) }
@@ -482,6 +491,10 @@ final class AppState: ObservableObject {
     func cleanSelectedAcrossCategories(permanently: Bool) {
         let allSelected = categories.flatMap { $0.selectedItems }
         guard !allSelected.isEmpty, !isCleaning else { return }
+        guard !categories.contains(where: { $0.isScanning }) else {
+            lastCleanSummary = "扫描尚未结束，请稍后再清理"
+            return
+        }
         // M3：跨分类同样实时过滤运行态浏览器项 + 快照本次清理 id
         // LOW-1（终检）：记录被跳项，完成回调取消勾选并提示
         let runningBlocked = allSelected.filter { Self.browserNowRunning($0) }

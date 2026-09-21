@@ -23,7 +23,8 @@ public struct AudioHALOptimizerCard: View {
 
     private var displayedItems: [AudioPluginItem] {
         if showOrphansOnly {
-            return summary.items.filter { $0.status.isOrphanOrCorrupted }
+            // 「证据不足」项照样列出（不可删），用户要能看到"为什么没被判成残留"
+            return summary.items.filter { $0.status.isOrphanOrCorrupted || $0.status == .unknownNeedsConfirmation }
         }
         return summary.items
     }
@@ -39,6 +40,7 @@ public struct AudioHALOptimizerCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             topHeader
+            evidenceBanner
             metricsSummaryBar
 
             if let feedback = bannerFeedback {
@@ -63,7 +65,8 @@ public struct AudioHALOptimizerCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清理选中的 \(selectedCount) 项音频驱动（\(selectedSize.byteStringCN)）。Apple 官方核心驱动与在用音频驱动已受严格保护，绝不误删。")
+            Text("将清理选中的 \(selectedCount) 项音频驱动（\(selectedSize.byteStringCN)）。"
+                 + "Apple 官方核心、coreaudiod 已加载的驱动与宿主 App 仍在装的驱动都受保护；证据不足的项不会被勾选。")
         }
         .confirmationDialog("确认重启系统音频守护进程 (coreaudiod)", isPresented: $showConfirmRestart, titleVisibility: .visible) {
             Button("立即重启音频服务", role: .none) {
@@ -72,6 +75,38 @@ public struct AudioHALOptimizerCard: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("该操作将终止并重新拉起 coreaudiod 守护进程，使音频硬件堆栈重新扫描并加载驱动。正在播放的音频可能会中断 1-2 秒。")
+        }
+    }
+
+    // MARK: - 证据可信度横幅
+
+    /// CoreAudio 枚举失败时必须把"本模块只提供定位与建议"讲清楚，
+    /// 而不是悄悄把所有第三方驱动当成可删残留。
+    @ViewBuilder
+    private var evidenceBanner: some View {
+        if !summary.evidenceReadable {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Signal.caution)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("无法读全系统音频设备与已加载驱动（证据源：\(summary.evidenceSource)）")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.primary)
+                    if let failure = summary.evidenceFailure {
+                        Text(failure)
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+                    Text("\(summary.needsConfirmationCount) 项因证据不足未判定为残留，全部未勾选；本模块仅提供定位与建议。")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                }
+                Spacer()
+            }
+            .padding(8)
+            .background(Signal.caution.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
         }
     }
 
@@ -127,6 +162,8 @@ public struct AudioHALOptimizerCard: View {
             metricBlock(title: "孤儿/损坏驱动", value: "\(summary.orphanSize.byteStringCN) (\(summary.orphanCount)项)", color: Accent.tint)
             Divider().frame(height: 20)
             metricBlock(title: "活跃受保护项", value: "\(summary.activeCount) 项", color: Signal.positive)
+            Divider().frame(height: 20)
+            metricBlock(title: "证据不足需确认", value: "\(summary.needsConfirmationCount) 项", color: summary.needsConfirmationCount > 0 ? Signal.caution : Ink.tertiary)
             Divider().frame(height: 20)
             metricBlock(title: "已选待释放", value: selectedSize.byteStringCN, color: selectedSize > 0 ? Signal.caution : Ink.tertiary)
             Spacer()
@@ -213,7 +250,7 @@ public struct AudioHALOptimizerCard: View {
             } else {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 12))
-                    .foregroundStyle(Signal.positive)
+                    .foregroundStyle(item.status == .unknownNeedsConfirmation ? Signal.caution : Signal.positive)
                     .frame(width: 16)
             }
 
@@ -243,6 +280,13 @@ public struct AudioHALOptimizerCard: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+
+                if let note = item.evidenceNote, !note.isEmpty {
+                    Text(note)
+                        .font(Typo.micro)
+                        .foregroundStyle(item.status == .unknownNeedsConfirmation ? Signal.caution : Ink.quaternary)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
@@ -251,9 +295,19 @@ public struct AudioHALOptimizerCard: View {
                 Text(item.size.byteStringCN)
                     .font(Typo.rowStrong)
                     .foregroundStyle(Ink.primary)
-                Text("\(item.fileCount) 个文件")
-                    .font(Typo.micro)
-                    .foregroundStyle(Ink.tertiary)
+                HStack(spacing: 4) {
+                    Text("\(item.fileCount) 个文件")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                    Button {
+                        NSWorkspace.shared.selectFile(item.path, inFileViewerRootedAtPath: "")
+                    } label: {
+                        Image(systemName: "folder")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("在访达中显示（无删除权限时的定位手段）")
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -273,6 +327,8 @@ public struct AudioHALOptimizerCard: View {
                 return ("损坏驱动", Signal.critical.opacity(0.12), Signal.critical)
             case .appleOfficial:
                 return ("Apple 官方核心", Color.blue.opacity(0.12), Color.blue)
+            case .unknownNeedsConfirmation:
+                return ("需确认", Ink.tertiary.opacity(0.16), Ink.secondary)
             }
         }()
 
@@ -371,12 +427,34 @@ public struct AudioHALOptimizerCard: View {
         guard !isCleaning else { return }
         isCleaning = true
         let targets = summary.items.filter { $0.isSelected && $0.status.isOrphanOrCorrupted }
+        let protectedSkipped = summary.items.filter { $0.isSelected && !$0.status.isOrphanOrCorrupted }.count
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = AudioHALScanner.shared.clean(items: targets, toTrash: toTrash)
+            let outcome = AudioHALScanner.shared.clean(items: targets, toTrash: toTrash)
+            var lines: [String] = [outcome.summary]
+            if protectedSkipped > 0 {
+                lines.append("\(protectedSkipped) 项受保护未提交删除")
+            }
+            if !outcome.needsPrivilege.isEmpty {
+                let first = outcome.needsPrivilege.first?.message
+                    ?? GovernanceVerdict.rejected(.needsPrivilege).message
+                lines.append("\(outcome.needsPrivilege.count) 项无法删除：\(first)"
+                    + " 需要清理时请用行尾的访达按钮定位后在终端手动处理（本工具不提权）。")
+            }
+            let others = outcome.rejected.filter { $0.reason != .needsPrivilege }
+            if !others.isEmpty {
+                lines.append("\(others.count) 项被安全护栏拦下（\(others.first?.message ?? "")）")
+            }
+            if !outcome.failed.isEmpty {
+                lines.append("\(outcome.failed.count) 项删除失败（\(outcome.failed.first?.message ?? "")）")
+            }
+            // 真删掉了驱动才提示重启 coreaudiod
+            if outcome.cleanedCount > 0 {
+                lines.append("如需让音频堆栈立即重载，请点「重启音频服务 (coreaudiod)」。")
+            }
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "成功清理 \(result.cleanedCount) 项音频驱动，释放 \(result.freedBytes.byteStringCN)" + (result.errorCount > 0 ? "（\(result.errorCount) 项受保护未清理）" : "")
+                self.bannerFeedback = lines.joined(separator: "；")
                 self.loadData()
                 self.onTriggerClean?()
             }
@@ -390,7 +468,8 @@ public struct AudioHALOptimizerCard: View {
             let result = AudioHALScanner.shared.restartCoreAudioService()
             DispatchQueue.main.async {
                 self.isRestarting = false
-                self.bannerFeedback = result.message
+                // 成功/失败都按真实返回说，不把"没权限"混成"已重启"
+                self.bannerFeedback = (result.success ? "✅ " : "⚠️ ") + result.message
             }
         }
     }

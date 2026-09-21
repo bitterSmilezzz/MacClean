@@ -18,17 +18,32 @@ extension Selftest {
             // 项目此前完全没有适配 Reduce Motion —— 全 App 遍布弹簧、位移与数字翻页。
             // 这条用例直接在源码层面把关：出现裸 .animation/.transition/.contentTransition
             // 即视为回归（Theme.swift 内部实现自身除外）。
+            //
+            // v1.72 修两处让这条 lint 实际上一直在空转的问题：
+            // ① 文件名清单是手写的 18 个 —— v1.61 之后新增的 20+ 个视图根本不在名单里；
+            // ② 用的是**相对路径** + `try? … else continue`：只要工作目录不是仓库根，
+            //    整个检查读不到任何文件，于是"零违规"地通过。改成用 `#filePath` 定位
+            //    源码目录，并且**读不到目录就直接判失败**（自检不许静默放行）。
+            let sourceDir = Selftest.sourceDirectoryPath
             var offenders: [String] = []
-            for file in ["AIChatView", "AIReviewView", "CategoryDetailView", "CleanConfirmSheet",
-                         "CleanResultSheet", "DashboardView", "DirectoryTreeView", "DuplicateView",
-                         "HistoryView", "MenuBarView", "PhotoCompareView", "RiskView",
-                         "SearchView", "SidebarView", "SpaceVisualizerView", "StartupItemManagerView", "SystemDeepStorageView", "UninstallerView"] {
-                let path = "Sources/MacClean/\(file).swift"
-                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            let exempt: Set<String> = ["Theme.swift", "Selftest+Accessibility.swift"]
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: sourceDir))?
+                .filter { $0.hasSuffix(".swift") && !exempt.contains($0) }.sorted() ?? []
+            guard !files.isEmpty else {
+                print("      读不到源码目录: \(sourceDir)")
+                return false
+            }
+            for file in files {
+                let path = (sourceDir as NSString).appendingPathComponent(file)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(file):<不可读>")
+                    continue
+                }
                 for (idx, line) in src.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                     let t = line.trimmingCharacters(in: .whitespaces)
                     if t.hasPrefix("//") || t.hasPrefix("///") { continue }
-                    if t.contains(".motionSafe") { continue }
+                    if t.contains(".motionSafe") || t.contains("motionSafeTransition")
+                        || t.contains("motionSafeNumericTransition") { continue }
                     if t.contains(".animation(") || t.contains(".transition(") || t.contains("contentTransition(") {
                         offenders.append("\(file):\(idx + 1)")
                     }

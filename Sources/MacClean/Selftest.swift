@@ -22,6 +22,13 @@ enum Selftest {
     static var failures: [String] = []
     static var passed = 0
 
+    /// 源码目录（编译期由 `#filePath` 推出）。
+    ///
+    /// 供"扫源码本身"的 lint 型自检使用。原先这类检查写的是相对路径
+    /// `Sources/MacClean/...`，只要不是从仓库根启动就一个文件都读不到，
+    /// 于是恒真通过 —— 看起来在把关，其实一直在空转。
+    static let sourceDirectoryPath = (#filePath as NSString).deletingLastPathComponent
+
     enum SelftestError: Error {
         case buttonNotFound(String)
     }
@@ -38,6 +45,13 @@ enum Selftest {
     static func run() -> Int32 {
         // stdout 无缓冲，保证管道/重定向下也能实时看到输出
         setvbuf(stdout, nil, _IONBF, 0)
+        // 自检必须与用户真实数据隔离：历史记录、撤销快照、跨会话指纹缓存全部重定向
+        // 到临时目录。此前只有个别套件靠自己的 fileURLOverride 兜住，其余写盘操作
+        // 直接落进用户真实的 history.json —— 跑一次自检就多一条并不存在的清理记录。
+        if ProcessInfo.processInfo.environment["MACCLEAN_STATE_DIR"].map(\.isEmpty) ?? true {
+            setenv("MACCLEAN_STATE_DIR",
+                   NSTemporaryDirectory() + "macclean-selftest-\(getpid())", 1)
+        }
         failures = []
         passed = 0
         // MED#7：自检全程禁用真实网络（AI 状态机照走，请求被短路）
@@ -154,6 +168,8 @@ enum Selftest {
         suiteAudioHALDeep()
         // 废弃打印机驱动与 PPD 描述文件治理 (v1.71.0)
         suitePrinterDriverDeep()
+        // 统一删除网关与治理域不变量 (v1.72.0)
+        suiteDeletionGate()
 
         let elapsed = String(format: "%.2fs", Date().timeIntervalSince(start))
 

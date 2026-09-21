@@ -18,6 +18,11 @@ enum CleanPaths {
         "~/Library/Group Containers",   // 壁纸/聊天库等跨应用共享数据（如 group.com.waifux.app）
         "~/Library/Mobile Documents",   // iCloud Drive 本地副本
         "~/Library/CloudStorage",       // Google Drive / OneDrive / 坚果云等云盘挂载
+        // v1.72 补：照片图库原先只在 `tccProtected` 里，那是"读得到吗"的判据，
+        // **不构成删除拦截**——一旦授予完全磁盘访问权限，库内真实文件就能通过主目录护栏
+        // 被判为可清理。图库是自管理容器，删进去任何一项都是损毁整个照片库，
+        // 因此必须同时进 G6（tccProtected 管可读性，hardExclude 管可删性）。
+        "~/Pictures/Photos Library.photoslibrary",
     ]
 
     // MARK: G8 系统级硬保护（文档第 7 章）

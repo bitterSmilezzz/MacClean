@@ -70,14 +70,45 @@ final class WhitelistManager: ObservableObject {
 
     @Published var rules: [WhitelistRule] = [] {
         didSet {
+            Self.snapshotLock.lock()
+            cachedRules = rules
+            Self.snapshotLock.unlock()
             save()
         }
+    }
+
+    // MARK: 跨线程读取快照（v1.72.0 修真实数据竞争）
+    //
+    // `rules` 是 `@Published`，只有主线程能安全读写；但 `isWhitelisted` 会被
+    // `Scanner.scanAllCategories` 的 6 路 `concurrentPerform` 后台扫描高频调用
+    // （每个清理项一次）。Swift 数组是 CoW：**读的同时另一线程写会直接崩**，
+    // 而不是"读到旧值"这么温和。主目录收敛之后治理模块也全走这里，读并发只会更高。
+    // 因此给读侧提供一份加锁快照，写路径保持 `@Published` 不动（UI 仍需订阅）。
+    private static let snapshotLock = NSLock()
+    private var cachedRules: [WhitelistRule] = []
+
+    private var rulesSnapshot: [WhitelistRule] {
+        Self.snapshotLock.lock()
+        defer { Self.snapshotLock.unlock() }
+        return cachedRules
     }
 
     private static let storageKey = "MacClean_UserWhitelistRules_v1"
     /// 解析失败时原始字节的存放位置。**不再静默丢弃**——丢弃之后任何一次
     /// `save()`（比如用户新加一条规则）都会把仅存的那份数据覆盖掉，永久无法恢复。
     private static let corruptBackupKey = "MacClean_UserWhitelistRules_v1_corrupt_backup"
+
+    /// 白名单落在哪个 defaults 域。
+    ///
+    /// 自检里有十余处 `removeAllRules()`，用的是 `UserDefaults.standard`。
+    /// 一旦有人从 `dist/MacClean.app/Contents/MacOS/MacClean --selftest` 跑自检
+    /// （GUI 与它同域），用户辛苦攒下的白名单会被**整条清空**。
+    /// 现在自检（`MACCLEAN_STATE_DIR` 已设）自动落到独立 suite，真机数据不可能被测试波及。
+    private static var store: UserDefaults {
+        MacCleanState.isIsolated
+            ? UserDefaults(suiteName: "MacCleanSelftestIsolated") ?? .standard
+            : .standard
+    }
 
     /// 上次加载是否出了问题。界面应据此提示用户"白名单可能有丢失，且当前保护可能不完整"。
     @Published private(set) var loadWarning: String?
@@ -86,6 +117,11 @@ final class WhitelistManager: ObservableObject {
         let result = Self.load()
         self.rules = result.rules
         self.loadWarning = result.warning
+        // init 里的赋值不会触发 didSet，快照必须显式播种，
+        // 否则启动后第一次后台扫描读到的是空名单 —— 那等于白名单暂时失效。
+        Self.snapshotLock.lock()
+        cachedRules = result.rules
+        Self.snapshotLock.unlock()
     }
 
     /// 逐条解码的包装：**单条损坏不应毁掉整个白名单**。
@@ -97,14 +133,14 @@ final class WhitelistManager: ObservableObject {
     }
 
     static func load() -> (rules: [WhitelistRule], warning: String?) {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else {
+        guard let data = Self.store.data(forKey: storageKey) else {
             return ([], nil)   // 从未存过 → 正常空列表
         }
         let result = decode(data)
         if result.warning != nil {
             // 整体解不开：留一份原始备份。**绝不静默丢弃**——丢弃之后任何一次
             // `save()`（比如用户新加一条规则）都会把仅存的那份数据覆盖掉，永久无法恢复。
-            UserDefaults.standard.set(data, forKey: corruptBackupKey)
+            Self.store.set(data, forKey: corruptBackupKey)
         }
         return result
     }
@@ -125,7 +161,7 @@ final class WhitelistManager: ObservableObject {
     func save() {
         do {
             let data = try JSONEncoder().encode(rules)
-            UserDefaults.standard.set(data, forKey: Self.storageKey)
+            Self.store.set(data, forKey: Self.storageKey)
             loadWarning = nil
         } catch {
             // 保存失败必须让用户知道：白名单写不进去 = 下次启动保护就没了
@@ -190,13 +226,14 @@ final class WhitelistManager: ObservableObject {
     /// 注意这里**只增加候选、不做替换**：判定变宽 = 保护变强，方向上永远是安全的。
     /// 反向（用 realPath 替换掉字面路径）才危险——那会因路径是否存在而改变判定结果。
     func isWhitelisted(path: String) -> Bool {
-        guard !rules.isEmpty else { return false }
+        let snapshot = rulesSnapshot
+        guard !snapshot.isEmpty else { return false }
         // 与 isSafeToClean 共用归一化口径（见 WhitelistRule.standardPath 说明）
         var targets = [FileSystem.normalizePath(path)]
         let resolvedTarget = FileSystem.normalizePath(FileSystem.realPath(path))
         if resolvedTarget != targets[0] { targets.append(resolvedTarget) }
 
-        for rule in rules where rule.type == .path {
+        for rule in snapshot where rule.type == .path {
             var rulePaths = [rule.standardPath]
             let resolvedRule = FileSystem.normalizePath(FileSystem.realPath(rule.standardPath))
             if resolvedRule != rulePaths[0] { rulePaths.append(resolvedRule) }
@@ -213,9 +250,10 @@ final class WhitelistManager: ObservableObject {
 
     /// 检查指定 App 名称是否被用户白名单命中
     func isAppWhitelisted(appName: String) -> Bool {
-        guard !rules.isEmpty else { return false }
+        let snapshot = rulesSnapshot
+        guard !snapshot.isEmpty else { return false }
         let norm = appName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        for rule in rules where rule.type == .appName {
+        for rule in snapshot where rule.type == .appName {
             if norm == rule.pattern.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
                 return true
             }
@@ -225,10 +263,11 @@ final class WhitelistManager: ObservableObject {
 
     /// 检查指定文件路径的扩展名是否被排除白名单命中
     func isExtensionWhitelisted(path: String) -> Bool {
-        guard !rules.isEmpty else { return false }
+        let snapshot = rulesSnapshot
+        guard !snapshot.isEmpty else { return false }
         let ext = (path as NSString).pathExtension.lowercased()
         guard !ext.isEmpty else { return false }
-        for rule in rules where rule.type == .extension {
+        for rule in snapshot where rule.type == .extension {
             if rule.normalizedExtension == ext {
                 return true
             }

@@ -21,7 +21,8 @@ public struct ColorSyncProfileCard: View {
 
     private var displayedItems: [ICCProfileItem] {
         if showOrphansOnly {
-            return summary.items.filter { $0.status.isOrphanOrCorrupted }
+            // 证据不足项也列出（不可删），让用户看到"为什么没被判成残留"
+            return summary.items.filter { $0.status.isOrphanOrCorrupted || $0.status == .needsConfirmation }
         }
         return summary.items
     }
@@ -37,6 +38,7 @@ public struct ColorSyncProfileCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             topHeader
+            evidenceBanner
             metricsSummaryBar
 
             if let feedback = bannerFeedback {
@@ -61,7 +63,40 @@ public struct ColorSyncProfileCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清理选中的 \(selectedCount) 项色彩配置文件（\(selectedSize.byteStringCN)）。当前连接的活动显示器配置已受严格保护，绝不误删。")
+            Text("将清理选中的 \(selectedCount) 项色彩配置文件（\(selectedSize.byteStringCN)）。"
+                 + "当前接驳显示器的配置、近 30 天内写过的配置与 Apple 内置核心配置都受保护；证据不足的项不会被勾选。")
+        }
+    }
+
+    // MARK: - 证据可信度横幅
+
+    /// 接驳显示器列表读不到、或 ColorSync 偏好解析失败时必须说明：
+    /// 此时"没有引用记录"不代表"没在用"，一项都不会被判定为残留。
+    @ViewBuilder
+    private var evidenceBanner: some View {
+        if !summary.evidenceTrustworthy {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Signal.caution)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("无法读全「当前接驳显示器 / ColorSync 偏好引用」，本模块仅提供定位与建议")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.primary)
+                    if !summary.unreadableSources.isEmpty {
+                        Text("读不到的证据源：\(summary.unreadableSources.joined(separator: "、"))")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+                    Text("\(summary.needsConfirmationCount) 项证据不足，全部未勾选。")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                }
+                Spacer()
+            }
+            .padding(8)
+            .background(Signal.caution.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
         }
     }
 
@@ -116,6 +151,8 @@ public struct ColorSyncProfileCard: View {
             metricItem(title: "活跃屏幕保护", value: "\(summary.activeCount)", detail: "当前连接中", color: Signal.positive)
             Divider().frame(height: 28)
             metricItem(title: "可释放潜力", value: selectedSize.byteStringCN, detail: "\(selectedCount) 项已选", color: selectedSize > 0 ? Accent.tint : Ink.secondary)
+            Divider().frame(height: 28)
+            metricItem(title: "证据不足需确认", value: "\(summary.needsConfirmationCount)", detail: "未勾选", color: summary.needsConfirmationCount > 0 ? Signal.caution : Ink.tertiary)
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, Space.xs)
@@ -176,7 +213,7 @@ public struct ColorSyncProfileCard: View {
                             } else {
                                 Image(systemName: "lock.shield.fill")
                                     .font(.system(size: 13))
-                                    .foregroundStyle(Signal.positive)
+                                    .foregroundStyle(item.status == .needsConfirmation ? Signal.caution : Signal.positive)
                             }
 
                             Image(systemName: item.kind.icon)
@@ -198,6 +235,13 @@ public struct ColorSyncProfileCard: View {
                                     .foregroundStyle(Ink.quaternary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+
+                                if let note = item.evidenceNote, !note.isEmpty {
+                                    Text(note)
+                                        .font(Typo.micro)
+                                        .foregroundStyle(item.status == .needsConfirmation ? Signal.caution : Ink.quaternary)
+                                        .lineLimit(2)
+                                }
                             }
 
                             Spacer()
@@ -244,6 +288,8 @@ public struct ColorSyncProfileCard: View {
         case .disconnectedOrphan: return ("已断开残留", Signal.caution)
         case .corrupted: return ("损坏配置", Signal.critical)
         case .systemProtected: return ("系统受保护", Ink.tertiary)
+        case .recentlyActive: return ("近期写过·在用", Signal.positive)
+        case .needsConfirmation: return ("需确认", Ink.tertiary)
         }
     }
 
@@ -269,12 +315,12 @@ public struct ColorSyncProfileCard: View {
 
     private var actionFooterBar: some View {
         HStack(spacing: Space.sm) {
-            Button(selectedCount == displayedItems.count ? "取消全选" : "全部选中") {
+            Button(selectedCount == selectableItems.count ? "取消全选" : "全部选中") {
                 toggleSelectAll()
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
-            .disabled(displayedItems.isEmpty || isCleaning)
+            .disabled(selectableItems.isEmpty || isCleaning)
 
             Spacer()
 
@@ -317,8 +363,12 @@ public struct ColorSyncProfileCard: View {
         summary.items[idx].isSelected.toggle()
     }
 
+    private var selectableItems: [ICCProfileItem] {
+        displayedItems.filter { $0.status.isOrphanOrCorrupted }
+    }
+
     private func toggleSelectAll() {
-        let target = selectedCount != displayedItems.count
+        let target = selectedCount != selectableItems.count
         for i in 0..<summary.items.count {
             if summary.items[i].status.isOrphanOrCorrupted {
                 summary.items[i].isSelected = target
@@ -327,15 +377,29 @@ public struct ColorSyncProfileCard: View {
     }
 
     private func executeClean(toTrash: Bool) {
+        guard !isCleaning else { return }
         isCleaning = true
         let targets = displayedItems.filter(\.isSelected)
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let res = ColorSyncScanner.shared.clean(items: targets, toTrash: toTrash)
+            let outcome = ColorSyncScanner.shared.clean(items: targets, toTrash: toTrash)
+            var lines: [String] = [outcome.summary]
+            if !outcome.needsPrivilege.isEmpty {
+                let first = outcome.needsPrivilege.first?.message
+                    ?? GovernanceVerdict.rejected(.needsPrivilege).message
+                lines.append("\(outcome.needsPrivilege.count) 项无法删除：\(first)"
+                    + " 已保留在列表中，可用行尾的访达按钮定位后在终端手动处理。")
+            }
+            let others = outcome.rejected.filter { $0.reason != .needsPrivilege }
+            if !others.isEmpty {
+                lines.append("\(others.count) 项被安全护栏拦下（\(others.first?.message ?? "")）")
+            }
+            if !outcome.failed.isEmpty {
+                lines.append("\(outcome.failed.count) 项删除失败（\(outcome.failed.first?.message ?? "")）")
+            }
             DispatchQueue.main.async {
                 self.isCleaning = false
-                let mode = toTrash ? "移入废纸篓" : "彻底删除"
-                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 项色彩配置文件，释放 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = lines.joined(separator: "；")
                 self.loadData()
                 self.onTriggerClean?()
             }

@@ -371,46 +371,12 @@ enum RiskScanner {
     ///    `launchctl list` 在多服务（CI runner、装了 LaunchAgent 的开发机）的机器上轻易超过 64 KB，
     ///    本机现测 18 KB 只是"暂时没到"。修法：**读端先开工排空**，再等进程退出。
     /// ② 没有超时。子进程卡死时整个风险扫描会一起卡住。
+    ///
+    /// v1.72.0：实现已提到 `SafeProcess.run`（11 个治理模块此前各写一份 `Process`，
+    /// 多数带着上面两个坑），本函数保留为薄门面，既有调用点与自检断言不受影响。
     static func runCommand(_ launchPath: String, _ args: [String],
                            timeout: TimeInterval = 10) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: launchPath)
-        p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-
-        // 先把读端挂到后台开始排空，再启动进程
-        var captured = Data()
-        let readDone = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
-            captured = pipe.fileHandleForReading.readDataToEndOfFile()
-            readDone.signal()
-        }
-
-        do {
-            try p.run()
-        } catch {
-            pipe.fileHandleForWriting.closeFile()
-            _ = readDone.wait(timeout: .now() + 1)
-            return nil
-        }
-        pipe.fileHandleForWriting.closeFile()   // 父进程不写，尽早关掉写端
-
-        // 超时兜底：先 TERM 再 KILL，绝不让一个卡住的子进程拖死扫描
-        let deadline = Date().addingTimeInterval(timeout)
-        while p.isRunning && Date() < deadline {
-            usleep(20_000)
-        }
-        if p.isRunning {
-            p.terminate()
-            usleep(200_000)
-            if p.isRunning { kill(p.processIdentifier, SIGKILL) }
-        }
-        p.waitUntilExit()
-        // 读端必须收尾，否则 captured 可能只读到一半
-        _ = readDone.wait(timeout: .now() + 2)
-        return String(data: captured, encoding: .utf8)
+        SafeProcess.run(launchPath, args, timeout: timeout)?.output
     }
 
     // MARK: - 10. 未加密开放 Wi-Fi (v1.52.0)

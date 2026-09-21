@@ -136,3 +136,49 @@ public struct ScreenshotsSummary: Equatable {
         items.filter(\.isSelected).count
     }
 }
+
+// MARK: - 治理结果（v1.72.0 安全加固）
+
+/// `ScreenshotsOrganizerScanner.clean` 的逐项结论：释放量为删除前实测，
+/// 拦截与失败分开计数。
+public struct ScreenshotsCleanResult {
+    let outcome: ResidueDeletionGate.Outcome
+
+    public var cleanedCount: Int { outcome.cleanedCount }
+    public var freedBytes: Int64 { outcome.freedBytes }
+    public var errorCount: Int { outcome.errorCount }
+    public var rejectedCount: Int { outcome.rejected.count }
+    public var failedCount: Int { outcome.failed.count }
+    public var summary: String { outcome.summary }
+    public var cleanedPaths: [String] { outcome.cleanedPaths }
+
+    init(outcome: ResidueDeletionGate.Outcome) { self.outcome = outcome }
+}
+
+/// `ScreenshotsOrganizerScanner.archive` 的逐项结论。
+public struct ScreenshotsArchiveResult {
+    public let archivedCount: Int
+    /// 移动**前**实测体积（同宗卷移动不释放空间，只作"挪了多少"的依据）
+    public let archivedBytes: Int64
+    let rejected: [ResidueDeletionGate.Rejection]
+    let failed: [(name: String, path: String, message: String)]
+
+    public var errorCount: Int { rejected.count + failed.count }
+    public var summary: String {
+        var parts: [String] = []
+        if archivedCount > 0 { parts.append("已归档 \(archivedCount) 项（\(archivedBytes.byteStringCN)）") }
+        if !rejected.isEmpty { parts.append("\(rejected.count) 项被安全护栏拦下") }
+        if !failed.isEmpty { parts.append("\(failed.count) 项移动失败") }
+        return parts.isEmpty ? "没有可归档的项目" : parts.joined(separator: "；")
+    }
+    public var firstFailure: String? { rejected.first?.message ?? failed.first?.message }
+
+    init(archivedCount: Int, archivedBytes: Int64,
+         rejected: [ResidueDeletionGate.Rejection],
+         failed: [(name: String, path: String, message: String)]) {
+        self.archivedCount = archivedCount
+        self.archivedBytes = archivedBytes
+        self.rejected = rejected
+        self.failed = failed
+    }
+}

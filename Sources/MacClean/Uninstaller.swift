@@ -204,12 +204,26 @@ final class UninstallerState: ObservableObject {
 
         isCleaningLocalization = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let res = AppLocalizationScanner.clean(bundle: bundle, selectedItemIDs: selectedIDs, permanently: permanently)
+            let res = AppLocalizationScanner.cleanOutcome(bundle: bundle, selectedItemIDs: selectedIDs,
+                                                          permanently: permanently)
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isCleaningLocalization = false
                 let mode = permanently ? "彻底清除" : "移入废纸篓"
-                self.lastLocalizationSummary = "【\(bundle.appName)】已安全\(mode) \(res.cleanedCount) 个外语包，释放 \(res.cleanedBytes.byteStringCN)"
+                // 摘要必须带上被拦数：网关会因为签名密封风险、语言保护、越权等原因
+                // 拒绝其中若干项，只播报"已安全清理 N 个"等于让用户以为剩下的也处理了。
+                var summary = "【\(bundle.appName)】已\(mode) \(res.cleanedCount) 个外语包，释放 \(res.freedBytes.byteStringCN)"
+                if !res.needsPrivilege.isEmpty {
+                    summary += "；\(res.needsPrivilege.count) 项无删除权限（该 App 由 root 管理）"
+                }
+                let blocked = res.rejected.count - res.needsPrivilege.count
+                if blocked > 0 {
+                    summary += "；\(blocked) 项被安全护栏拦下（母语/系统语言/受保护资源）"
+                }
+                if res.cleanedCount == 0 {
+                    summary = "【\(bundle.appName)】没有可清理项：\(res.summary)"
+                }
+                self.lastLocalizationSummary = summary
                 if let updated = AppLocalizationScanner.inspectAppBundle(at: bundle.appPath), updated.removablePackCount > 0 {
                     if let idx = self.localizationBundles.firstIndex(where: { $0.id == bundle.id }) {
                         self.localizationBundles[idx] = updated

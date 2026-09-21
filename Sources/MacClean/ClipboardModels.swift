@@ -61,21 +61,71 @@ public struct ClipboardCacheItem: Identifiable, Equatable {
     public let id: String                 // 缓存路径
     public let name: String               // 缓存名
     public let path: String               // 路径
-    public let size: Int64                // 大小
+    public let size: Int64                // 大小（**扫描时**体积，仅作展示；记账以删除前实测为准）
     public let note: String               // 描述
+
+    /// 最后写入时间（nil = 读不到）。年龄判据的依据。
+    public let modificationDate: Date?
+    /// 闲置天数
+    public let ageDays: Int
+    /// 目录条目的子项数（非目录为 0）
+    public let childCount: Int
+    /// 证据源是否可读（`false` = 读不到，绝不能当作"没有缓存"或"可以删"）
+    public let isReadable: Bool
 
     public init(
         id: String,
         name: String,
         path: String,
         size: Int64,
-        note: String
+        note: String,
+        modificationDate: Date? = nil,
+        ageDays: Int = 0,
+        childCount: Int = 0,
+        isReadable: Bool = true
     ) {
         self.id = id
         self.name = name
         self.path = path
         self.size = size
         self.note = note
+        self.modificationDate = modificationDate
+        self.ageDays = ageDays
+        self.childCount = childCount
+        self.isReadable = isReadable
+    }
+
+    /// 体积与年龄依据（UI 直出，避免"只看体积不看年龄"的误删）
+    public var sizeAndAgeEvidence: String {
+        guard isReadable else { return "证据源不可读，未做判定" }
+        guard modificationDate != nil else { return "\(size.byteStringCN)·时间未知，不处理" }
+        return "\(size.byteStringCN)·闲置 \(ageDays) 天"
+    }
+}
+
+// MARK: - 剪贴板缓存清理结果（v1.72.0 安全加固）
+
+/// `cleanClipboardCaches` 的逐项结论。
+///
+/// 释放量来自**删除前实测**（网关），`skippedCount` 把"太新鲜 / 归属不明 /
+/// 仍被剪贴板引用"这些**主动放弃**的项与真正的护栏拦截一起如实上报。
+public struct ClipboardCleanResult {
+    let outcome: ResidueDeletionGate.Outcome
+    /// 剪贴板引用源是否可读（`false` 时本模块一个字节都不会删）
+    public let referencesReadable: Bool
+
+    public var cleanedCount: Int { outcome.cleanedCount }
+    public var freedBytes: Int64 { outcome.freedBytes }
+    public var errorCount: Int { outcome.errorCount }
+    public var rejectedCount: Int { outcome.rejected.count }
+    public var failedCount: Int { outcome.failed.count }
+    public var summary: String { outcome.summary }
+    public var rejectedNames: [String] { outcome.rejected.map(\.name) }
+    public var needsPrivilegeCount: Int { outcome.needsPrivilege.count }
+
+    init(outcome: ResidueDeletionGate.Outcome, referencesReadable: Bool) {
+        self.outcome = outcome
+        self.referencesReadable = referencesReadable
     }
 }
 

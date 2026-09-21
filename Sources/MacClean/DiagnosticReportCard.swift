@@ -87,12 +87,22 @@ public struct DiagnosticReportCard: View {
         scanner.reports.filter { $0.isStale }.count
     }
 
+    /// 空列表时那句结论：读不全的时候只能说"读不全"，不能说"没有残留"
+    private var emptyStateText: String {
+        if scanner.isScanning { return "正在深入排查系统诊断目录..." }
+        if !scanner.isResultComplete {
+            return "有 \(scanner.issues.count) 个诊断目录读不到，无法判断是否存在异常报告"
+        }
+        return "已读到的目录里没有匹配的崩溃或诊断日志"
+    }
+
     // MARK: - 主视图构成
 
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             topHeader
             metricsSummaryBar
+            incompleteNotice
             filterAndActionControls
             reportListContainer
             if let feedback = bannerFeedback {
@@ -221,6 +231,53 @@ public struct DiagnosticReportCard: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
+    // MARK: - 结果不完整提示（「读不到」绝不当成「没有异常报告」）
+
+    /// 只要 `scanner.issues` 非空，这里就常驻一条橙警示，逐条点名读不到的位置。
+    /// 列表为空时也不再渲染"绿色对勾 + 暂无残留"，而是"覆盖不全，无法判断"。
+    @ViewBuilder
+    private var incompleteNotice: some View {
+        if let banner = scanner.incompletenessBanner {
+            VStack(alignment: .leading, spacing: Space.xxs) {
+                HStack(spacing: Space.xs) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.caution)
+                    Text(banner)
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(scanner.issues) { issue in
+                    HStack(alignment: .top, spacing: Space.xs) {
+                        Image(systemName: issue.icon)
+                            .font(.system(size: 10))
+                            .foregroundStyle(issue.kind == .permissionDenied ? Signal.caution : Ink.tertiary)
+                        Text(issue.message)
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if scanner.issues.contains(where: { $0.kind == .permissionDenied }) {
+                    Text("全局报告目录由 root:_analyticsusers 管理，MacClean 不做提权：该位置只能定位与给建议，删除请求会被网关拒为「无权限」。")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(Space.xs)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Signal.caution.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .stroke(Signal.caution.opacity(0.35), lineWidth: 1)
+            )
+            .accessibilityIdentifier("diagnostic-report-incomplete-notice")
+        }
+    }
+
     // MARK: - 过滤标签与快捷操作
 
     private var filterAndActionControls: some View {
@@ -272,13 +329,14 @@ public struct DiagnosticReportCard: View {
         HStack(spacing: 6) {
             Menu {
                 Button("勾选全部孤儿转储") {
-                    selectByCondition { $0.isOrphan }
+                    selectByCondition { $0.isOrphan && !$0.needsConfirmation }
                 }
                 Button("勾选全部陈旧报告 (>30天)") {
-                    selectByCondition { $0.isStale }
+                    selectByCondition { $0.isStale && !$0.needsConfirmation && !$0.isGlobalScope }
                 }
                 Button("勾选当前列表全部") {
-                    selectByCondition { _ in true }
+                    // "需确认"与 root 管理的位置不进批量勾选：证据不足与删不动的都不该被顺手勾上
+                    selectByCondition { !$0.needsConfirmation && !$0.isGlobalScope }
                 }
                 Divider()
                 Button("全部反选 / 清除勾选") {
@@ -319,12 +377,20 @@ public struct DiagnosticReportCard: View {
             LazyVStack(spacing: 4) {
                 if filteredReports.isEmpty {
                     VStack(spacing: 8) {
-                        Image(systemName: "checkmark.seal.fill")
+                        // 结论不完整时**不给绿色对勾**：0 项可能只是"没读到"
+                        Image(systemName: scanner.isResultComplete
+                              ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
                             .font(.system(size: 24))
-                            .foregroundStyle(Signal.positive)
-                        Text(scanner.isScanning ? "正在深入排查系统诊断目录..." : "暂无匹配的崩溃或诊断日志残留")
+                            .foregroundStyle(scanner.isResultComplete ? Signal.positive : Signal.caution)
+                        Text(emptyStateText)
                             .font(Typo.caption)
                             .foregroundStyle(Ink.secondary)
+                            .multilineTextAlignment(.center)
+                        if !scanner.isResultComplete {
+                            Text("以上结论仅覆盖读到的部分，不代表系统没有异常报告。")
+                                .font(Typo.micro)
+                                .foregroundStyle(Ink.tertiary)
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 24)
@@ -385,6 +451,10 @@ public struct DiagnosticReportCard: View {
         if res.success {
             showBanner("已移入废纸篓，释放 \(res.freedBytes.byteStringCN)")
             onTriggerClean?()
+        } else {
+            // 失败/被拦必须说清是哪一条护栏，不能只报"清理失败"
+            let reason = scanner.lastRejections.first?.message ?? "未执行删除"
+            showBanner("未删除：\(reason)")
         }
     }
 
@@ -392,11 +462,13 @@ public struct DiagnosticReportCard: View {
         isCleaning = true
         let toClean = selectedReports
         DispatchQueue.global(qos: .userInitiated).async {
-            let res = scanner.cleanReports(toClean, permanently: permanently)
+            let outcome = scanner.cleanSummary(toClean, permanently: permanently)
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.showBanner("批量清理完成！共释放 \(res.successCount) 份报告，夺回 \(res.freedBytes.byteStringCN)")
-                self.onTriggerClean?()
+                // 网关的 summary 已经区分"清了几项 / 几项被护栏拦下 / 几项无权限 / 几项失败"，
+                // 绝不在有拦截时只报"批量清理完成"
+                self.showBanner(outcome.summary)
+                if outcome.cleanedCount > 0 { self.onTriggerClean?() }
             }
         }
     }

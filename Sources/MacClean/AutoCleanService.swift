@@ -179,10 +179,15 @@ enum AutoCleanService {
         }
 
         // 2. 命令行/无头环境下，使用 osascript 发送原生横幅通知
-        let script = "display notification \"\(body)\" with title \"\(title)\""
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        p.arguments = ["-e", script]
-        try? p.run()
+        let script = "display notification \"\(appleScriptEscaped(body))\" with title \"\(appleScriptEscaped(title))\""
+        // SafeProcess：带超时且不谎报；反斜杠/引号必须转义，否则文案里出现一个 `"`
+        // 就会改写这条 AppleScript（今日文案是固定串，但通知逻辑一改就会踩上去）。
+        _ = SafeProcess.run("/usr/bin/osascript", ["-e", script], timeout: 6)
+    }
+
+    /// AppleScript 双引号字符串转义
+    private static func appleScriptEscaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 }

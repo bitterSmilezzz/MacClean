@@ -12,6 +12,7 @@ public struct SpotlightOptimizerCard: View {
     @State private var isCleaning: Bool = false
     @State private var isRebuilding: Bool = false
     @State private var bannerFeedback: String? = nil
+    @State private var bannerIsWarning: Bool = false
     @State private var showConfirmClean: Bool = false
     @State private var showConfirmRebuild: Bool = false
     @State private var showOrphansOnly: Bool = true
@@ -23,7 +24,8 @@ public struct SpotlightOptimizerCard: View {
 
     private var displayedItems: [SpotlightStoreItem] {
         if showOrphansOnly {
-            return summary.items.filter { $0.status.isOrphanOrCorrupted }
+            // "需确认"项一并显示：它们可能正是残留，只是证据不足，必须让用户看见
+            return summary.items.filter { $0.status.isOrphanOrCorrupted || $0.status == .needsConfirmation }
         }
         return summary.items
     }
@@ -40,6 +42,11 @@ public struct SpotlightOptimizerCard: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             topHeader
             metricsSummaryBar
+
+            // 「读不到」必须显式说出来，绝不能被渲染成"没有残留"
+            if let incomplete = summary.incompletenessBanner {
+                warningBanner(incomplete)
+            }
 
             if let feedback = bannerFeedback {
                 bannerBar(feedback)
@@ -63,16 +70,40 @@ public struct SpotlightOptimizerCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清理选中的 \(selectedCount) 项索引数据（\(selectedSize.byteStringCN)）。系统核心索引受严格保护，绝不误删。")
+            Text("将清理选中的 \(selectedCount) 项索引数据（\(selectedSize.byteStringCN)）。"
+                 + "系统核心索引、卷索引与证据不足的条目不会被删除；删除请求仍会经统一安全网关复核，"
+                 + "无权限或受保护的条目会如实报告为失败。")
         }
-        .confirmationDialog("确认重建系统 Spotlight 索引", isPresented: $showConfirmRebuild, titleVisibility: .visible) {
-            Button("开始安全重建 (mdutil -E /)", role: .none) {
-                executeRebuild()
+        .confirmationDialog(rebuildDialogTitle, isPresented: $showConfirmRebuild, titleVisibility: .visible) {
+            Button("确认重建（\(rebuildTargets.count) 个卷）", role: .destructive) {
+                executeRebuild(of: rebuildTargets)
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将向系统发送 mdutil -E / 指令，清除现有搜索数据库并重新建立索引。该操作可解决搜索无结果、迟钝或 mdworker 进程占用高 CPU 问题。重建期间 Spotlight 搜索可能暂时受限。")
+            Text(rebuildConsequenceText)
         }
+    }
+
+    // MARK: - 索引重建目标（只认用户显式勾选的卷）
+
+    /// 用户逐卷勾选后要重建的卷。**没有任何隐式默认**：一个都没勾 → 空数组 → 不执行。
+    private var rebuildTargets: [SpotlightStoreItem] {
+        summary.volumesSelectedForRebuild
+    }
+
+    private var rebuildDialogTitle: String {
+        rebuildTargets.isEmpty
+            ? "未勾选任何卷"
+            : "确认重建 \(rebuildTargets.count) 个卷的 Spotlight 索引？"
+    }
+
+    /// 后果必须写清：这是本卡片唯一会改动系统状态的操作。
+    private var rebuildConsequenceText: String {
+        let names = rebuildTargets.map { $0.path }.joined(separator: "\n")
+        return "将对以下卷逐条执行 mdutil -E：\n\(names)\n\n"
+            + "后果：重建会先**清空该卷现有搜索数据库**，重建期间 Spotlight 搜索无结果或明显变慢；"
+            + "大容量卷（数百 GB 以上）可能耗时数十分钟甚至更久，期间 CPU 与磁盘占用升高。"
+            + "无管理员权限的卷会直接失败，MacClean 不做提权。"
     }
 
     // MARK: - 顶部栏
@@ -128,6 +159,10 @@ public struct SpotlightOptimizerCard: View {
             Divider().frame(height: 20)
             metricBlock(title: "活动受保护项", value: "\(summary.activeCount) 项", color: Signal.positive)
             Divider().frame(height: 20)
+            metricBlock(title: "证据不足待确认",
+                        value: "\(summary.needsConfirmationCount) 项",
+                        color: summary.needsConfirmationCount > 0 ? Signal.caution : Ink.tertiary)
+            Divider().frame(height: 20)
             metricBlock(title: "已选待释放", value: selectedSize.byteStringCN, color: selectedSize > 0 ? Signal.caution : Ink.tertiary)
             Spacer()
         }
@@ -151,13 +186,24 @@ public struct SpotlightOptimizerCard: View {
     // MARK: - 提示栏
 
     private func bannerBar(_ message: String) -> some View {
+        bannerBar(message, icon: "info.circle.fill",
+                  tint: bannerIsWarning ? Signal.caution : Accent.tint)
+    }
+
+    /// 不完整结果专用告警条：不可关闭掉"不完整"这个事实的语义
+    private func warningBanner(_ message: String) -> some View {
+        bannerBar(message, icon: "exclamationmark.triangle.fill", tint: Signal.caution)
+    }
+
+    private func bannerBar(_ message: String, icon: String, tint: Color) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "info.circle.fill")
+            Image(systemName: icon)
                 .font(.system(size: 12))
-                .foregroundStyle(Accent.tint)
+                .foregroundStyle(tint)
             Text(message)
                 .font(Typo.caption)
                 .foregroundStyle(Ink.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Button {
                 withAnimation { bannerFeedback = nil }
@@ -180,12 +226,22 @@ public struct SpotlightOptimizerCard: View {
             LazyVStack(spacing: 4) {
                 if displayedItems.isEmpty {
                     VStack(spacing: 6) {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.system(size: 28))
-                            .foregroundStyle(Signal.positive)
-                        Text(showOrphansOnly ? "未发现已卸载应用残留的 CoreSpotlight 索引或废弃缓存" : "未发现任何 Spotlight 存储库")
-                            .font(Typo.caption)
-                            .foregroundStyle(Ink.secondary)
+                        // 结果不完整时**绝不**显示"未发现残留"这种结论
+                        if !summary.isResultComplete {
+                            Image(systemName: "questionmark.folder.fill")
+                                .font(.system(size: 28))
+                                .foregroundStyle(Signal.caution)
+                            Text("有位置没读到，无法判断是否存在残留")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.secondary)
+                        } else {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.system(size: 28))
+                                .foregroundStyle(Signal.positive)
+                            Text(showOrphansOnly ? "未发现已卸载应用残留的 CoreSpotlight 索引或废弃缓存" : "未发现任何 Spotlight 存储库")
+                                .font(Typo.caption)
+                                .foregroundStyle(Ink.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, Space.lg)
@@ -210,6 +266,16 @@ public struct SpotlightOptimizerCard: View {
                 .toggleStyle(.checkbox)
                 .labelsHidden()
                 .controlSize(.small)
+            } else if item.kind == .volumeIndex {
+                // 卷索引只能靠 mdutil 重建，且**必须由用户逐卷显式勾选**
+                Toggle("", isOn: Binding(
+                    get: { item.isSelectedForRebuild },
+                    set: { val in toggleRebuild(item.id, selected: val) }
+                ))
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+                .controlSize(.small)
+                .help("勾选后才会对该卷执行 mdutil -E；不勾选则永远不碰这个卷")
             } else {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 12))
@@ -236,6 +302,13 @@ public struct SpotlightOptimizerCard: View {
                     .foregroundStyle(Ink.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                if let note = item.note {
+                    Text(note)
+                        .font(Typo.micro)
+                        .foregroundStyle(Signal.caution)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer()
@@ -244,7 +317,9 @@ public struct SpotlightOptimizerCard: View {
                 Text(item.size.byteStringCN)
                     .font(Typo.rowStrong)
                     .foregroundStyle(Ink.primary)
-                Text("\(item.fileCount) 个文件")
+                Text(item.status == .needsConfirmation && item.size == 0
+                     ? "未读到内容"
+                     : "\(item.fileCount) 个文件")
                     .font(Typo.micro)
                     .foregroundStyle(Ink.tertiary)
             }
@@ -266,6 +341,8 @@ public struct SpotlightOptimizerCard: View {
                 return ("建议清理", Accent.tint.opacity(0.12), Accent.tint)
             case .systemProtected:
                 return ("系统保护", Color.blue.opacity(0.12), Color.blue)
+            case .needsConfirmation:
+                return ("需确认", Signal.caution.opacity(0.12), Signal.caution)
             }
         }()
 
@@ -299,6 +376,11 @@ public struct SpotlightOptimizerCard: View {
             Spacer()
 
             Button {
+                guard !rebuildTargets.isEmpty else {
+                    bannerIsWarning = true
+                    bannerFeedback = "没有勾选任何卷，未执行 mdutil -E。索引重建只对**你逐卷勾选**的卷生效。"
+                    return
+                }
                 showConfirmRebuild = true
             } label: {
                 HStack(spacing: 4) {
@@ -307,12 +389,13 @@ public struct SpotlightOptimizerCard: View {
                     } else {
                         Image(systemName: "arrow.triangle.2.circlepath")
                     }
-                    Text("安全重建系统索引 (mdutil -E)")
+                    Text("重建勾选的卷索引 (\(rebuildTargets.count))")
                 }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
             .disabled(isScanning || isCleaning || isRebuilding)
+            .help("仅对你逐卷勾选的卷执行 mdutil -E；未勾选的卷一律不动")
 
             Button(role: .destructive) {
                 showConfirmClean = true
@@ -352,6 +435,13 @@ public struct SpotlightOptimizerCard: View {
         }
     }
 
+    /// 逐卷勾选重建目标（默认全不勾）
+    private func toggleRebuild(_ id: String, selected: Bool) {
+        if let idx = summary.items.firstIndex(where: { $0.id == id }) {
+            summary.items[idx].isSelectedForRebuild = selected
+        }
+    }
+
     private func selectAll(_ select: Bool) {
         for i in 0..<summary.items.count {
             if summary.items[i].status.isOrphanOrCorrupted {
@@ -366,24 +456,42 @@ public struct SpotlightOptimizerCard: View {
         let targets = summary.items.filter { $0.isSelected && $0.status.isOrphanOrCorrupted }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = SpotlightScanner.shared.clean(items: targets, toTrash: toTrash)
+            let outcome = SpotlightScanner.shared.cleanOutcome(items: targets, toTrash: toTrash)
+            let rejected = outcome.rejected.map { "\($0.name)：\($0.message)" }
+            let failed = outcome.failed.map { "\($0.name)：\($0.message)" }
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "成功清理 \(result.cleanedCount) 项数据，释放 \(result.freedBytes.byteStringCN)" + (result.errorCount > 0 ? "（\(result.errorCount) 项受保护未清理）" : "")
+                var lines: [String] = []
+                lines.append("成功清理 \(outcome.cleanedCount) 项数据，实测释放 \(outcome.freedBytes.byteStringCN)")
+                lines.append(contentsOf: rejected + failed)
+                self.bannerIsWarning = !rejected.isEmpty || !failed.isEmpty || outcome.cleanedCount == 0
+                self.bannerFeedback = lines.joined(separator: "\n")
                 self.loadData()
                 self.onTriggerClean?()
             }
         }
     }
 
-    private func executeRebuild() {
+    /// 只对**用户显式勾选**的卷逐条执行 mdutil -E，并按真实退出码汇报。
+    private func executeRebuild(of volumes: [SpotlightStoreItem]) {
         guard !isRebuilding else { return }
+        guard !volumes.isEmpty else { return }
         isRebuilding = true
+
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = SpotlightScanner.shared.rebuildVolumeIndex(volumePath: "/")
+            var lines: [String] = []
+            for volume in volumes {
+                let result = SpotlightScanner.shared.rebuildVolumeIndex(volumePath: volume.path)
+                lines.append("\(volume.path) — \(result.message)")
+            }
             DispatchQueue.main.async {
                 self.isRebuilding = false
-                self.bannerFeedback = result.message
+                self.bannerIsWarning = lines.contains { $0.contains("未成功") || $0.contains("超时") || $0.contains("找不到") }
+                self.bannerFeedback = lines.joined(separator: "\n")
+                // 重建指令已发出 → 勾选状态清空，避免同一卷被重复触发
+                for i in 0..<self.summary.items.count where self.summary.items[i].kind == .volumeIndex {
+                    self.summary.items[i].isSelectedForRebuild = false
+                }
             }
         }
     }

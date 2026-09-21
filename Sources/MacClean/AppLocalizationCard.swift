@@ -20,17 +20,30 @@ struct LocalizationAppRow: View {
                     .lineLimit(1)
 
                 HStack(spacing: Space.xs) {
-                    Text("\(bundle.totalPackCount) 语言包")
-                        .font(.mcNumeric(10))
-                        .foregroundStyle(Ink.tertiary)
+                    if let block = bundle.blockReason {
+                        // 整株阻断：只给定位与建议，不给删除名额
+                        Text(block)
+                            .font(.mcNumeric(10))
+                            .foregroundStyle(Signal.caution)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("\(bundle.totalPackCount) 语言包")
+                            .font(.mcNumeric(10))
+                            .foregroundStyle(Ink.tertiary)
 
-                    Text("·")
-                        .font(.mcNumeric(10))
-                        .foregroundStyle(Ink.quaternary)
+                        Text("·")
+                            .font(.mcNumeric(10))
+                            .foregroundStyle(Ink.quaternary)
 
-                    Text("可省 \(bundle.totalReclaimablePotential.byteStringCN)")
-                        .font(.mcNumeric(10, weight: .semibold))
-                        .foregroundStyle(Signal.positive)
+                        Text("最多可省 \(bundle.totalReclaimablePotential.byteStringCN)")
+                            .font(.mcNumeric(10, weight: .semibold))
+                            .foregroundStyle(Signal.positive)
+
+                        Text("需逐项手动勾选")
+                            .font(.mcNumeric(10))
+                            .foregroundStyle(Ink.tertiary)
+                    }
                 }
             }
 
@@ -50,7 +63,7 @@ struct LanguagePackRow: View {
     let onToggle: (Bool) -> Void
 
     var body: some View {
-        HStack(spacing: Space.sm) {
+        HStack(alignment: .top, spacing: Space.sm) {
             if item.isProtected {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 13))
@@ -73,14 +86,35 @@ struct LanguagePackRow: View {
                         .foregroundStyle(Ink.primary)
 
                     if item.isProtected {
-                        Text("系统保留")
+                        Text("已保留")
                             .font(Typo.micro)
                             .foregroundStyle(Signal.positive)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
                             .background(Signal.positive.opacity(0.12))
                             .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    } else {
+                        // 可删项必须自带代价说明：本模块不提供"顺手一键瘦身"
+                        Text("破坏签名")
+                            .font(Typo.micro)
+                            .foregroundStyle(Signal.caution)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Signal.caution.opacity(0.14))
+                            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                     }
+                }
+
+                if let reason = item.protectionReason {
+                    Text(reason)
+                        .font(Typo.caption)
+                        .foregroundStyle(Signal.positive)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(item.deletionRisk)
+                        .font(Typo.caption)
+                        .foregroundStyle(Signal.caution)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Text(item.path)
@@ -97,5 +131,47 @@ struct LanguagePackRow: View {
                 .foregroundStyle(item.isProtected ? Ink.tertiary : Ink.primary)
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// 模块级风险横幅：多语言瘦身页面顶部常驻，说清"这里删的是签名过的东西"。
+struct LocalizationRiskBanner: View {
+    /// 本轮扫描不完整时的补充说明（"权限不足 / 读不到"），nil = 本轮结论完整
+    var banner: String? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.xxs) {
+            HStack(spacing: Space.xs) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Signal.caution)
+                Text(AppLocalizationBundle.moduleRiskText)
+                    .font(Typo.caption)
+                    .foregroundStyle(Ink.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let banner {
+                HStack(spacing: Space.xs) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Signal.caution)
+                    Text(banner)
+                        .font(Typo.caption)
+                        .foregroundStyle(Signal.caution)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Text("所有语言包默认不勾选：请逐项确认后再清理。母语、Base 与运行中的 App 已由工具强制保留。")
+                .font(Typo.caption)
+                .foregroundStyle(Ink.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Surface.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .accessibilityIdentifier("localization-risk-banner")
     }
 }

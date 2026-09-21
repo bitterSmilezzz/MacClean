@@ -1,6 +1,6 @@
 import Foundation
 
-// MARK: - 屏幕截图与录屏归档助手深度自检 (v1.64.0)
+// MARK: - 屏幕截图与录屏归档助手深度自检 (v1.64.0 / v1.72.0 安全加固)
 
 extension Selftest {
     static func suiteScreenshotsOrganizerDeep() {
@@ -70,6 +70,8 @@ extension Selftest {
 
             let f1 = (testDir as NSString).appendingPathComponent("Screen Shot.png")
             try? "png1".data(using: .utf8)?.write(to: URL(fileURLWithPath: f1))
+            try? "png2".data(using: .utf8)?.write(to: URL(fileURLWithPath: f1))
+            ScreenshotsOrganizerTestSupport.age(f1, days: 10)
 
             let item1 = ScreenshotItem(
                 id: f1, fileName: "Screen Shot.png", path: f1, size: 4,
@@ -77,14 +79,15 @@ extension Selftest {
             )
 
             // 第一次归档（按类型归档）
-            let res1 = ScreenshotsOrganizerScanner.shared.archive(items: [item1], targetDirectory: archiveDir, strategy: .byType)
+            let res1 = ScreenshotsOrganizerScanner.shared.archive(items: [item1], targetDirectory: archiveDir, strategy: .byType, journal: .none)
             guard res1.archivedCount == 1 && res1.errorCount == 0 else { return false }
             let expectedPath = ((archiveDir as NSString).appendingPathComponent("Screenshots") as NSString).appendingPathComponent("Screen Shot.png")
             guard fm.fileExists(atPath: expectedPath) else { return false }
 
             // 重新在源位置创建同名文件并再次归档，验证防撞重命名
             try? "png2".data(using: .utf8)?.write(to: URL(fileURLWithPath: f1))
-            let res2 = ScreenshotsOrganizerScanner.shared.archive(items: [item1], targetDirectory: archiveDir, strategy: .byType)
+            ScreenshotsOrganizerTestSupport.age(f1, days: 10)
+            let res2 = ScreenshotsOrganizerScanner.shared.archive(items: [item1], targetDirectory: archiveDir, strategy: .byType, journal: .none)
             guard res2.archivedCount == 1 && res2.errorCount == 0 else { return false }
 
             // 目标目录下应有两个文件
@@ -128,10 +131,11 @@ extension Selftest {
                 id: "/System/Screen Shot.png", fileName: "Screen Shot.png", path: "/System/Screen Shot.png",
                 size: 100, captureType: .screenshot, modificationDate: Date(), ageDays: 10, isSelected: true
             )
-            let cleanRes = ScreenshotsOrganizerScanner.shared.clean(items: [fakeItem], toTrash: true)
+            let cleanRes = ScreenshotsOrganizerScanner.shared.clean(items: [fakeItem], toTrash: true, journal: .none)
             guard cleanRes.cleanedCount == 0 && cleanRes.errorCount > 0 else { return false }
+            guard cleanRes.outcome.rejected.contains(where: { $0.reason == .systemProtected }) else { return false }
 
-            let archiveRes = ScreenshotsOrganizerScanner.shared.archive(items: [fakeItem], targetDirectory: "/System/Archive")
+            let archiveRes = ScreenshotsOrganizerScanner.shared.archive(items: [fakeItem], targetDirectory: "/System/Archive", journal: .none)
             guard archiveRes.archivedCount == 0 && archiveRes.errorCount > 0 else { return false }
 
             return true
@@ -150,6 +154,9 @@ extension Selftest {
             let recFile = (testDir as NSString).appendingPathComponent("Screen Recording 2026-09-11.mov")
             try? "screenshot".data(using: .utf8)?.write(to: URL(fileURLWithPath: shotFile))
             try? "recording_video_data".data(using: .utf8)?.write(to: URL(fileURLWithPath: recFile))
+            // 40 天前拍的：既进入高推荐档位，也不在"还在写"的保护窗口内
+            ScreenshotsOrganizerTestSupport.age(shotFile, days: 40)
+            ScreenshotsOrganizerTestSupport.age(recFile, days: 40)
 
             // 扫描
             let summary = ScreenshotsOrganizerScanner.shared.scan(directories: [testDir])
@@ -158,17 +165,193 @@ extension Selftest {
 
             // 归档 shotFile（按年月模式）
             let shotItem = summary.items.first { $0.captureType == .screenshot }!
-            let archiveRes = ScreenshotsOrganizerScanner.shared.archive(items: [shotItem], targetDirectory: archiveDir, strategy: .byYearMonth)
+            let archiveRes = ScreenshotsOrganizerScanner.shared.archive(items: [shotItem], targetDirectory: archiveDir, strategy: .byYearMonth, journal: .none)
             guard archiveRes.archivedCount == 1 && archiveRes.errorCount == 0 else { return false }
             guard !fm.fileExists(atPath: shotFile) else { return false }
 
             // 清理 recFile（彻底删除）
             let recItem = summary.items.first { $0.captureType == .recording }!
-            let cleanRes = ScreenshotsOrganizerScanner.shared.clean(items: [recItem], toTrash: false)
+            let cleanRes = ScreenshotsOrganizerScanner.shared.clean(items: [recItem], toTrash: false, journal: .none)
             guard cleanRes.cleanedCount == 1 && cleanRes.freedBytes > 0 else { return false }
             guard !fm.fileExists(atPath: recFile) else { return false }
 
             return true
         }
+
+        // 7. 白名单 / G6 硬排除路径在本模块 policy 下必被拒
+        check("ScreenshotsOrganizer: 白名单与 iCloud 位置必被拒且文件仍在") {
+            let fm = FileManager.default
+            let wm = WhitelistManager.shared
+            let savedRules = wm.rules
+            let testDir = "/tmp/MacCleanTest_Screenshots_Guard"
+            try? fm.removeItem(atPath: testDir)
+            try? fm.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+            defer {
+                wm.rules = savedRules
+                try? fm.removeItem(atPath: testDir)
+            }
+
+            let shot = (testDir as NSString).appendingPathComponent("Screen Shot guarded.png")
+            try? "guarded".data(using: .utf8)?.write(to: URL(fileURLWithPath: shot))
+            ScreenshotsOrganizerTestSupport.age(shot, days: 60)
+            let rule = wm.addPathRule(shot, comment: "自检保护")
+
+            let item = ScreenshotItem(id: shot, fileName: (shot as NSString).lastPathComponent, path: shot,
+                                      size: 7, captureType: .screenshot, modificationDate: Date(), ageDays: 60, isSelected: true)
+            let resWhite = ScreenshotsOrganizerScanner.shared.clean(items: [item], toTrash: false, journal: .none)
+            guard resWhite.cleanedCount == 0 && resWhite.errorCount > 0 else { return false }
+            guard fm.fileExists(atPath: shot) else {
+                print("    白名单截图被删了")
+                return false
+            }
+            guard resWhite.outcome.rejected.contains(where: { $0.reason == .userWhitelisted }) else { return false }
+
+            // 归档同样不得把白名单文件挪走
+            let resArchive = ScreenshotsOrganizerScanner.shared.archive(items: [item], targetDirectory: (testDir as NSString).appendingPathComponent("Archive"), journal: .none)
+            guard resArchive.archivedCount == 0 && resArchive.errorCount > 0, fm.fileExists(atPath: shot) else { return false }
+            wm.removeRule(id: rule.id)
+
+            // G6：iCloud Drive（~/Library/Mobile Documents）里的截图不得动
+            let icloud = ScreenshotItem(id: "i", fileName: "Screen Shot icloud.png",
+                                        path: NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs/Screen Shot icloud.png",
+                                        size: 7, captureType: .screenshot, modificationDate: Date(), ageDays: 90, isSelected: true)
+            let resG6 = ScreenshotsOrganizerScanner.shared.clean(items: [icloud], toTrash: false, journal: .none)
+            guard resG6.cleanedCount == 0 && resG6.errorCount > 0,
+                  resG6.outcome.rejected.contains(where: { $0.reason == .hardExcluded }) else { return false }
+
+            // 归档目标落在 G6 里 → 整体拒绝
+            let badDest = ScreenshotsOrganizerScanner.shared.archive(
+                items: [item],
+                targetDirectory: NSHomeDirectory() + "/Library/Mail/Archive", journal: .none)
+            guard badDest.archivedCount == 0 && badDest.errorCount >= 1,
+                  badDest.rejected.first?.reason == .hardExcluded else { return false }
+            return true
+        }
+
+        // 8. 释放量与移动量必须等于操作前实测，而非扫描缓存
+        check("ScreenshotsOrganizer: 释放量等于删除前实测而非缓存值") {
+            let fm = FileManager.default
+            let testDir = "/tmp/MacCleanTest_Screenshots_Accounting"
+            try? fm.removeItem(atPath: testDir)
+            try? fm.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: testDir) }
+
+            let shot = (testDir as NSString).appendingPathComponent("Screen Shot real.png")
+            let payload = "real-bytes-on-disk".data(using: .utf8)!
+            try? payload.write(to: URL(fileURLWithPath: shot))
+            ScreenshotsOrganizerTestSupport.age(shot, days: 45)
+
+            // 条目里挂着扫描时期的旧缓存值（这里故意写成远大于真实体积）
+            let staleCachedItem = ScreenshotItem(id: shot, fileName: "Screen Shot real.png", path: shot,
+                                                 size: 999_999, captureType: .screenshot,
+                                                 modificationDate: Date(), ageDays: 45, isSelected: true)
+            let measured = FileSystem.size(at: shot)
+            guard measured == Int64(payload.count) else { return false }
+
+            let res = ScreenshotsOrganizerScanner.shared.clean(items: [staleCachedItem], toTrash: false, journal: .none)
+            guard res.cleanedCount == 1, res.freedBytes == measured, res.freedBytes != 999_999 else {
+                print("    记账沿用了缓存值：\(res.freedBytes) vs 实测 \(measured)")
+                return false
+            }
+            guard !fm.fileExists(atPath: shot) else { return false }
+            return true
+        }
+
+        // 9. 正在录屏 / 刚写入的文件既不删也不挪
+        check("ScreenshotsOrganizer: 保护窗口内正在写入的录屏不得处理") {
+            let fm = FileManager.default
+            let testDir = "/tmp/MacCleanTest_Screenshots_InFlight"
+            try? fm.removeItem(atPath: testDir)
+            try? fm.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: testDir) }
+
+            let rec = (testDir as NSString).appendingPathComponent("Screen Recording 正在录.mov")
+            try? "growing-mov-data".data(using: .utf8)?.write(to: URL(fileURLWithPath: rec))
+            // mtime = 现在（正在被写）
+            let item = ScreenshotItem(id: rec, fileName: (rec as NSString).lastPathComponent, path: rec,
+                                      size: 16, captureType: .recording, modificationDate: Date(),
+                                      ageDays: 0, isSelected: true)
+            guard ScreenshotsOrganizerScanner.isInFlight(FileSystem.normalizePath(FileSystem.realPath(rec)), now: Date()) else {
+                return false
+            }
+            let resClean = ScreenshotsOrganizerScanner.shared.clean(items: [item], toTrash: false, journal: .none)
+            let resMove = ScreenshotsOrganizerScanner.shared.archive(items: [item],
+                                                                     targetDirectory: (testDir as NSString).appendingPathComponent("Archive"),
+                                                                     journal: .none)
+            guard resClean.cleanedCount == 0 && resClean.errorCount > 0,
+                  resMove.archivedCount == 0 && resMove.errorCount > 0,
+                  fm.fileExists(atPath: rec) else {
+                print("    正在写入的录屏被处理了")
+                return false
+            }
+            return true
+        }
+
+        // 10. mtime 读不到时按"在用"处理：宁可不动
+        check("ScreenshotsOrganizer: 时间戳取不到时降级为不处理") {
+            let missing = "/tmp/MacCleanTest_Screenshots_Ghost/Screen Shot ghost.png"
+            guard FileManager.default.fileExists(atPath: missing) == false else { return false }
+            guard ScreenshotsOrganizerScanner.isInFlight(missing, now: Date()) else { return false }
+
+            let item = ScreenshotItem(id: missing, fileName: "Screen Shot ghost.png", path: missing,
+                                      size: 100, captureType: .screenshot, modificationDate: Date(),
+                                      ageDays: 99, isSelected: true)
+            let res = ScreenshotsOrganizerScanner.shared.clean(items: [item], journal: .none)
+            guard res.cleanedCount == 0 && res.errorCount > 0,
+                  res.outcome.rejected.contains(where: { $0.reason == .missing }) else { return false }
+            return true
+        }
+
+        // 11. 治理结果写历史（自检注入隔离）
+        check("ScreenshotsOrganizer: 清理与归档结果写入历史记录") {
+            let fm = FileManager.default
+            let testDir = "/tmp/MacCleanTest_Screenshots_History"
+            let archiveDir = (testDir as NSString).appendingPathComponent("Archive")
+            try? fm.removeItem(atPath: testDir)
+            try? fm.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+            let savedOverride = HistoryStore.fileURLOverride
+            defer {
+                HistoryStore.fileURLOverride = savedOverride
+                try? fm.removeItem(atPath: testDir)
+            }
+            HistoryStore.fileURLOverride = URL(fileURLWithPath: (testDir as NSString).appendingPathComponent("history.json"))
+
+            let a = (testDir as NSString).appendingPathComponent("Screen Shot a.png")
+            let b = (testDir as NSString).appendingPathComponent("Screen Recording b.mov")
+            try? "aaaa".data(using: .utf8)?.write(to: URL(fileURLWithPath: a))
+            try? "bbbbbbbb".data(using: .utf8)?.write(to: URL(fileURLWithPath: b))
+            ScreenshotsOrganizerTestSupport.age(a, days: 30)
+            ScreenshotsOrganizerTestSupport.age(b, days: 30)
+
+            let itemA = ScreenshotItem(id: a, fileName: "Screen Shot a.png", path: a, size: 4,
+                                       captureType: .screenshot, modificationDate: Date(), ageDays: 30, isSelected: true)
+            let itemB = ScreenshotItem(id: b, fileName: "Screen Recording b.mov", path: b, size: 8,
+                                       captureType: .recording, modificationDate: Date(), ageDays: 30, isSelected: true)
+
+            let moved = ScreenshotsOrganizerScanner.shared.archive(items: [itemA], targetDirectory: archiveDir, strategy: .byType)
+            let cleaned = ScreenshotsOrganizerScanner.shared.clean(items: [itemB], toTrash: false)
+            guard moved.archivedCount == 1, cleaned.cleanedCount == 1, cleaned.freedBytes == 8 else { return false }
+
+            let records = HistoryStore.load()
+            let moveRecord = records.first { $0.mode == "归档移动" }
+            let cleanRecord = records.first { $0.mode == "彻底删除" }
+            guard let moveRecord, let cleanRecord,
+                  moveRecord.itemCount == 1, moveRecord.bytes == 0,        // 同宗卷移动不谎报释放
+                  cleanRecord.itemCount == 1, cleanRecord.bytes == 8,
+                  cleanRecord.categoryName == ScreenshotsOrganizerScanner.historyCategory else {
+                print("    历史未落盘：\(records.map { "\($0.categoryName):\($0.mode):\($0.bytes)" })")
+                return false
+            }
+            return true
+        }
+    }
+}
+
+/// 截图/录屏自检 fixture 工具
+enum ScreenshotsOrganizerTestSupport {
+    /// 把 fixture 的 mtime 拨老 N 天（模拟"很久没动的截图"）
+    static func age(_ path: String, days: Int) {
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-Double(days) * 86400)], ofItemAtPath: path)
     }
 }

@@ -252,22 +252,14 @@ final class LaunchAgentManager {
 
     @discardableResult
     private func runLaunchctl(_ args: [String]) -> ProcessOutcome {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        p.arguments = args
-
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = pipe
-
-        do {
-            try p.run()
-            p.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let out = String(data: data, encoding: .utf8) ?? ""
-            return ProcessOutcome(exitCode: p.terminationStatus, output: out)
-        } catch {
-            return ProcessOutcome(exitCode: -1, output: error.localizedDescription)
+        // v1.72.0 改走 SafeProcess。原先的形状是 `waitUntilExit()` **之后**才读管道：
+        // `launchctl list` 在服务多的机器上轻易超过 64 KB 管道缓冲，父子会互相等死。
+        guard let result = SafeProcess.run("/bin/launchctl", args, timeout: 10) else {
+            return ProcessOutcome(exitCode: -1, output: "无法启动 launchctl")
         }
+        if result.timedOut {
+            return ProcessOutcome(exitCode: -1, output: "launchctl 超时未响应")
+        }
+        return ProcessOutcome(exitCode: result.exitCode, output: result.output)
     }
 }

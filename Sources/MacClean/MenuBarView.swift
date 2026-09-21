@@ -18,6 +18,10 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
 
     @State var localSnapshots: [APFSSnapshot] = []
+    /// `tmutil` 是否真的跑成功过。false 时"0 个快照"没有任何含义——
+    /// 以前这里只看 `listLocalSnapshots()` 是否为空，命令失败/工具缺失都会得到空数组，
+    /// 于是菜单栏绿勾写着"无快照占用物理空间"，而实际是"没读到"。
+    @State var snapshotsKnown: Bool = true
     @State var danglingStartupItems: [StartupItem] = []
     @State var isCleaningSnapshots: Bool = false
     @State var isCleaningDangling: Bool = false
@@ -338,12 +342,14 @@ struct MenuBarView: View {
             // 1. APFS 本地时间机器快照
             GroupedRow {
                 HStack(spacing: Space.xs) {
-                    IconSlot(systemName: "camera.badge.clock", size: 12, color: localSnapshots.isEmpty ? Signal.positive : Signal.caution, width: 16)
+                    IconSlot(systemName: "camera.badge.clock", size: 12, color: localSnapshots.isEmpty ? (snapshotsKnown ? Signal.positive : Ink.quaternary) : Signal.caution, width: 16)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("APFS 本地快照")
                             .font(Typo.row)
                             .foregroundStyle(Ink.primary)
-                        Text(localSnapshots.isEmpty ? "无快照占用物理空间" : "发现 \(localSnapshots.count) 个快照霸占磁盘")
+                        Text(localSnapshots.isEmpty
+                                ? (snapshotsKnown ? "无快照占用物理空间" : "快照状态未知（tmutil 未成功返回）")
+                                : "发现 \(localSnapshots.count) 个快照霸占磁盘")
                             .font(Typo.micro)
                             .foregroundStyle(localSnapshots.isEmpty ? Ink.tertiary : Signal.caution)
                     }
@@ -359,7 +365,11 @@ struct MenuBarView: View {
                                     isCleaningSnapshots = false
                                     app.refreshDisk()
                                     withAnimation(Motion.micro) {
-                                        app.lastCleanSummary = "已一键释放 \(res.succeededCount) 个 APFS 本地快照"
+                                        // 成功数之外必须带上失败/跳过数：一键删除时只播报
+                                        // "已释放 N 个"，用户会以为剩下那些也清了。
+                                        app.lastCleanSummary = res.failedCount == 0
+                                            ? "已释放 \(res.succeededCount) 个 APFS 本地快照"
+                                            : "已释放 \(res.succeededCount) 个快照，\(res.failedCount) 个未成功（需逐条确认或已被系统回收）"
                                     }
                                     refreshQuickStatus()
                                 }
@@ -620,7 +630,8 @@ struct MenuBarView: View {
 
     func refreshQuickStatus() {
         DispatchQueue.global(qos: .userInitiated).async {
-            let snaps = SystemDeepStorageInspector.listLocalSnapshots(volume: "/")
+            let inventory = SystemDeepStorageInspector.snapshotInventory(volume: "/")
+            let snaps = inventory.snapshots
             let startups = StartupItemManager.shared.scanAll().filter { $0.status.isDangling }
             let history = HistoryStore.load()
             let trend = HistoryStore.dailyFreedBytesLast7Days(records: history)
@@ -628,6 +639,7 @@ struct MenuBarView: View {
 
             DispatchQueue.main.async {
                 self.localSnapshots = snaps
+                self.snapshotsKnown = inventory.commandSucceeded
                 self.danglingStartupItems = startups
                 self.recentTrend = trend
                 self.weekTotalFreed = weekTotal

@@ -28,12 +28,18 @@ public enum CLIToolKind: String, Codable, CaseIterable, Identifiable {
     }
 
     /// 各工具在 macOS 上的典型缓存路径列表（带波浪号）
+    ///
+    /// **只登记精确缓存子路径，一律不带"工具目录兜底根"**（v1.73.0 判据修复）。
+    /// 旧版 `.npm` 的列表是 `["~/.npm/_cacache", "~/.npm"]`：本机 `~/.npm` 下确实没有
+    /// `_cacache`（只有 `_logs`、`_npx`、`_prebuilds` 与安装期状态），于是命中兜底根，
+    /// 而 `clean` 会把兜底根的**全部子项逐个删掉**。现在找不到精确路径就报
+    /// "该工具缓存位置未识别"，由用户按 `commandSuggestion` 用官方命令清理。
     public var typicalPaths: [String] {
         switch self {
         case .homebrew:
             return ["~/Library/Caches/Homebrew"]
         case .npm:
-            return ["~/.npm/_cacache", "~/.npm"]
+            return ["~/.npm/_cacache"]
         case .pnpm:
             return ["~/Library/Caches/pnpm", "~/.local/share/pnpm/store"]
         case .yarn:
@@ -46,6 +52,21 @@ public enum CLIToolKind: String, Codable, CaseIterable, Identifiable {
             return ["~/Library/Caches/pip"]
         case .gradle:
             return ["~/.gradle/caches"]
+        }
+    }
+
+    /// 该工具"数据根"里可能混有配置与状态的目录名（点号目录）：
+    /// 命中即**绝不允许**作为缓存根被清空。
+    public var toolDataRoots: [String] {
+        switch self {
+        case .homebrew: return []
+        case .npm: return ["~/.npm"]
+        case .pnpm: return ["~/.local/share/pnpm"]
+        case .yarn: return ["~/.yarn"]
+        case .cocoapods: return []
+        case .cargo: return ["~/.cargo"]
+        case .pip: return []
+        case .gradle: return ["~/.gradle"]
         }
     }
 
@@ -100,15 +121,20 @@ public struct CLICacheSummary: Equatable {
     public var items: [CLICacheItem]
     public var totalSize: Int64
     public var toolCount: Int
+    /// 扫不到**精确**缓存路径的工具：卡片必须如实说"该工具缓存位置未识别"，
+    /// 而不是悄悄退回到删工具目录（v1.73.0）。
+    public var unrecognizedTools: [CLIToolKind]
 
     public init(
         items: [CLICacheItem] = [],
         totalSize: Int64 = 0,
-        toolCount: Int = 0
+        toolCount: Int = 0,
+        unrecognizedTools: [CLIToolKind] = []
     ) {
         self.items = items
         self.totalSize = totalSize
         self.toolCount = toolCount
+        self.unrecognizedTools = unrecognizedTools
     }
 
     /// 已选中的释放潜力

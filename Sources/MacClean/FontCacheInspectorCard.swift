@@ -13,12 +13,15 @@ public struct FontCacheInspectorCard: View {
     @State private var searchKeyword: String = ""
     @State private var selectedTab: FontTabOption = .all
     @State private var bannerFeedback: String? = nil
+    @State private var bannerIsWarning: Bool = false
+    @State private var gateNotes: [String] = []
     @State private var showConfirmClean: Bool = false
 
     public enum FontTabOption: String, CaseIterable, Identifiable {
         case all = "全部字体"
         case corrupted = "⚠️ 损坏字体"
         case duplicate = "📄 重复副本"
+        case review = "🔍 需确认"
         case caches = "⚡️ 渲染缓存"
 
         public var id: String { rawValue }
@@ -39,6 +42,8 @@ public struct FontCacheInspectorCard: View {
                 guard item.status == .corrupted else { return false }
             case .duplicate:
                 guard item.status == .duplicate else { return false }
+            case .review:
+                guard item.status == .needsReview || item.status == .webFormat else { return false }
             case .caches:
                 return false
             }
@@ -83,6 +88,9 @@ public struct FontCacheInspectorCard: View {
             if let feedback = bannerFeedback {
                 bannerBar(feedback)
             }
+            if !gateNotes.isEmpty {
+                gateNotesPanel
+            }
             actionFooterBar
         }
         .padding(Space.md)
@@ -100,7 +108,7 @@ public struct FontCacheInspectorCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清理选中的 \(selectedFontCount) 个字体文件（\(report.reclaimableFontSize.byteStringCN)）与 \(selectedCacheCount) 项字体渲染缓存（\(report.reclaimableCacheSize.byteStringCN)）。")
+            Text("将提交选中的 \(selectedFontCount) 个字体文件与 \(selectedCacheCount) 项字体渲染缓存给统一删除网关逐项裁决；正在被系统使用的字体、受保护位置与层级过浅的目标会被拦下并如实说明原因。")
         }
     }
 
@@ -146,16 +154,51 @@ public struct FontCacheInspectorCard: View {
 
     private var metricsSummaryBar: some View {
         HStack(spacing: Space.sm) {
-            metricItem(title: "已安装字体", value: "\(report.userFonts.count) 款", detail: report.totalFontSize.byteStringCN, color: Ink.primary)
+            metricItem(title: "已安装字体", value: "\(report.userFonts.count) 款",
+                       detail: report.totalFontSize.byteStringCN, color: Ink.primary)
             Divider().frame(height: 28)
-            metricItem(title: "损坏字体", value: "\(report.corruptedFonts.count) 款", detail: report.corruptedFonts.isEmpty ? "健康" : "无法解析", color: report.corruptedFonts.isEmpty ? Signal.positive : Signal.critical)
+            metricItem(title: "损坏字体", value: "\(report.corruptedFonts.count) 款",
+                       detail: report.corruptedFonts.isEmpty ? "健康" : "容器特征缺失",
+                       color: report.corruptedFonts.isEmpty ? Signal.positive : Signal.critical)
             Divider().frame(height: 28)
-            metricItem(title: "重复副本", value: "\(report.duplicateFonts.count) 款", detail: report.duplicateFonts.isEmpty ? "无重复" : "可去重", color: report.duplicateFonts.isEmpty ? Ink.tertiary : Signal.caution)
+            metricItem(title: "重复副本", value: "\(report.duplicateFonts.count) 款",
+                       detail: report.duplicateFonts.isEmpty ? "无重复" : "可去重",
+                       color: report.duplicateFonts.isEmpty ? Ink.tertiary : Signal.caution)
             Divider().frame(height: 28)
-            metricItem(title: "渲染缓存", value: report.totalCacheSize.byteStringCN, detail: "\(report.cacheItems.count) 项", color: Signal.positive)
+            metricItem(title: "系统在用", value: "\(report.registeredInUseFonts.count) 款",
+                       detail: report.registryUnavailable ? "注册表读取失败" : "坚决保留",
+                       color: report.registryUnavailable ? Signal.caution : Signal.positive)
+            Divider().frame(height: 28)
+            metricItem(title: "需确认", value: "\(report.needsReviewFonts.count + report.webFonts.count) 款",
+                       detail: "证据不足", color: report.needsReviewFonts.isEmpty && report.webFonts.isEmpty ? Ink.tertiary : Signal.caution)
+            Divider().frame(height: 28)
+            metricItem(title: "渲染缓存", value: report.totalCacheSize.byteStringCN,
+                       detail: "\(report.cacheItems.count) 项", color: Signal.positive)
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, Space.xs)
+        .background(Surface.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+    }
+
+    /// 网关逐条裁决结果（含"该位置由 root 管理，本工具不提权"）
+    private var gateNotesPanel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(gateNotes.enumerated()), id: \.offset) { _, note in
+                HStack(alignment: .top, spacing: Space.xs) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Signal.caution)
+                    Text(note)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, 5)
         .background(Surface.sunken)
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
@@ -177,6 +220,16 @@ public struct FontCacheInspectorCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func statusTag(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(Typo.micro)
+            .foregroundStyle(color)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(color.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+
     // MARK: - 子组件：Tab 与搜索
 
     private var tabAndSearchControls: some View {
@@ -187,7 +240,7 @@ public struct FontCacheInspectorCard: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 320)
+            .frame(width: 420)
 
             Spacer()
 
@@ -310,23 +363,24 @@ public struct FontCacheInspectorCard: View {
                                     .background(Surface.sunken)
                                     .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
 
-                                if font.status == .corrupted {
-                                    Text("损坏/无法解析")
-                                        .font(Typo.micro)
-                                        .foregroundStyle(Signal.critical)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(Signal.critical.opacity(0.12))
-                                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                                if font.isRegisteredInUse {
+                                    statusTag("正在被系统使用", color: Signal.positive)
+                                } else if font.status == .corrupted {
+                                    statusTag("损坏/无容器特征", color: Signal.critical)
                                 } else if font.status == .duplicate {
-                                    Text("重复副本")
-                                        .font(Typo.micro)
-                                        .foregroundStyle(Signal.caution)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 1)
-                                        .background(Signal.caution.opacity(0.12))
-                                        .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                                    statusTag("重复副本", color: Signal.caution)
+                                } else if font.status == .webFormat {
+                                    statusTag("Web 字体（不解析属正常）", color: Ink.tertiary)
+                                } else if font.status == .needsReview {
+                                    statusTag("需确认", color: Signal.caution)
                                 }
+                            }
+
+                            if let note = font.note {
+                                Text(note)
+                                    .font(Typo.caption)
+                                    .foregroundStyle(Ink.tertiary)
+                                    .lineLimit(1)
                             }
 
                             if let ps = font.postscriptName {
@@ -361,9 +415,9 @@ public struct FontCacheInspectorCard: View {
 
     private func bannerBar(_ message: String) -> some View {
         HStack(spacing: Space.xs) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: bannerIsWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 12))
-                .foregroundStyle(Signal.positive)
+                .foregroundStyle(bannerIsWarning ? Signal.caution : Signal.positive)
             Text(message)
                 .font(Typo.caption)
                 .foregroundStyle(Ink.primary)
@@ -371,7 +425,7 @@ public struct FontCacheInspectorCard: View {
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, 6)
-        .background(Signal.positive.opacity(0.12))
+        .background((bannerIsWarning ? Signal.caution : Signal.positive).opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
@@ -438,26 +492,60 @@ public struct FontCacheInspectorCard: View {
         let cachesToClean = report.cacheItems.filter { $0.isSelected }
 
         DispatchQueue.global(qos: .userInitiated).async {
+            // 勾选了但被拦下的项不会静默消失：全部留在 rejected 里如实上报
             let fRes = FontCacheInspector.shared.cleanFonts(items: fontsToClean, toTrash: toTrash)
-            let cRes = FontCacheInspector.shared.cleanCaches(items: cachesToClean)
+            let cRes = FontCacheInspector.shared.cleanCaches(items: cachesToClean, toTrash: toTrash)
             let totalFreed = fRes.freedBytes + cRes.freedBytes
+            let notes = Self.explanationNotes(from: [fRes, cRes])
+            let cleaned = fRes.cleanedCount + cRes.cleanedCount
+            let blocked = fRes.errorCount + cRes.errorCount
 
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "已清理 \(fRes.cleanedCount) 款字体与 \(cRes.cleanedCount) 项缓存，释放 \(totalFreed.byteStringCN)"
+                self.gateNotes = notes
+                self.bannerIsWarning = (cleaned == 0 && blocked > 0) || !notes.isEmpty
+                self.bannerFeedback = cleaned == 0
+                    ? "未清理任何项目（\(blocked) 项被拒或失败）：\(Self.compactReasons(from: [fRes, cRes]))"
+                    : "已清理 \(cleaned) 项，释放 \(totalFreed.byteStringCN)"
+                    + (blocked > 0 ? "；另有 \(blocked) 项未通过网关" : "")
                 self.loadData()
                 self.onTriggerClean?()
             }
         }
     }
 
+    /// 把网关/模块拦下的原因整理成给用户看的条目
+    static func explanationNotes(from outcomes: [ResidueDeletionGate.Outcome]) -> [String] {
+        var notes: [String] = []
+        for outcome in outcomes {
+            for priv in outcome.needsPrivilege {
+                notes.append("「\(priv.name)」未删除：该位置由 root 管理，本工具不提权")
+            }
+            for rejection in outcome.rejected where rejection.reason != .needsPrivilege {
+                notes.append("「\(rejection.name)」未删除：\(rejection.message)")
+            }
+            for failure in outcome.failed {
+                notes.append("「\(failure.name)」删除失败：\(failure.message)")
+            }
+        }
+        return Array(notes.prefix(6))
+    }
+
+    static func compactReasons(from outcomes: [ResidueDeletionGate.Outcome]) -> String {
+        let notes = explanationNotes(from: outcomes)
+        return notes.isEmpty ? "无可用清理项" : notes.joined(separator: "；")
+    }
+
     private func resetAtsDatabase() {
         isCleaning = true
+        gateNotes = []
         DispatchQueue.global(qos: .userInitiated).async {
-            let success = FontCacheInspector.shared.resetUserAtsDatabases()
+            let result = FontCacheInspector.shared.resetUserAtsDatabases()
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = success ? "已成功重置用户字体注册表数据库 (atsutil)" : "重置命令执行完成"
+                // 只有拿到退出码 0 这个证据才说"已重置"
+                self.bannerIsWarning = !result.succeeded
+                self.bannerFeedback = result.message
                 self.loadData()
             }
         }

@@ -275,7 +275,7 @@ struct QuickCleanPanelView: View {
                 .frame(height: 38)
                 .background(Signal.positive.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .transition(.opacity)
+                .motionSafeTransition(.opacity)
             } else {
                 Button {
                     performQuickClean()

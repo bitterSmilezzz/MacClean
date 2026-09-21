@@ -377,7 +377,9 @@ public struct DownloadsOrganizerCard: View {
             DispatchQueue.main.async {
                 self.isCleaning = false
                 let mode = toTrash ? "移入废纸篓" : "彻底删除"
-                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 个下载文件，释放 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 个下载文件，"
+                    + "实测释放 \(res.freedBytes.byteStringCN)"
+                    + (res.errorCount > 0 ? "；\(res.rejectedCount) 项被护栏拦下、\(res.failedCount) 项失败" : "")
                 self.loadData()
                 self.onTriggerClean?()
             }
@@ -393,7 +395,9 @@ public struct DownloadsOrganizerCard: View {
             let res = DownloadsOrganizerScanner.shared.archive(items: targets, targetDirectory: targetDir)
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "已成功将 \(res.movedCount) 个文件归档移动至 ~/Downloads/Archived_Downloads"
+                var text = "已成功将 \(res.movedCount) 个文件归档移动至 ~/Downloads/Archived_Downloads"
+                if res.errorCount > 0 { text += "；\(res.errorCount) 项未移动：\(res.firstFailure ?? "被安全护栏拦下")" }
+                self.bannerFeedback = text
                 self.loadData()
             }
         }

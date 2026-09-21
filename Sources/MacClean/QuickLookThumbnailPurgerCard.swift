@@ -212,9 +212,11 @@ public struct QuickLookThumbnailPurgerCard: View {
 
     private func bannerBar(_ message: String) -> some View {
         HStack(spacing: Space.xs) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: message.contains("未重置") || message.contains("拦下")
+                  ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 12))
-                .foregroundStyle(Signal.positive)
+                .foregroundStyle(message.contains("未重置") || message.contains("拦下")
+                                 ? Signal.caution : Signal.positive)
             Text(message)
                 .font(Typo.caption)
                 .foregroundStyle(Ink.primary)
@@ -293,10 +295,24 @@ public struct QuickLookThumbnailPurgerCard: View {
             let res = QuickLookThumbnailPurger.shared.purge(items: targets, resetSystemCache: true)
             DispatchQueue.main.async {
                 self.isPurging = false
-                self.bannerFeedback = "已成功释放 \(res.purgedCount) 项缩略图缓存并重置系统 QuickLook 数据库，释放空间 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = Self.feedback(for: res)
                 self.loadData()
                 self.onTriggerClean?()
             }
         }
+    }
+
+    /// 播报只说**有证据**的事实：删除量取删除前实测，系统索引是否重置单独交代。
+    static func feedback(for res: QuickLookPurgeResult) -> String {
+        var text = "已释放 \(res.purgedCount) 项缩略图缓存（\(res.freedBytes.byteStringCN)）"
+        if res.systemCacheReset {
+            text += "，系统 QuickLook 索引已重置"
+        } else if let failure = res.systemResetFailure {
+            text += "，但系统缩略图索引**未重置**：\(failure)"
+        }
+        if res.errorCount > 0 {
+            text += "；\(res.errorCount) 项被安全护栏拦下或删除失败"
+        }
+        return text
     }
 }

@@ -1,5 +1,23 @@
 import SwiftUI
 
+// MARK: - 语义色 → Theme 色板（v1.74.0：颜色映射从模型层移回视图层）
+
+extension StartupItemTone {
+    var color: Color {
+        switch self {
+        case .positive: return Signal.positive
+        case .neutral: return Ink.tertiary
+        case .caution: return Signal.caution
+        case .accent: return Accent.tint
+        case .critical: return Signal.critical
+        }
+    }
+}
+
+private extension StartupItemStatus {
+    var color: Color { tone.color }
+}
+
 // MARK: - 启动项与后台服务筛选模式
 
 public enum StartupItemFilter: String, CaseIterable, Identifiable {
@@ -31,6 +49,8 @@ public struct StartupItemManagerView: View {
     @State private var searchText: String = ""
     @State private var bannerMessage: String?
     @State private var showCleanConfirm: Bool = false
+    /// 本轮巡检读不到的位置（非空即结论不完整）
+    @State private var scanIssues: [GovernanceEvidenceIssue] = []
 
     public init() {}
 
@@ -91,7 +111,9 @@ public struct StartupItemManagerView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将把检测到的 \(danglingCount) 个幽灵/已卸载自启项安全移入废纸篓。清理后这些启动项将不再常驻系统，可在废纸篓中随时还原。")
+            Text("将逐条把这 \(danglingCount) 个幽灵/已卸载自启定义移入废纸篓（可还原）。"
+                 + "白名单、系统受保护项与 /Library 下由 root 管理的定义会被网关拒绝，不计入成功；"
+                 + "已加载的服务本次登录会话内可能仍在运行。")
         }
     }
 
@@ -186,7 +208,7 @@ public struct StartupItemManagerView: View {
                 Spacer()
                 if danglingCount > 0 {
                     Button(action: { showCleanConfirm = true }) {
-                        Text("一键安全清理")
+                        Text("逐条清理幽灵残留")
                             .font(Typo.micro)
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
@@ -246,8 +268,44 @@ public struct StartupItemManagerView: View {
         .motionSafeTransition(.opacity)
     }
 
+    /// 自启目录读不到时的常驻提示：不再把"没权限看"渲染成"没有启动项"
+    @ViewBuilder
+    private var incompleteNotice: some View {
+        if !scanIssues.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(Signal.caution)
+                    Text(GovernanceEvidenceIssue.incompleteBanner(scanIssues))
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ForEach(scanIssues) { issue in
+                    Text("· \(issue.message)")
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("/Library/LaunchAgents 与 /Library/LaunchDaemons 由 root 管理：MacClean 不提权，删除请求会被网关判为「无权限」。")
+                    .font(Typo.micro)
+                    .foregroundColor(Ink.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Signal.caution.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .accessibilityIdentifier("startup-item-incomplete-notice")
+        }
+    }
+
     private var contentListView: some View {
         VStack(spacing: 0) {
+            incompleteNotice
             // 筛选分段器
             HStack(spacing: 8) {
                 ForEach(StartupItemFilter.allCases) { f in
@@ -280,13 +338,16 @@ public struct StartupItemManagerView: View {
             if filteredItems.isEmpty {
                 VStack(spacing: 10) {
                     Spacer()
-                    Image(systemName: "checkmark.shield")
+                    // 有目录没读到就不给绿色盾牌：0 项可能只是"没权限看"
+                    Image(systemName: scanIssues.isEmpty ? "checkmark.shield" : "exclamationmark.triangle")
                         .font(.system(size: 36))
-                        .foregroundColor(Signal.positive)
+                        .foregroundColor(scanIssues.isEmpty ? Signal.positive : Signal.caution)
                     Text("当前筛选下没有启动项")
                         .font(Typo.section)
                         .foregroundColor(Ink.secondary)
-                    Text("系统自启配置健康规范")
+                    Text(scanIssues.isEmpty
+                         ? "已读到的目录里没有自启定义"
+                         : "有 \(scanIssues.count) 个自启目录读不到，无法判断是否健康")
                         .font(Typo.micro)
                         .foregroundColor(Ink.tertiary)
                     Spacer()
@@ -316,9 +377,12 @@ public struct StartupItemManagerView: View {
     private func reload() {
         isLoading = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let scanned = StartupItemManager.shared.scanAll()
+            let manager = StartupItemManager.shared
+            let scanned = manager.scanAll()
+            let issues = manager.lastScanIssues
             DispatchQueue.main.async {
                 self.items = scanned
+                self.scanIssues = issues
                 self.isLoading = false
             }
         }
@@ -330,7 +394,12 @@ public struct StartupItemManagerView: View {
             if let idx = items.firstIndex(where: { $0.id == item.id }) {
                 items[idx] = updated
             }
-            bannerMessage = updated.isDisabled ? "已停用自启服务: \(item.name)" : "已启用自启服务: \(item.name)"
+            // 只有拿到 launchd 会话证据才敢说"已停用"
+            if updated.isDisabled && !updated.isConfirmedDisabled {
+                bannerMessage = "定义文件已改名，但\(updated.note ?? "无法确认服务已停止")"
+            } else {
+                bannerMessage = updated.isDisabled ? "已停用自启服务: \(item.name)" : "已启用自启服务: \(item.name)"
+            }
         } catch {
             bannerMessage = "切换状态失败: \(error.localizedDescription)"
         }
@@ -340,16 +409,20 @@ public struct StartupItemManagerView: View {
         do {
             try StartupItemManager.shared.moveToTrash(item: item)
             items.removeAll { $0.id == item.id }
-            bannerMessage = "已移入废纸篓: \(item.name)"
+            bannerMessage = item.serviceEvidence == .loaded
+                ? "定义文件已移入废纸篓，但该服务本次登录会话内仍在运行（下次登录才不再自启）"
+                : "已移入废纸篓: \(item.name)"
         } catch {
-            bannerMessage = "移入废纸篓失败: \(error.localizedDescription)"
+            bannerMessage = "未删除: \(error.localizedDescription)"
         }
     }
 
     private func cleanDanglingItems() {
-        let res = StartupItemManager.shared.cleanAllDangling(items: items)
+        let outcome = StartupItemManager.shared.deleteOutcome(
+            items.filter { $0.status.isDangling })
         reload()
-        bannerMessage = "已清理 \(res.removedCount) 个幽灵自启残留，释放 \(res.freedBytes.byteStringCN)"
+        // 网关的 summary 已经区分"清了几项 / 被护栏拦下几项 / 几项无权限 / 几项失败"
+        bannerMessage = outcome.summary
     }
 
     private func revealItem(_ item: StartupItem) {
@@ -394,6 +467,17 @@ struct StartupItemRowView: View {
                     .foregroundColor(item.status.color)
                     .background(item.status.color.opacity(0.12))
                     .clipShape(Capsule())
+
+                    // 「已停用」只有在拿到 launchd 会话证据后才成立
+                    if item.needsConfirmation {
+                        Text("需确认")
+                            .font(Typo.micro)
+                            .foregroundColor(Signal.caution)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Signal.caution.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                    }
 
                     // 厂商标识
                     Text(item.vendor)

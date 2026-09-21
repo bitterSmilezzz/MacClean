@@ -48,7 +48,7 @@ public struct DevProjectInspectorCard: View {
                 .padding(.vertical, 6)
                 .background(Signal.positive.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .transition(.opacity)
+                .motionSafeTransition(.opacity)
             }
 
             filterBar

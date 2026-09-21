@@ -1198,7 +1198,7 @@ struct UninstallerView: View {
                 EmptyState(
                     icon: "hand.point.up.left",
                     title: "从左侧选择一个应用",
-                    message: "查看其内部包含的多国语言包（.lproj），保留中文与英文，一键清理冗余外语。"
+                    message: "查看其内部包含的多国语言包（.lproj）。中文、英文与系统语言始终保留；删除包内资源会破坏该 App 的签名校验，请只对你确认不再需要的语言手动勾选。"
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -1500,18 +1500,22 @@ struct OrphanItemRow: View {
 struct AppRow: View {
     let app: InstalledApp
     let isSelected: Bool
-
-    private var appIcon: NSImage {
-        NSWorkspace.shared.icon(forFile: app.path)
-    }
+    @State private var icon: NSImage?
 
     var body: some View {
         HStack(spacing: Space.xs) {
-            Image(nsImage: appIcon)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 24, height: 24)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
+            if let icon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.inner, style: .continuous))
+            } else {
+                // 占位保持同尺寸：图标到位时列表不跳行
+                RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
+                    .fill(Color.clear)
+                    .frame(width: 24, height: 24)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(app.name)
@@ -1546,6 +1550,19 @@ struct AppRow: View {
             } label: {
                 Label("拷贝路径", systemImage: "doc.on.doc")
             }
+        }
+        .onAppear(perform: loadIcon)
+    }
+
+    /// 图标走 `ThumbnailCache`：`NSWorkspace.icon(forFile:)` 是一趟 iconservices IPC，
+    /// 原先写在计算属性里 → 每次 body 求值（含悬停高亮）都会打一次。
+    private func loadIcon() {
+        if let hit = ThumbnailCache.shared.cached(app.path, asIcon: true) {
+            icon = hit
+            return
+        }
+        ThumbnailCache.shared.image(for: app.path, asIcon: true) { loaded in
+            icon = loaded
         }
     }
 }

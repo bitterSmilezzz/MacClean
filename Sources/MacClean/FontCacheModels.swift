@@ -8,6 +8,21 @@ public enum FontItemStatus: String, Codable, CaseIterable {
     case duplicate = "重复副本"
     case corrupted = "已损坏/无法解析"
     case orphan = "未注册孤儿"
+
+    /// Web 字体格式（WOFF / WOFF2）：CoreText **本就不支持**解析它们，
+    /// 解析失败是格式属性而非文件缺陷，因此绝不可据此判损坏（v1.73.0 判据修复）。
+    case webFormat = "Web 字体（CoreText 不解析）"
+
+    /// 证据不足：解析失败但容器特征仍像字体（或读不到字节）。
+    /// 「读不到」≠「可以删」——一律降级为需确认，不默认勾选。
+    case needsReview = "需确认（证据不足）"
+
+    /// 该状态是否构成删除的正向依据（默认勾选的唯一来源）
+    public var providesDeletionEvidence: Bool {
+        // .webFormat / .needsReview / .valid / .orphan 都不构成依据：
+        // 前者是格式属性、后者是证据缺失，.orphan 从未被本模块产出过。
+        self == .corrupted || self == .duplicate
+    }
 }
 
 public enum FontFormat: String, Codable, CaseIterable {
@@ -46,6 +61,11 @@ public struct FontItem: Identifiable, Equatable, Hashable {
     public let status: FontItemStatus     // 健康与状态
     public let isSystemProtected: Bool    // 是否为系统受保护字体
     public var isSelected: Bool           // 是否勾选清理
+    /// 该文件此刻就在系统字体注册表里（`CTFontManagerCopyAvailableFontURLs`）。
+    /// **在用者坚决不可删**：它是判定链上唯一能证明"这个字体正被系统使用"的证据。
+    public let isRegisteredInUse: Bool
+    /// 判定依据的一句话说明，卡片如实展示（不藏结论背后的理由）
+    public let note: String?
 
     public init(
         id: String,
@@ -57,7 +77,9 @@ public struct FontItem: Identifiable, Equatable, Hashable {
         postscriptName: String?,
         status: FontItemStatus,
         isSystemProtected: Bool,
-        isSelected: Bool = false
+        isSelected: Bool = false,
+        isRegisteredInUse: Bool = false,
+        note: String? = nil
     ) {
         self.id = id
         self.fileName = fileName
@@ -69,6 +91,13 @@ public struct FontItem: Identifiable, Equatable, Hashable {
         self.status = status
         self.isSystemProtected = isSystemProtected
         self.isSelected = isSelected
+        self.isRegisteredInUse = isRegisteredInUse
+        self.note = note
+    }
+
+    /// 本模块允许进入删除网关的判据：有正向证据、未在用、非系统受保护。
+    public var isDeletableVerdict: Bool {
+        status.providesDeletionEvidence && !isRegisteredInUse && !isSystemProtected
     }
 }
 
@@ -106,17 +135,22 @@ public struct FontInspectionReport: Equatable {
     public var cacheItems: [FontCacheItem]
     public var totalFontSize: Int64
     public var totalCacheSize: Int64
+    /// 系统字体注册表**读取失败**：此时本模块不产出任何"在用"结论，
+    /// 也不允许据"不在注册表里"判孤儿（读不到 ≠ 可以删）。
+    public var registryUnavailable: Bool
 
     public init(
         userFonts: [FontItem] = [],
         cacheItems: [FontCacheItem] = [],
         totalFontSize: Int64 = 0,
-        totalCacheSize: Int64 = 0
+        totalCacheSize: Int64 = 0,
+        registryUnavailable: Bool = false
     ) {
         self.userFonts = userFonts
         self.cacheItems = cacheItems
         self.totalFontSize = totalFontSize
         self.totalCacheSize = totalCacheSize
+        self.registryUnavailable = registryUnavailable
     }
 
     /// 损坏字体列表
@@ -129,10 +163,25 @@ public struct FontInspectionReport: Equatable {
         userFonts.filter { $0.status == .duplicate }
     }
 
-    /// 可清理字体释放潜力（损坏 + 重复勾选项）
+    /// Web 字体（WOFF/WOFF2）：只归类，永不判损坏
+    public var webFonts: [FontItem] {
+        userFonts.filter { $0.status == .webFormat }
+    }
+
+    /// 证据不足、需用户确认的项
+    public var needsReviewFonts: [FontItem] {
+        userFonts.filter { $0.status == .needsReview }
+    }
+
+    /// 此刻正被系统字体注册表使用的字体（坚决保留）
+    public var registeredInUseFonts: [FontItem] {
+        userFonts.filter(\.isRegisteredInUse)
+    }
+
+    /// 可清理字体释放潜力（损坏 + 重复勾选项，且在用者与受保护者一律排除）
     public var reclaimableFontSize: Int64 {
         userFonts
-            .filter { !$0.isSystemProtected && $0.isSelected && ($0.status == .corrupted || $0.status == .duplicate) }
+            .filter { $0.isDeletableVerdict && $0.isSelected }
             .reduce(0) { $0 + $1.size }
     }
 
@@ -145,4 +194,31 @@ public struct FontInspectionReport: Equatable {
     public var totalReclaimableSize: Int64 {
         reclaimableFontSize + reclaimableCacheSize
     }
+}
+
+// MARK: - ATS 字体数据库重置结果
+
+/// "字体缓存已重置"这句话只有拿到命令成功的证据才能说（v1.73.0）。
+/// 旧实现 `try? task.run()` 后不看退出码就回 Bool，把"根本没启动"报成"已完成"。
+public struct AtsResetResult: Equatable {
+    /// 是否真的启起了进程并拿到退出码
+    public let executed: Bool
+    /// 退出码是否为 0（未超时）
+    public let succeeded: Bool
+    /// 给用户看的结论
+    public let message: String
+    /// 命令退出码（未执行为 nil）
+    public let exitCode: Int32?
+
+    public init(executed: Bool, succeeded: Bool, message: String, exitCode: Int32?) {
+        self.executed = executed
+        self.succeeded = succeeded
+        self.message = message
+        self.exitCode = exitCode
+    }
+
+    public static let notExecuted = AtsResetResult(
+        executed: false, succeeded: false,
+        message: "未执行：本机没有可用的 atsutil，字体缓存未做任何改动",
+        exitCode: nil)
 }

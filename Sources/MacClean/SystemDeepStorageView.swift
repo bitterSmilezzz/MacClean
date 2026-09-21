@@ -4,11 +4,19 @@ import SwiftUI
 
 public struct SystemDeepStorageView: View {
     @State private var snapshots: [APFSSnapshot] = []
+    @State private var snapshotIssues: [GovernanceEvidenceIssue] = []
+    /// 本轮是否真的拿到了快照清单（false = tmutil 没跑成，"0 个"不代表没有快照）
+    @State private var snapshotListRead: Bool = false
     @State private var vmInfo: VMMemoryInfo = VMMemoryInfo()
     @State private var isLoading: Bool = false
     @State private var bannerMessage: String? = nil
     @State private var showConfirmDeleteAllSnapshots: Bool = false
     @State private var showScriptSheet: Bool = false
+    /// **用户逐条点名**要删除的快照名（唯一可删集合，永不隐式全选）
+    @State private var confirmedSnapshotNames: Set<String> = []
+    /// 单条删除的二次确认状态
+    @State private var showConfirmSingleDelete: Bool = false
+    @State private var pendingDeleteName: String? = nil
 
     public init() {}
 
@@ -34,13 +42,24 @@ public struct SystemDeepStorageView: View {
         .onAppear {
             reload()
         }
-        .alert("释放所有 APFS 本地快照", isPresented: $showConfirmDeleteAllSnapshots) {
-            Button("立即释放", role: .destructive) {
-                deleteAllSnapshots()
+        .alert("释放勾选的 APFS 本地快照", isPresented: $showConfirmDeleteAllSnapshots) {
+            Button("确认删除这 \(confirmedSnapshotNames.count) 个", role: .destructive) {
+                deleteConfirmedSnapshots()
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将删除当前卷上的 \(snapshots.count) 个本地时间机器快照。已删除文件被快照锁定的底层数据块将被立即释放为可用 SSD 空间。")
+            Text("只会删除你逐条勾选的 \(confirmedSnapshotNames.count) 个快照（本工具不会整批静默执行）："
+                 + confirmedSnapshotNames.sorted().prefix(6).map { $0 }.joined(separator: "、")
+                 + "。删除后由快照锁定的已删数据块会被立即回收，无法撤销。")
+        }
+        .alert("释放单个本地快照", isPresented: $showConfirmSingleDelete) {
+            Button("确认删除", role: .destructive) {
+                if let name = pendingDeleteName { performDeleteSingleSnapshot(name: name) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("即将执行 tmutil deletelocalsnapshots \(pendingDeleteName ?? "")。"
+                 + "该操作不可撤销，且需要该卷的管理员权限。")
         }
     }
 
@@ -115,31 +134,62 @@ public struct SystemDeepStorageView: View {
 
                 Spacer()
 
-                if !snapshots.isEmpty {
-                    Button(action: { showConfirmDeleteAllSnapshots = true }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "trash")
-                                .font(.system(size: 9))
-                            Text("一键释放所有快照")
-                                .font(Typo.micro)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Signal.caution.opacity(0.15))
-                        .foregroundColor(Signal.caution)
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                // 只有用户**逐条勾选**过才允许触发删除；不再有"一键释放所有快照"
+                Button(action: { showConfirmDeleteAllSnapshots = true }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9))
+                        Text(confirmedSnapshotNames.isEmpty
+                             ? "先勾选要释放的快照"
+                             : "释放已勾选 (\(confirmedSnapshotNames.count)) 个")
+                            .font(Typo.micro)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("deleteAllSnapshotsButton")
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(confirmedSnapshotNames.isEmpty
+                                ? Surface.sunken
+                                : Signal.caution.opacity(0.15))
+                    .foregroundColor(confirmedSnapshotNames.isEmpty ? Ink.tertiary : Signal.caution)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
+                .buttonStyle(.plain)
+                .disabled(confirmedSnapshotNames.isEmpty)
+                .accessibilityIdentifier("deleteAllSnapshotsButton")
+            }
+
+            // 取证失败提示：读不到快照清单时绝不显示"没有残留"
+            if !snapshotIssues.isEmpty || !snapshotListRead {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(snapshotIssues.isEmpty
+                         ? "未能取得快照清单：以下结论不代表没有本地快照。"
+                         : GovernanceEvidenceIssue.incompleteBanner(snapshotIssues))
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.primary)
+                    ForEach(snapshotIssues) { issue in
+                        Text("· \(issue.message)")
+                            .font(Typo.micro)
+                            .foregroundColor(Ink.secondary)
+                    }
+                    Text("只读查询失败通常是权限不足，MacClean 不做提权；也可在终端自行执行 tmutil listlocalsnapshots / 复核。")
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.tertiary)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Signal.caution.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .accessibilityIdentifier("snapshot-incomplete-notice")
             }
 
             if snapshots.isEmpty {
                 HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(Signal.positive)
+                    // 没读到清单就不给绿色对勾
+                    Image(systemName: snapshotListRead ? "checkmark.circle.fill" : "questionmark.circle")
+                        .foregroundColor(snapshotListRead ? Signal.positive : Signal.caution)
                         .font(.system(size: 11))
-                    Text("当前没有残留的本地 APFS 快照，没有被快照锁定的幽灵空间。")
+                    Text(snapshotListRead
+                         ? "当前卷没有本地 APFS 快照，没有被快照锁定的幽灵空间。"
+                         : "未能确认是否存在本地快照（见上方提示）。")
                         .font(Typo.micro)
                         .foregroundColor(Ink.tertiary)
                 }
@@ -152,6 +202,23 @@ public struct SystemDeepStorageView: View {
                 VStack(spacing: 4) {
                     ForEach(snapshots.prefix(4)) { snapshot in
                         HStack {
+                            // 逐条点名：勾了才可能删，不勾就一条命令都不执行
+                            Button(action: {
+                                if confirmedSnapshotNames.contains(snapshot.name) {
+                                    confirmedSnapshotNames.remove(snapshot.name)
+                                } else {
+                                    confirmedSnapshotNames.insert(snapshot.name)
+                                }
+                            }) {
+                                Image(systemName: confirmedSnapshotNames.contains(snapshot.name)
+                                     ? "checkmark.square.fill" : "square")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(confirmedSnapshotNames.contains(snapshot.name)
+                                                     ? Signal.caution : Ink.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("勾选后才会进入删除范围")
+
                             Image(systemName: "camera.fill")
                                 .font(.system(size: 10))
                                 .foregroundColor(Ink.tertiary)
@@ -170,7 +237,7 @@ public struct SystemDeepStorageView: View {
                                     .foregroundColor(Ink.tertiary)
                             }
                             .buttonStyle(.plain)
-                            .help("删除此本地快照")
+                            .help("单独释放这一条（需二次确认）")
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -230,9 +297,13 @@ public struct SystemDeepStorageView: View {
                         .font(Typo.micro)
                         .foregroundColor(Ink.tertiary)
                     HStack(spacing: 4) {
-                        Text(vmInfo.sleepimageExists ? vmInfo.sleepimageSize.byteStringCN : "未生成 / 0 B")
+                        Text(vmInfo.vmDirectoryReadable
+                             ? (vmInfo.sleepimageExists ? vmInfo.sleepimageSize.byteStringCN : "未生成 / 0 B")
+                             : "读不到 (/var/vm 由 root 管理)")
                             .font(.mcNumeric(13, weight: .semibold))
-                            .foregroundColor(vmInfo.sleepimageSize > 8 * 1024 * 1024 * 1024 ? Signal.caution : Ink.primary)
+                            .foregroundColor(vmInfo.vmDirectoryReadable
+                                             && vmInfo.sleepimageSize > 8 * 1024 * 1024 * 1024
+                                             ? Signal.caution : Ink.primary)
                         if vmInfo.sleepimageExists {
                             Text("(常驻 SSD 镜像)")
                                 .font(Typo.micro)
@@ -245,12 +316,16 @@ public struct SystemDeepStorageView: View {
 
                 // Swap 虚拟交换文件
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Swap 交换文件 (\(vmInfo.swapFilesCount) 个)")
+                    Text(vmInfo.vmDirectoryReadable
+                         ? "Swap 交换文件 (\(vmInfo.swapFilesCount) 个)"
+                         : "Swap 交换文件（未知）")
                         .font(Typo.micro)
                         .foregroundColor(Ink.tertiary)
-                    Text(vmInfo.totalSwapSize > 0 ? vmInfo.totalSwapSize.byteStringCN : "0 B (无压力)")
+                    Text(vmInfo.vmDirectoryReadable
+                         ? (vmInfo.totalSwapSize > 0 ? vmInfo.totalSwapSize.byteStringCN : "0 B (无压力)")
+                         : "无法判断")
                         .font(.mcNumeric(13, weight: .semibold))
-                        .foregroundColor(Ink.primary)
+                        .foregroundColor(vmInfo.vmDirectoryReadable ? Ink.primary : Signal.caution)
                 }
 
                 Divider().frame(height: 24)
@@ -260,20 +335,47 @@ public struct SystemDeepStorageView: View {
                     Text("当前休眠模式")
                         .font(Typo.micro)
                         .foregroundColor(Ink.tertiary)
-                    Text("Mode \(vmInfo.hibernateMode ?? 3)")
+                    Text(vmInfo.hibernateMode.map { "Mode \($0)" } ?? "未知")
                         .font(.mcNumeric(13, weight: .semibold))
-                        .foregroundColor(Ink.primary)
+                        .foregroundColor(vmInfo.hibernateMode == nil ? Signal.caution : Ink.primary)
                 }
             }
 
+            // 证据不足提示：读不到时不说"正常/最省空间"
+            if !vmInfo.isResultComplete {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(vmInfo.incompletenessBanner
+                         ?? "休眠设置未能读取：本轮不给任何优化建议。")
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.primary)
+                    ForEach(vmInfo.issues) { issue in
+                        Text("· \(issue.message)")
+                            .font(Typo.micro)
+                            .foregroundColor(Ink.secondary)
+                    }
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Signal.caution.opacity(0.10))
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .accessibilityIdentifier("vm-incomplete-notice")
+            }
+
             // 智能分析建议
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .foregroundColor(Accent.tint)
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: vmInfo.isResultComplete ? "sparkles" : "exclamationmark.triangle")
+                    .foregroundColor(vmInfo.isResultComplete ? Accent.tint : Signal.caution)
                     .font(.system(size: 10))
-                Text(vmInfo.suggestionText)
-                    .font(Typo.micro)
-                    .foregroundColor(Ink.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vmInfo.suggestionText)
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(SystemDeepStorageInspector.hibernateRiskText)
+                        .font(Typo.micro)
+                        .foregroundColor(Ink.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.top, 2)
         }
@@ -287,10 +389,15 @@ public struct SystemDeepStorageView: View {
     private func reload() {
         isLoading = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let snaps = SystemDeepStorageInspector.listLocalSnapshots()
+            let inventory = SystemDeepStorageInspector.snapshotInventory()
             let vm = SystemDeepStorageInspector.inspectVMMemory()
             DispatchQueue.main.async {
-                self.snapshots = snaps
+                self.snapshots = inventory.snapshots
+                self.snapshotIssues = inventory.issues
+                self.snapshotListRead = inventory.commandSucceeded
+                // 已勾选项若已不在清单里就丢掉，避免把陈旧名字拼进命令
+                let alive = Set(inventory.snapshots.map(\.name))
+                self.confirmedSnapshotNames.formIntersection(alive)
                 self.vmInfo = vm
                 self.isLoading = false
             }
@@ -298,26 +405,48 @@ public struct SystemDeepStorageView: View {
     }
 
     private func deleteSingleSnapshot(_ snapshot: APFSSnapshot) {
+        // 逐条确认：先弹说明，用户点"确认删除"才执行
+        pendingDeleteName = snapshot.name
+        showConfirmSingleDelete = true
+    }
+
+    private func performDeleteSingleSnapshot(name: String) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let res = SystemDeepStorageInspector.deleteLocalSnapshot(snapshotName: snapshot.name)
+            let res = SystemDeepStorageInspector.deleteLocalSnapshot(
+                snapshotName: name, confirmed: true, knownSnapshots: self.snapshots)
             DispatchQueue.main.async {
+                self.bannerMessage = res.message
                 if res.success {
-                    self.snapshots.removeAll { $0.id == snapshot.id }
-                    self.bannerMessage = res.message
-                } else {
-                    self.bannerMessage = res.message
+                    self.snapshots.removeAll { $0.name == name }
+                    self.confirmedSnapshotNames.remove(name)
+                }
+                if res.success && self.snapshots.isEmpty {
+                    // 删完必须重新取证，不能凭"列表空了"就下结论
+                    self.reload()
                 }
             }
         }
     }
 
-    private func deleteAllSnapshots() {
+    private func deleteConfirmedSnapshots() {
+        let names = confirmedSnapshotNames.sorted()
+        guard !names.isEmpty else {
+            bannerMessage = "没有勾选任何快照，未执行 tmutil。"
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
-            let (succeeded, failed) = SystemDeepStorageInspector.deleteAllLocalSnapshots(snapshots: self.snapshots)
-            let updated = SystemDeepStorageInspector.listLocalSnapshots()
+            let outcome = SystemDeepStorageInspector.deleteLocalSnapshots(
+                names, confirmed: true, knownSnapshots: self.snapshots)
             DispatchQueue.main.async {
-                self.snapshots = updated
-                self.bannerMessage = "已清理 \(succeeded) 个 APFS 快照\(failed > 0 ? "，\(failed) 个需管理员权限" : "")"
+                // 逐项如实：成功数 / 失败数 / 未执行数，绝不说"已全部清理"
+                self.bannerMessage = outcome.summary
+                for entry in outcome.failed where self.bannerMessage?.contains(entry.message) != true {
+                    self.bannerMessage = (self.bannerMessage ?? "") + "｜" + entry.message
+                }
+                for skipped in outcome.skipped where self.bannerMessage?.contains(skipped.reason) != true {
+                    self.bannerMessage = (self.bannerMessage ?? "") + "｜" + skipped.reason
+                }
+                self.reload()
             }
         }
     }
@@ -326,6 +455,7 @@ public struct SystemDeepStorageView: View {
         let script = SystemDeepStorageInspector.generateHibernateOptimizationScript(targetMode: 0)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(script, forType: .string)
-        bannerMessage = "已拷贝休眠瘦身优化 Shell 命令至剪贴板，可粘贴至终端执行"
+        bannerMessage = "已拷贝休眠瘦身命令（需 sudo，请在终端自行执行）。"
+            + SystemDeepStorageInspector.hibernateRiskText
     }
 }

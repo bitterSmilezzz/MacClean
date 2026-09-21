@@ -16,17 +16,12 @@ struct PhotoThumbnailPreview: View {
     init(path: String, maxPixelSize: Int = 1024) {
         self.path = path
         self.maxPixelSize = maxPixelSize
-        // 同步尝试轻量解码，避免无头测试或初始瞬间空白
-        let url = URL(fileURLWithPath: path)
-        if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-                kCGImageSourceCreateThumbnailWithTransform: true
-            ]
-            if let cgImg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                self._image = State(initialValue: NSImage(cgImage: cgImg, size: NSSize(width: cgImg.width, height: cgImg.height)))
-            }
+        // v1.72.0：这里**不再同步解码**。原先 init 里直接读文件 + 解码 1024px 缩略图，
+        // 而 SwiftUI 每次重渲染都会重建视图结构体并再跑一遍 init ——
+        // 于是一次弹窗打开/参数变更就在主线程反复解大图。缓存命中时仍同步取值，
+        // 未命中则后台解码（见 ThumbnailCache）。
+        if let hit = ThumbnailCache.shared.cached(path, maxPixelSize: maxPixelSize) {
+            _image = State(initialValue: hit)
         }
     }
 
@@ -49,6 +44,11 @@ struct PhotoThumbnailPreview: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .onAppear {
+            ThumbnailCache.shared.image(for: path, maxPixelSize: maxPixelSize) { loaded in
+                image = loaded
+            }
+        }
     }
 }
 

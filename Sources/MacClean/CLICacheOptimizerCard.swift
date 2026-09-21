@@ -11,6 +11,8 @@ public struct CLICacheOptimizerCard: View {
     @State private var isScanning: Bool = false
     @State private var isCleaning: Bool = false
     @State private var bannerFeedback: String? = nil
+    @State private var bannerIsWarning: Bool = false
+    @State private var gateNotes: [String] = []
     @State private var showConfirmClean: Bool = false
 
     public init(onClose: @escaping () -> Void, onTriggerClean: (() -> Void)? = nil) {
@@ -34,6 +36,9 @@ public struct CLICacheOptimizerCard: View {
             if let feedback = bannerFeedback {
                 bannerBar(feedback)
             }
+            if !summary.unrecognizedTools.isEmpty || !gateNotes.isEmpty {
+                gateNotesPanel
+            }
 
             contentListContainer
             actionFooterBar
@@ -53,7 +58,7 @@ public struct CLICacheOptimizerCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清空选中的 \(selectedCount) 项开发工具缓存（\(selectedSize.byteStringCN)）。仅清理缓存文件，绝对不影响工程源码和全局配置文件。")
+            Text("将把选中缓存目录的**直接子项**逐条提交统一删除网关裁决（缓存根目录本身保留）。关键配置文件（.npmrc / .zshrc / config.toml / settings.json 等）按子项路径校验后拒绝清理；工具数据目录（如 ~/.npm）一律不清空。")
         }
     }
 
@@ -99,14 +104,51 @@ public struct CLICacheOptimizerCard: View {
 
     private var metricsSummaryBar: some View {
         HStack(spacing: Space.sm) {
-            metricItem(title: "发现工具数", value: "\(summary.toolCount)", detail: "已扫描 8 类工具", color: Ink.primary)
+            metricItem(title: "发现工具数", value: "\(summary.toolCount)", detail: "已扫描 \(CLIToolKind.allCases.count) 类工具", color: Ink.primary)
             Divider().frame(height: 28)
             metricItem(title: "缓存总占用", value: summary.totalSize.byteStringCN, detail: "\(summary.items.reduce(0) { $0 + $1.fileCount }) 个文件", color: summary.totalSize > 1_000_000_000 ? Signal.caution : Ink.secondary)
             Divider().frame(height: 28)
             metricItem(title: "可释放潜力", value: selectedSize.byteStringCN, detail: "已勾选 \(selectedCount) 项", color: selectedSize > 0 ? Signal.positive : Ink.secondary)
+            Divider().frame(height: 28)
+            metricItem(title: "位置未识别", value: "\(summary.unrecognizedTools.count) 类", detail: "只报不删", color: summary.unrecognizedTools.isEmpty ? Ink.tertiary : Signal.caution)
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, Space.xs)
+        .background(Surface.sunken)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+    }
+
+    /// 网关拦下的原因 + "该工具缓存位置未识别"的如实说明
+    private var gateNotesPanel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if !summary.unrecognizedTools.isEmpty {
+                HStack(alignment: .top, spacing: Space.xs) {
+                    Image(systemName: "questionmark.folder")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Signal.caution)
+                    Text("该工具缓存位置未识别：\(summary.unrecognizedTools.map { $0.rawValue }.joined(separator: "、"))。"
+                         + "本工具不会退化成清空它们的工具目录，请用官方命令清理（点条目上的命令可复制）。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+            }
+            ForEach(Array(gateNotes.enumerated()), id: \.offset) { _, note in
+                HStack(alignment: .top, spacing: Space.xs) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Signal.caution)
+                    Text(note)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Ink.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, 5)
         .background(Surface.sunken)
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
@@ -234,9 +276,9 @@ public struct CLICacheOptimizerCard: View {
 
     private func bannerBar(_ message: String) -> some View {
         HStack(spacing: Space.xs) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: bannerIsWarning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 12))
-                .foregroundStyle(Signal.positive)
+                .foregroundStyle(bannerIsWarning ? Signal.caution : Signal.positive)
             Text(message)
                 .font(Typo.caption)
                 .foregroundStyle(Ink.primary)
@@ -244,7 +286,7 @@ public struct CLICacheOptimizerCard: View {
         }
         .padding(.horizontal, Space.sm)
         .padding(.vertical, 6)
-        .background(Signal.positive.opacity(0.12))
+        .background((bannerIsWarning ? Signal.caution : Signal.positive).opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
     }
 
@@ -309,17 +351,41 @@ public struct CLICacheOptimizerCard: View {
 
     private func executeClean(toTrash: Bool) {
         isCleaning = true
+        gateNotes = []
         let targets = summary.items.filter(\.isSelected)
 
         DispatchQueue.global(qos: .userInitiated).async {
             let res = CLICacheScanner.shared.clean(items: targets, toTrash: toTrash)
+            let notes = Self.explanationNotes(from: res)
+            let blocked = res.errorCount
+
             DispatchQueue.main.async {
                 self.isCleaning = false
+                self.gateNotes = notes
+                self.bannerIsWarning = (res.cleanedCount == 0 && blocked > 0)
                 let mode = toTrash ? "移入废纸篓" : "彻底清空"
-                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 项命令行缓存，释放 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = res.cleanedCount == 0
+                    ? "未清理任何缓存子项（\(blocked) 项被拦或失败）：\(notes.joined(separator: "；"))"
+                    : "已安全\(mode) \(res.cleanedCount) 项缓存子项，释放 \(res.freedBytes.byteStringCN)（删除前实测）"
+                    + (blocked > 0 ? "；另有 \(blocked) 项未通过网关" : "")
                 self.loadData()
                 self.onTriggerClean?()
             }
         }
+    }
+
+    /// 网关/判据拦下的原因，逐条如实呈现
+    static func explanationNotes(from outcome: ResidueDeletionGate.Outcome) -> [String] {
+        var notes: [String] = []
+        for priv in outcome.needsPrivilege {
+            notes.append("「\(priv.name)」未清理：该位置由 root 管理，本工具不提权")
+        }
+        for rejection in outcome.rejected where rejection.reason != .needsPrivilege {
+            notes.append("「\(rejection.name)」未清理：\(rejection.message)")
+        }
+        for failure in outcome.failed {
+            notes.append("「\(failure.name)」清理失败：\(failure.message)")
+        }
+        return Array(notes.prefix(6))
     }
 }

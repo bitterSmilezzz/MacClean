@@ -67,11 +67,7 @@ enum UndoManagerStore {
 
     private static var fileURL: URL {
         if let override = fileURLOverride { return override }
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("MacClean", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("undo_sessions.json")
+        return MacCleanState.stateDirectory.appendingPathComponent("undo_sessions.json")
     }
 
     private static let lock = NSLock()

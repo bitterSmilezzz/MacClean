@@ -79,14 +79,21 @@ final class Scanner {
     ///
     /// 返回值是值类型（Set），拿到之后就不再与静态存储共享状态，
     /// 扫描体内可以随便读，没有锁开销也没有竞争。
-    private static func refreshedInstalledAppSnapshot() -> (apps: Set<String>, prefixes: Set<String>) {
+    private static func refreshedInstalledAppSnapshot() -> (apps: Set<String>, prefixes: Set<String>, trustworthy: Bool) {
         let apps = buildInstalledApps()
         let prefixes = buildInstalledBundlePrefixes()
         installedAppsLock.lock()
         installedAppsCache = apps
         installedBundlePrefixesCache = prefixes
         installedAppsLock.unlock()
-        return (apps, prefixes)
+        // G16：这两个构建器都用 `FileSystem.children(of:)` 枚举 Applications 根，
+        // 而它在读不到时返回**空数组**——不是报错。于是"读不到 /Applications"会被读成
+        // "本机没装任何应用"，A1–A5 就把 ~/Library 下的每个目录都当成已卸载应用的残留。
+        // 宁可这一类什么都不报，也不能拿空清单去做"宿主已卸载"的反查。
+        let unreadable = CleanPaths.appDirs.first { dir in
+            FileSystem.isPermissionDenied(CleanPaths.expand(dir))
+        }
+        return (apps, prefixes, unreadable == nil)
     }
 
     /// 中英文别名映射（目录名 → 可能的已安装应用名）
@@ -181,7 +188,11 @@ final class Scanner {
                     ("~/.m2", "Maven 仓库"),
                     (CleanPaths.homebrewCellar, "Homebrew Cellar")]
         case .appResidue:
-            return [(CleanPaths.appSupport, "Application Support"),
+            // "已安装应用目录"必须在体检清单里：A1–A5 全部依赖它做反查，
+            // 它读不到时整类会**主动**返回 0 项（见 scanAppResidue 的 G16 守卫），
+            // 若不明示，用户看到的"没有残留"和"根本没读到"长得一模一样。
+            return [("/Applications", "已安装应用目录"),
+                    (CleanPaths.appSupport, "Application Support"),
                     (CleanPaths.preferences, "偏好设置目录"),
                     (CleanPaths.launchAgents, "启动代理目录")]
         case .largeFiles:
@@ -1233,6 +1244,7 @@ final class Scanner {
         let snapshot = refreshedInstalledAppSnapshot()
         let installedApps = snapshot.apps
         let installedBundlePrefixes = snapshot.prefixes
+        guard snapshot.trustworthy else { return [] }
 
         var items: [CleanItem] = []
         items += scanA1AppSupportResidue(installedApps: installedApps,

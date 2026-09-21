@@ -21,7 +21,8 @@ public struct PrinterDriverOptimizerCard: View {
 
     private var displayedItems: [PrinterDriverItem] {
         if showOrphansOnly {
-            return summary.items.filter { $0.status.isOrphanOrCorrupted }
+            // 「需确认」项一并列出：它们不可删，但用户需要看到"为什么没被判定为可清理"
+            return summary.items.filter { $0.status.isOrphanOrCorrupted || $0.status == .needsConfirmation }
         }
         return summary.items
     }
@@ -37,6 +38,7 @@ public struct PrinterDriverOptimizerCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             topHeader
+            evidenceBanner
             metricsSummaryBar
 
             if let feedback = bannerFeedback {
@@ -61,7 +63,38 @@ public struct PrinterDriverOptimizerCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清理选中的 \(selectedCount) 项驱动数据（\(selectedSize.byteStringCN)）。当前系统已配置在用的打印机队列与描述文件已受严格保护，绝不误删。")
+            Text("将清理选中的 \(selectedCount) 项驱动数据（\(selectedSize.byteStringCN)）。"
+                 + "PPD 厂商分组只删除其成员 PPD 文件，绝不删除共享资源目录；在用配置与系统核心配置受保护。")
+        }
+    }
+
+    // MARK: - 证据可信度横幅（读不到 CUPS 时必须显式降级）
+
+    @ViewBuilder
+    private var evidenceBanner: some View {
+        if !summary.cupsEvidenceReadable {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Signal.caution)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("无法读取 CUPS 打印机配置（需 root），本模块仅提供定位与建议")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.primary)
+                    if !summary.unreadableSources.isEmpty {
+                        Text("读不到的证据源：\(summary.unreadableSources.joined(separator: "、"))")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.tertiary)
+                    }
+                    Text("因此没有一项被判定为废弃驱动，也没有任何一项被默认勾选。")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                }
+                Spacer()
+            }
+            .padding(8)
+            .background(Signal.caution.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
         }
     }
 
@@ -117,6 +150,8 @@ public struct PrinterDriverOptimizerCard: View {
             metricBlock(title: "废弃/孤儿驱动", value: "\(summary.orphanSize.byteStringCN) (\(summary.orphanCount)项)", color: Accent.tint)
             Divider().frame(height: 20)
             metricBlock(title: "在用受保护项", value: "\(summary.activeCount) 项", color: Signal.positive)
+            Divider().frame(height: 20)
+            metricBlock(title: "证据不足需确认", value: "\(summary.needsConfirmationCount) 项", color: summary.needsConfirmationCount > 0 ? Signal.caution : Ink.tertiary)
             Divider().frame(height: 20)
             metricBlock(title: "已选待释放", value: selectedSize.byteStringCN, color: selectedSize > 0 ? Signal.caution : Ink.tertiary)
             Spacer()
@@ -203,7 +238,7 @@ public struct PrinterDriverOptimizerCard: View {
             } else {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 12))
-                    .foregroundStyle(Signal.positive)
+                    .foregroundStyle(item.status == .needsConfirmation ? Signal.caution : Signal.positive)
                     .frame(width: 16)
             }
 
@@ -220,6 +255,12 @@ public struct PrinterDriverOptimizerCard: View {
                         .lineLimit(1)
                     vendorBadge(item.vendor)
                     statusBadge(item.status)
+                    if item.kind == .ppdResource {
+                        // 分组只删成员文件，把数量摊给用户看，避免"整棵资源树"的误解
+                        Text("仅删 \(item.memberPaths.count) 个 PPD 文件")
+                            .font(Typo.micro)
+                            .foregroundStyle(Ink.tertiary)
+                    }
                 }
 
                 Text(item.path)
@@ -227,6 +268,13 @@ public struct PrinterDriverOptimizerCard: View {
                     .foregroundStyle(Ink.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                if let note = item.evidenceNote, !note.isEmpty {
+                    Text(note)
+                        .font(Typo.micro)
+                        .foregroundStyle(item.status == .needsConfirmation ? Signal.caution : Ink.quaternary)
+                        .lineLimit(2)
+                }
             }
 
             Spacer()
@@ -235,9 +283,19 @@ public struct PrinterDriverOptimizerCard: View {
                 Text(item.size.byteStringCN)
                     .font(Typo.rowStrong)
                     .foregroundStyle(Ink.primary)
-                Text("\(item.fileCount) 个文件")
-                    .font(Typo.micro)
-                    .foregroundStyle(Ink.tertiary)
+                HStack(spacing: 4) {
+                    Text("\(item.fileCount) 个文件")
+                        .font(Typo.micro)
+                        .foregroundStyle(Ink.tertiary)
+                    Button {
+                        NSWorkspace.shared.selectFile(item.path, inFileViewerRootedAtPath: "")
+                    } label: {
+                        Image(systemName: "folder")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("在访达中显示（无删除权限时的定位手段）")
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -267,6 +325,8 @@ public struct PrinterDriverOptimizerCard: View {
                 return ("损坏驱动", Signal.critical.opacity(0.12), Signal.critical)
             case .systemProtected:
                 return ("系统核心", Color.blue.opacity(0.12), Color.blue)
+            case .needsConfirmation:
+                return ("需确认", Ink.tertiary.opacity(0.16), Ink.secondary)
             }
         }()
 
@@ -348,13 +408,40 @@ public struct PrinterDriverOptimizerCard: View {
     private func executeClean(toTrash: Bool) {
         guard !isCleaning else { return }
         isCleaning = true
+        // 只把"确证孤儿/损坏"的项交给网关；网关内部还会再过一遍治理域 + 软链 + 白名单护栏，
+        // 并用 policy 兜住同一条业务判据（视图这条只是第一道）。
         let targets = summary.items.filter { $0.isSelected && $0.status.isOrphanOrCorrupted }
+        let protectedSkipped = summary.items.filter { $0.isSelected && !$0.status.isOrphanOrCorrupted }.count
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = PrinterDriverScanner.shared.clean(items: targets, toTrash: toTrash)
+            let outcome = PrinterDriverScanner.shared.clean(items: targets, toTrash: toTrash)
+            var lines: [String] = [outcome.summary]
+            if protectedSkipped > 0 {
+                lines.append("\(protectedSkipped) 项受保护未提交删除")
+            }
+            // root 管理的位置：不提权，只给定位手段——绝不含糊地说"清理失败"
+            if !outcome.needsPrivilege.isEmpty {
+                let first = outcome.needsPrivilege.first?.message ?? GovernanceVerdict.rejected(.needsPrivilege).message
+                lines.append("\(outcome.needsPrivilege.count) 项无法删除：\(first)"
+                    + " 已为它们在列表中保留，可用行尾的访达按钮自行定位。")
+            }
+            let others = outcome.rejected.filter { $0.reason != .needsPrivilege }
+            if !others.isEmpty {
+                lines.append("\(others.count) 项被安全护栏拦下（\(others.first?.message ?? "")）")
+            }
+            if !outcome.failed.isEmpty {
+                lines.append("\(outcome.failed.count) 项删除失败（\(outcome.failed.first?.message ?? "")）")
+            }
+            // 真删掉了东西才去请 CUPS 重载，且结果如实上报
+            if outcome.cleanedCount > 0 {
+                let refresh = PrinterDriverScanner.shared.refreshCUPS()
+                lines.append(refresh.success ? "CUPS 已重载：\(refresh.message)"
+                                             : "CUPS 未确认重载：\(refresh.message)")
+            }
+            let feedback = lines.joined(separator: "；")
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "成功清理 \(result.cleanedCount) 项打印机驱动，释放 \(result.freedBytes.byteStringCN)" + (result.errorCount > 0 ? "（\(result.errorCount) 项受保护未清理）" : "")
+                self.bannerFeedback = feedback
                 self.loadData()
                 self.onTriggerClean?()
             }

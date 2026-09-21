@@ -100,13 +100,42 @@ extension Selftest {
             return true
         }
 
-        check("系统工具调用：dscacheutil DNS 缓存刷新执行与接口获取") {
+        check("系统工具调用：命令与参数受控、失败如实上报（注入 runner，不真动系统 DNS）") {
+            // 自检此前会**真的执行** `dscacheutil -flushcache`：每次自检都把用户的
+            // DNS 缓存清空一次，而它断言的只是"退出码 0"。改为注入假 runner 之后，
+            // 断言的是真正有风险的部分：调的是哪个可执行文件、参数对不对、
+            // 非 0 退出码有没有被谎报成成功。
+            let saved = SafeProcess.runner
+            var seen: [(String, [String])] = []
+            SafeProcess.runner = { path, args, _ in
+                seen.append((path, args))
+                return SafeProcess.Result(exitCode: 0, output: "Hardware Port: Wi-Fi\nDevice: en0\n")
+            }
+            defer { SafeProcess.runner = saved }
+
             let iface = NetworkPrivacyInspector.shared.detectDefaultWiFiInterface()
-            guard !iface.isEmpty else { return false }
+            guard iface == "en0" else { return false }
+            guard seen.last?.1 == ["-listallhardwareports"] else { return false }
 
             let flushRes = NetworkPrivacyInspector.shared.flushDNSCache()
-            guard flushRes.success == true else { return false }
+            guard flushRes.success else { return false }
+            guard seen.last?.0 == NetworkPrivacyInspector.dscacheutilPath,
+                  seen.last?.1 == ["-flushcache"] else { return false }
 
+            // 非 0 退出码必须转成失败，不能被当成"已刷新"
+            SafeProcess.runner = { _, _, _ in
+                SafeProcess.Result(exitCode: 1, output: "operation not permitted")
+            }
+            let failRes = NetworkPrivacyInspector.shared.flushDNSCache()
+            guard !failRes.success, failRes.message.contains("operation not permitted") else { return false }
+
+            // 钥匙串授权被拒（44）绝不能读成"这是个开放网络"
+            SafeProcess.runner = { _, _, _ in SafeProcess.Result(exitCode: 44, output: "") }
+            guard NetworkPrivacyInspector.shared.checkSecurityKind(ssid: "Corp") == .unknown else { return false }
+            SafeProcess.runner = { _, _, _ in SafeProcess.Result(exitCode: 45, output: "") }
+            guard NetworkPrivacyInspector.shared.checkSecurityKind(ssid: "Cafe") == .openUnsecured else { return false }
+            SafeProcess.runner = { _, _, _ in SafeProcess.Result(exitCode: 0, output: "") }
+            guard NetworkPrivacyInspector.shared.checkSecurityKind(ssid: "Home") == .wpaEncrypted else { return false }
             return true
         }
 

@@ -13,92 +13,41 @@ enum OrphanScanner {
         let executableNames: Set<String>
         let runningBundleIDs: Set<String>
 
+        /// 清单是否可信：根目录读不到时 AppInventory 会给出不完整快照，
+        /// 此时**绝不能**据"不在清单里"就判孤儿（见 `isInstalledOrProtected`）。
+        let inventoryComplete: Bool
+
         init(
             bundleIDs: Set<String>,
             bundlePrefixes: Set<String>,
             normalizedNames: Set<String>,
             executableNames: Set<String>,
-            runningBundleIDs: Set<String>
+            runningBundleIDs: Set<String>,
+            inventoryComplete: Bool = true
         ) {
             self.bundleIDs = bundleIDs
             self.bundlePrefixes = bundlePrefixes
             self.normalizedNames = normalizedNames
             self.executableNames = executableNames
             self.runningBundleIDs = runningBundleIDs
+            self.inventoryComplete = inventoryComplete
         }
 
+        /// v1.72.0：收敛到 `AppInventory` 单一清单源。
+        ///
+        /// 原先这里自己枚举 4 个 Applications 根、读几百份 `Info.plist`，且全程 `try?` ——
+        /// 根目录读不到就得到一个**空集合**，于是所有残存都被判成孤儿。
+        /// 现在既共享缓存（打开一次卸载器原先要重建约 5 次），也把"读不到"如实带出来。
         static func build() -> InstalledDatabase {
-            var bIDs = Set<String>()
-            var bPrefixes = Set<String>()
-            var names = Set<String>()
-            var execs = Set<String>()
-
-            let roots = [
-                "/Applications",
-                "~/Applications",
-                "/System/Applications",
-                "/System/Library/CoreServices/Applications"
-            ]
-
-            for root in roots {
-                let expanded = CleanPaths.expand(root)
-                guard FileManager.default.fileExists(atPath: expanded) else { continue }
-                collectApps(in: expanded, bIDs: &bIDs, bPrefixes: &bPrefixes, names: &names, execs: &execs)
-            }
-
-            // 运行中的进程
-            let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleIdentifier?.lowercased() })
-            for r in running {
-                bIDs.insert(r)
-                let parts = r.split(separator: ".")
-                if parts.count >= 2 {
-                    bPrefixes.insert("\(parts[0]).\(parts[1])")
-                }
-            }
-
+            let snapshot = AppInventory.current()
             return InstalledDatabase(
-                bundleIDs: bIDs,
-                bundlePrefixes: bPrefixes,
-                normalizedNames: names,
-                executableNames: execs,
-                runningBundleIDs: running
+                bundleIDs: snapshot.bundleIDs,
+                bundlePrefixes: snapshot.bundlePrefixes,
+                normalizedNames: snapshot.normalizedNames,
+                executableNames: snapshot.executableNames,
+                runningBundleIDs: snapshot.runningBundleIDs,
+                inventoryComplete: snapshot.isComplete
             )
-        }
-
-        private static func collectApps(
-            in dir: String,
-            bIDs: inout Set<String>,
-            bPrefixes: inout Set<String>,
-            names: inout Set<String>,
-            execs: inout Set<String>
-        ) {
-            for child in FileSystem.children(of: dir) {
-                if child.hasSuffix(".app") {
-                    let appName = (child as NSString).lastPathComponent.replacingOccurrences(of: ".app", with: "")
-                    names.insert(normalize(appName))
-
-                    let plistPath = (child as NSString).appendingPathComponent("Contents/Info.plist")
-                    if let dict = NSDictionary(contentsOfFile: plistPath) {
-                        if let bid = dict["CFBundleIdentifier"] as? String {
-                            let lower = bid.lowercased()
-                            bIDs.insert(lower)
-                            let parts = lower.split(separator: ".")
-                            if parts.count >= 2 {
-                                bPrefixes.insert("\(parts[0]).\(parts[1])")
-                            }
-                        }
-                        if let cfName = dict["CFBundleName"] as? String {
-                            names.insert(normalize(cfName))
-                        }
-                        if let cfDisplay = dict["CFBundleDisplayName"] as? String {
-                            names.insert(normalize(cfDisplay))
-                        }
-                        if let exec = dict["CFBundleExecutable"] as? String {
-                            execs.insert(exec.lowercased())
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -123,6 +72,13 @@ enum OrphanScanner {
 
     /// 判定某条目是否属于仍安装在系统中的应用或系统服务（若属于则不是孤儿）
     static func isInstalledOrProtected(identifier: String, db: InstalledDatabase) -> Bool {
+        // 清单不可信时一律按"受保护"处理。
+        //
+        // 这一行的方向很重要：`false` 的下游含义是"宿主已卸载 → 可清理 → 默认勾选"。
+        // 原先 `/Applications` 读不到会让清单变成空集，于是**全盘残存一夜之间全成孤儿**。
+        // 宁可一个孤儿都查不出来，也不能把在用的东西送进废纸篓。
+        if !db.inventoryComplete { return true }
+
         let lower = identifier.lowercased()
 
         // 1. 系统 bundle 与守护进程硬白名单

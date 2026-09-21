@@ -812,13 +812,28 @@ enum DuplicateScanner {
                 }
             }
 
-            for i in 0..<(fCount - 1) {
-                let hashI = features[i].hash
-                for j in (i + 1)..<fCount {
-                    let hashJ = features[j].hash
-                    // 汉明距离 <= 8 (感知相似度 >= 87.5%)
-                    if ImageHash.isSimilar(hashI, hashJ, maxDistance: 8) {
-                        unionNodes(i, j)
+            // 候选对用分桶生成，不再两两全比对。
+            //
+            // 原先这里是 O(n²)：2 万张图就是 2×10⁸ 次汉明距离计算（数十秒级）。
+            // `ImageHash.bandKeys` 按抽屉原理保证"距离 ≤ 8 ⟹ 至少一段完全相同"，
+            // 因此同桶候选覆盖所有真实相似对，**不漏判**；union 幂等，重复对无害。
+            let maxDistance = 8
+            var buckets: [UInt64: [Int]] = [:]
+            buckets.reserveCapacity(fCount * 2)
+            for i in 0..<fCount {
+                for key in ImageHash.bandKeys(of: features[i].hash, bands: maxDistance + 1) {
+                    buckets[key, default: []].append(i)
+                }
+            }
+            for indices in buckets.values where indices.count > 1 {
+                for i in 0..<(indices.count - 1) {
+                    let hashI = features[indices[i]].hash
+                    for j in (i + 1)..<indices.count {
+                        let hashJ = features[indices[j]].hash
+                        // 汉明距离 <= 8 (感知相似度 >= 87.5%)
+                        if ImageHash.isSimilar(hashI, hashJ, maxDistance: maxDistance) {
+                            unionNodes(indices[i], indices[j])
+                        }
                     }
                 }
             }

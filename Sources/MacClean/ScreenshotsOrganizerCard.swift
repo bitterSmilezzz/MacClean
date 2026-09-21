@@ -389,7 +389,9 @@ public struct ScreenshotsOrganizerCard: View {
             DispatchQueue.main.async {
                 self.isProcessing = false
                 let mode = toTrash ? "移入废纸篓" : "彻底删除"
-                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 个文件，释放 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 个文件，"
+                    + "实测释放 \(res.freedBytes.byteStringCN)"
+                    + (res.errorCount > 0 ? "；\(res.errorCount) 项被护栏拦下或移动失败" : "")
                 self.loadData()
                 self.onTriggerClean?()
             }
@@ -407,7 +409,9 @@ public struct ScreenshotsOrganizerCard: View {
             )
             DispatchQueue.main.async {
                 self.isProcessing = false
-                self.bannerFeedback = "已成功将 \(res.archivedCount) 个文件归档分类至 ~/Pictures/Screenshots_Archive"
+                var text = "已成功将 \(res.archivedCount) 个文件（实测 \(res.archivedBytes.byteStringCN)）归档分类至 ~/Pictures/Screenshots_Archive"
+                if res.errorCount > 0 { text += "；\(res.errorCount) 项未移动：\(res.firstFailure ?? "被安全护栏拦下")" }
+                self.bannerFeedback = text
                 self.loadData()
             }
         }

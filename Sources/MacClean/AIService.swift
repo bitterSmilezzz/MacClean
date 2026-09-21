@@ -728,21 +728,9 @@ enum AIService {
     static func detectProcesses(using path: String) -> [String] {
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else { return [] }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = [path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            return []
-        }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        // 走 SafeProcess：`lsof <path>` 在被审计的目录上可能输出很大（管道 64KB 就死锁），
+        // 且对网络盘/异常 inode 会卡住——原来没有超时，一卡就把整个 AI 筛查挂死。
+        guard let text = SafeProcess.output("/usr/sbin/lsof", [path], timeout: 8) else { return [] }
         var names = Set<String>()
         // lsof 输出: COMMAND  PID  USER  FD  TYPE  DEVICE  SIZE/OFF  NODE  NAME
         for line in text.split(separator: "\n").dropFirst() {

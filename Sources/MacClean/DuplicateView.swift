@@ -566,19 +566,23 @@ struct DuplicateGroupCard: View {
 }
 
 /// 缩略图视图（图片文件优先下采样显示微缩图，其余使用系统图标）
+///
+/// v1.72.0：解码从 `body` 挪进 `ThumbnailCache` 的后台队列。
+/// 原先每次重渲染都会把所有可见行重新打盘解码一次——勾选任一文件就几百次
+/// 主线程磁盘访问。占位用同尺寸透明矩形，避免图片到位时列表跳动。
 struct DuplicateThumbnailView: View {
     let path: String
     let isImage: Bool
+    @State private var image: NSImage?
 
     var body: some View {
         Group {
-            if isImage, let img = generateThumbnail(for: path) {
-                Image(nsImage: img)
+            if let image {
+                Image(nsImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: isImage ? .fill : .fit)
             } else {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: path))
-                    .resizable()
+                Rectangle().fill(Color.clear)
             }
         }
         .frame(width: 26, height: 26)
@@ -587,20 +591,17 @@ struct DuplicateThumbnailView: View {
             RoundedRectangle(cornerRadius: Radius.inner, style: .continuous)
                 .strokeBorder(Surface.hairline.opacity(0.6), lineWidth: 0.5)
         )
+        .onAppear(perform: loadThumbnail)
     }
 
-    private func generateThumbnail(for filePath: String) -> NSImage? {
-        let url = URL(fileURLWithPath: filePath)
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: 64,
-            kCGImageSourceCreateThumbnailWithTransform: true
-        ]
-        guard let cgImg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
+    private func loadThumbnail() {
+        if let hit = ThumbnailCache.shared.cached(path, asIcon: !isImage) {
+            image = hit
+            return
         }
-        return NSImage(cgImage: cgImg, size: NSSize(width: 26, height: 26))
+        ThumbnailCache.shared.image(for: path, asIcon: !isImage) { loaded in
+            image = loaded
+        }
     }
 }
 

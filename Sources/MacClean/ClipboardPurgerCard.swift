@@ -225,6 +225,9 @@ public struct ClipboardPurgerCard: View {
                                         Text(cache.note)
                                             .font(Typo.caption)
                                             .foregroundStyle(Ink.quaternary)
+                                        Text("依据：\(cache.sizeAndAgeEvidence)")
+                                            .font(Typo.micro)
+                                            .foregroundStyle(cache.isReadable ? Ink.tertiary : Signal.caution)
                                     }
 
                                     Spacer()
@@ -315,10 +318,12 @@ public struct ClipboardPurgerCard: View {
     private func executeClearMemory() {
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = ClipboardPurger.shared.clearPasteboard()
+            let cleared = ClipboardPurger.shared.clearPasteboard()
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "已安全清空系统剪贴板，释放内存驻留"
+                self.bannerFeedback = cleared
+                    ? "已清空系统剪贴板（changeCount 已前进，内存驻留已释放）"
+                    : "系统拒绝清空剪贴板：内容可能仍在剪贴板里，未计为成功"
                 self.loadData()
             }
         }
@@ -331,7 +336,7 @@ public struct ClipboardPurgerCard: View {
             let res = ClipboardPurger.shared.cleanClipboardCaches(items: targets)
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "已清理 \(res.cleanedCount) 项临时缓存，释放 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = res.summary
                 self.loadData()
                 self.onTriggerClean?()
             }
@@ -344,7 +349,11 @@ public struct ClipboardPurgerCard: View {
             let res = ClipboardPurger.shared.purgeAll()
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.bannerFeedback = "已彻底清空剪贴板并释放 \(res.freedCacheBytes.byteStringCN) 临时缓存"
+                var text = res.clearedMemory
+                    ? "已清空剪贴板内存内容"
+                    : "剪贴板内存内容未清空（\(res.memoryFailure ?? "系统拒绝")）"
+                text += "；临时缓存：\(res.cacheResult.summary)"
+                self.bannerFeedback = text
                 self.loadData()
                 self.onTriggerClean?()
             }

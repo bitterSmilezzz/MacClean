@@ -166,8 +166,9 @@ enum IncrementalCache {
 
     // MARK: - 磁盘持久化
     private static var cacheFileURL: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MacClean", isDirectory: true)
+        // 走 MacCleanState：自检设了 MACCLEAN_STATE_DIR 时不会与真实机器的
+        // 跨会话指纹缓存互相覆盖（并发跑自检时尤其需要）
+        let dir = MacCleanState.stateDirectory
         if !FileManager.default.fileExists(atPath: dir.path) {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }

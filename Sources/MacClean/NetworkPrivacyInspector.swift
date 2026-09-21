@@ -137,73 +137,41 @@ public final class NetworkPrivacyInspector {
 
     /// 自动探测系统的默认 Wi-Fi 硬件接口
     public func detectDefaultWiFiInterface() -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-listallhardwareports"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return Self.parseWiFiInterface(from: output)
-        } catch {
+        guard let output = SafeProcess.output(Self.networkSetupPath, ["-listallhardwareports"]) else {
             return "en0"
         }
+        return Self.parseWiFiInterface(from: output)
     }
 
     /// 获取当前正在连接中的 Wi-Fi SSID
     public func getCurrentWiFiNetwork(interface: String? = nil) -> String? {
         let iface = interface ?? detectDefaultWiFiInterface()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-getairportnetwork", iface]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            return Self.parseCurrentWiFiNetwork(from: output)
-        } catch {
+        guard let output = SafeProcess.output(Self.networkSetupPath, ["-getairportnetwork", iface]) else {
             return nil
         }
+        return Self.parseCurrentWiFiNetwork(from: output)
     }
+
+    /// `networksetup` 路径可覆盖：自检据此断言"到底调了哪个命令、带了哪些参数"。
+    static var networkSetupPath = "/usr/sbin/networksetup"
+    static var securityPath = "/usr/bin/security"
+    static var dscacheutilPath = "/usr/bin/dscacheutil"
 
     /// 检查指定 SSID 在 Keychain 中是否存在 AirPort 密码记录（确定是否属于加密保护网络）
     public func checkSecurityKind(ssid: String) -> WiFiSecurityKind {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = [
+        let result = SafeProcess.run(Self.securityPath, [
             "find-generic-password",
             "-s", "AirPort",
             "-a", ssid,
             "/Library/Keychains/System.keychain"
-        ]
-
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            if process.terminationStatus == 0 {
-                return .wpaEncrypted
-            } else {
-                // 钥匙串中无该 SSID 密码，且存在于首选网络中 → 判定为开放无加密网络
-                return .openUnsecured
-            }
-        } catch {
-            return .unknown
-        }
+        ], timeout: 6)
+        guard let result else { return .unknown }
+        if result.exitCode == 0 { return .wpaEncrypted }
+        // `security` 的 45 是"条目不存在"，44 是"用户拒绝访问"，其它是执行失败。
+        // 此前这里把**任何非 0** 都当成"没有密码 → 开放网络"：一次钥匙串授权被拒，
+        // 整片已保存网络就会被标成危险，并出现在"一键清理"的候选里。
+        // 只有确证的 45 才能判开放无加密，其余一律 unknown。
+        return result.exitCode == 45 ? .openUnsecured : .unknown
     }
 
     /// 全量列出已保存的首选 Wi-Fi 网络及其安全属性
@@ -211,33 +179,18 @@ public final class NetworkPrivacyInspector {
         let iface = interface ?? detectDefaultWiFiInterface()
         let currentSSID = getCurrentWiFiNetwork(interface: iface)
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-listpreferredwirelessnetworks", iface]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
-            let ssids = Self.parsePreferredNetworks(from: output)
-
-            return ssids.map { ssid in
-                let sec = checkSecurityKind(ssid: ssid)
-                let isCurrent = (ssid == currentSSID)
-                return WiFiNetworkRecord(
-                    ssid: ssid,
-                    securityKind: sec,
-                    interface: iface,
-                    isCurrentActive: isCurrent
-                )
-            }
-        } catch {
+        guard let output = SafeProcess.output(Self.networkSetupPath,
+                                             ["-listpreferredwirelessnetworks", iface]) else {
             return []
+        }
+        let ssids = Self.parsePreferredNetworks(from: output)
+        return ssids.map { ssid in
+            WiFiNetworkRecord(
+                ssid: ssid,
+                securityKind: checkSecurityKind(ssid: ssid),
+                interface: iface,
+                isCurrentActive: ssid == currentSSID
+            )
         }
     }
 
@@ -246,28 +199,17 @@ public final class NetworkPrivacyInspector {
     /// 单项移除指定的首选无线网络记录
     public func removePreferredNetwork(ssid: String, interface: String? = nil) -> (success: Bool, message: String) {
         let iface = interface ?? detectDefaultWiFiInterface()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = ["-removepreferredwirelessnetwork", iface, ssid]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-            if process.terminationStatus == 0 {
-                return (true, "已成功从已保存网络中移除 \"\(ssid)\"")
-            } else {
-                return (false, output.isEmpty ? "移除网络失败 (退出码: \(process.terminationStatus))" : output)
-            }
-        } catch {
-            return (false, "执行 networksetup 异常: \(error.localizedDescription)")
+        guard let result = SafeProcess.run(Self.networkSetupPath,
+                                          ["-removepreferredwirelessnetwork", iface, ssid],
+                                          timeout: 15) else {
+            return (false, "无法启动 networksetup")
         }
+        let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result.succeeded {
+            return (true, "已成功从已保存网络中移除 \"\(ssid)\"")
+        }
+        if result.timedOut { return (false, "移除超时，networksetup 未响应") }
+        return (false, output.isEmpty ? "移除网络失败 (退出码: \(result.exitCode))" : output)
     }
 
     /// 批量清除所有开放未加密高危公共网络（强制跳过当前正连接中的网络）
@@ -310,27 +252,12 @@ public final class NetworkPrivacyInspector {
 
     /// 刷新并释放系统 DNS 解析缓存 (dscacheutil -flushcache)
     public func flushDNSCache() -> (success: Bool, message: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/dscacheutil")
-        process.arguments = ["-flushcache"]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            if process.terminationStatus == 0 {
-                return (true, "已成功清空系统本地 DNS 解析缓存")
-            } else {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                let err = String(data: data, encoding: .utf8) ?? ""
-                return (false, "刷新 DNS 失败: \(err)")
-            }
-        } catch {
-            return (false, "执行 dscacheutil 异常: \(error.localizedDescription)")
+        guard let result = SafeProcess.run(Self.dscacheutilPath, ["-flushcache"], timeout: 10) else {
+            return (false, "无法启动 dscacheutil")
         }
+        if result.succeeded { return (true, "已成功清空系统本地 DNS 解析缓存") }
+        if result.timedOut { return (false, "DNS 缓存刷新超时") }
+        let err = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (false, err.isEmpty ? "刷新 DNS 失败 (退出码: \(result.exitCode))" : "刷新 DNS 失败: \(err)")
     }
 }

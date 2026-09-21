@@ -158,35 +158,66 @@ public final class ScreenshotsOrganizerScanner {
         )
     }
 
+    /// 归档/清理历史类名
+    static let historyCategory = "截图与录屏归档"
+
+    /// "刚刚还在写"的判定窗口：录屏是**边录边写**的 `.mov`，截图完成后也可能仍被
+    /// 预览/剪贴板持有。此窗口内的文件既不删也不挪。
+    static let inFlightWriteWindow: TimeInterval = 120
+
     /// 归档选中的截图/录屏文件
-    public func archive(
+    ///
+    /// v1.72.0：源与目标都过统一护栏（旧版只有 `hasPrefix("/System")` 字符串检查，
+    /// 照片图库、iCloud 与用户白名单全都不设防），体积取**移动前实测**，结果写历史。
+    func archive(
         items: [ScreenshotItem],
         targetDirectory: String? = nil,
-        strategy: ArchiveStrategy = .byYearMonth
-    ) -> (archivedCount: Int, archivedBytes: Int64, errorCount: Int) {
+        strategy: ArchiveStrategy = .byYearMonth,
+        journal: ResidueDeletionGate.Journal = .module(categoryName: ScreenshotsOrganizerScanner.historyCategory),
+        now: Date = Date()
+    ) -> ScreenshotsArchiveResult {
         let fm = FileManager.default
         let baseDir = targetDirectory ?? NSString(string: "~/Pictures/Screenshots_Archive").expandingTildeInPath
 
-        // 安全防线
-        if baseDir.hasPrefix("/System") || baseDir == "/Library" || baseDir.hasPrefix("/Applications") {
-            return (0, 0, items.count)
-        }
-
+        var blocked: [ResidueDeletionGate.Rejection] = []
+        var failed: [(name: String, path: String, message: String)] = []
         var archivedCount = 0
         var archivedBytes: Int64 = 0
-        var errorCount = 0
+        var touched: [String] = []
+
+        if let reason = Self.destinationRejection(baseDir) {
+            return ScreenshotsArchiveResult(
+                archivedCount: 0, archivedBytes: 0,
+                rejected: items.map {
+                    Self.rejection($0.fileName, path: $0.path, reason: reason,
+                                   message: "归档目标 \(baseDir) 不在允许位置：\(GovernanceVerdict.rejected(reason).message)")
+                },
+                failed: [])
+        }
 
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM"
 
         for item in items {
-            // 安全防线
-            if item.path.hasPrefix("/System") || item.path.hasPrefix("/Library") {
-                errorCount += 1
+            guard item.isSelected else {
+                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                                              message: "未勾选，已跳过"))
                 continue
             }
-
-            guard fm.fileExists(atPath: item.path) else { continue }
+            // 源侧护栏：与删除同一套判据
+            let verdict = FileSystem.governanceVerdictWithinHome(item.path)
+            guard verdict.isAllowed else {
+                let reason: GovernanceVerdict.Reason
+                if case .rejected(let r) = verdict { reason = r } else { reason = .blockedByBaseGate }
+                blocked.append(Self.rejection(item.fileName, path: item.path, reason: reason, message: verdict.message))
+                continue
+            }
+            let realSrc = FileSystem.normalizePath(FileSystem.realPath(item.path))
+            if Self.isInFlight(realSrc, now: now) {
+                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                                              message: "最近 \(Int(Self.inFlightWriteWindow)) 秒内还在被写入（可能正在录屏），未移动"))
+                continue
+            }
 
             let subDirName: String
             switch strategy {
@@ -197,67 +228,107 @@ public final class ScreenshotsOrganizerScanner {
             }
 
             let destFolder = (baseDir as NSString).appendingPathComponent(subDirName)
-            if !fm.fileExists(atPath: destFolder) {
+            let realFolder = FileSystem.normalizePath(FileSystem.realPath(destFolder))
+            guard !realFolder.hasPrefix(realSrc + "/") else {
+                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                                              message: "归档目标就在该项内部，拒绝自我嵌套移动"))
+                continue
+            }
+            if !fm.fileExists(atPath: realFolder) {
                 do {
-                    try fm.createDirectory(atPath: destFolder, withIntermediateDirectories: true)
+                    try fm.createDirectory(atPath: realFolder, withIntermediateDirectories: true)
                 } catch {
-                    errorCount += 1
+                    failed.append((item.fileName, item.path, "无法创建归档目录：\(error.localizedDescription)"))
                     continue
                 }
             }
 
-            var destPath = (destFolder as NSString).appendingPathComponent(item.fileName)
+            var destPath = (realFolder as NSString).appendingPathComponent(item.fileName)
             if fm.fileExists(atPath: destPath) {
                 let ext = (item.fileName as NSString).pathExtension
                 let base = (item.fileName as NSString).deletingPathExtension
                 let suffix = UUID().uuidString.prefix(6)
                 let uniqueName = ext.isEmpty ? "\(base)_\(suffix)" : "\(base)_\(suffix).\(ext)"
-                destPath = (destFolder as NSString).appendingPathComponent(uniqueName)
+                destPath = (realFolder as NSString).appendingPathComponent(uniqueName)
             }
 
+            let actual = FileSystem.size(at: realSrc)   // 移动前实测
             do {
-                try fm.moveItem(atPath: item.path, toPath: destPath)
+                try fm.moveItem(atPath: realSrc, toPath: destPath)
                 archivedCount += 1
-                archivedBytes += item.size
+                archivedBytes += actual
+                touched.append(contentsOf: [realSrc, destPath])
             } catch {
-                errorCount += 1
+                failed.append((item.fileName, item.path, "移动失败：\(error.localizedDescription)"))
             }
         }
 
-        return (archivedCount, archivedBytes, errorCount)
+        FileSystem.invalidateMeasurements(for: touched)
+        if case .module(let categoryName) = journal, archivedCount > 0 {
+            Self.recordArchiveMove(categoryName: categoryName, count: archivedCount, failures: blocked.count + failed.count)
+        }
+        return ScreenshotsArchiveResult(archivedCount: archivedCount, archivedBytes: archivedBytes,
+                                        rejected: blocked, failed: failed)
     }
 
-    /// 安全清理或移入废纸篓
-    public func clean(
+    /// 安全清理或移入废纸篓（统一网关：G8/G6/白名单/软链/权限 + 删除前实测 + 写历史）
+    func clean(
         items: [ScreenshotItem],
-        toTrash: Bool = true
-    ) -> (cleanedCount: Int, freedBytes: Int64, errorCount: Int) {
-        let fm = FileManager.default
-        var cleanedCount = 0
-        var freedBytes: Int64 = 0
-        var errorCount = 0
+        toTrash: Bool = true,
+        journal: ResidueDeletionGate.Journal = .module(categoryName: ScreenshotsOrganizerScanner.historyCategory),
+        now: Date = Date()
+    ) -> ScreenshotsCleanResult {
+        var candidates: [ResidueDeletionGate.Candidate] = []
+        var blocked: [ResidueDeletionGate.Rejection] = []
 
         for item in items {
-            if item.path.hasPrefix("/System") || item.path.hasPrefix("/Library") {
-                errorCount += 1
+            guard item.isSelected else {
+                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                                              message: "未勾选，已跳过"))
                 continue
             }
-
-            guard fm.fileExists(atPath: item.path) else { continue }
-
-            do {
-                if toTrash {
-                    try fm.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: nil)
-                } else {
-                    try fm.removeItem(atPath: item.path)
-                }
-                cleanedCount += 1
-                freedBytes += item.size
-            } catch {
-                errorCount += 1
-            }
+            candidates.append(ResidueDeletionGate.Candidate(item.fileName, path: item.path))
         }
 
-        return (cleanedCount, freedBytes, errorCount)
+        let outcome = ResidueDeletionGate.execute(
+            candidates, toTrash: toTrash, journal: journal
+        ) { candidate in
+            Self.isInFlight(FileSystem.normalizePath(FileSystem.realPath(candidate.path)), now: now)
+                ? .blockedByBaseGate : nil
+        }
+        var merged = outcome
+        merged.rejected.append(contentsOf: blocked)
+        return ScreenshotsCleanResult(outcome: merged)
+    }
+
+    /// 文件是否"刚刚还在被写"（mtime 落在保护窗口内）。mtime 读不到时按"在用"处理。
+    static func isInFlight(_ realPath: String, now: Date) -> Bool {
+        guard let mtime = FileSystem.modificationDate(realPath) else { return true }
+        return now.timeIntervalSince(mtime) < inFlightWriteWindow
+    }
+
+    /// 归档目标是否落在禁止位置。
+    static func destinationRejection(_ targetDirectory: String) -> GovernanceVerdict.Reason? {
+        if targetDirectory.isEmpty { return .emptyPath }
+        let real = FileSystem.normalizePath(FileSystem.realPath(targetDirectory))
+        guard real != "/" else { return .resolvesToRoot }
+        if let blocked = FileSystem.coreGuardVerdict(real), blocked != .userWhitelisted { return blocked }
+        let home = FileSystem.normalizePath(NSHomeDirectory())
+        if real == home || real.hasPrefix(home + "/") { return nil }
+        for root in ["/tmp", "/var/tmp"] where real.hasPrefix(root + "/") { return nil }
+        return .outsideDomain
+    }
+
+    /// 归档移动写历史：bytes 记 0（同宗卷移动不释放空间），只留"挪了多少项"的痕迹。
+    static func recordArchiveMove(categoryName: String, count: Int, failures: Int) {
+        var records = HistoryStore.load()
+        records.insert(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
+                                   itemCount: count, bytes: 0, mode: "归档移动", failures: failures), at: 0)
+        HistoryStore.save(records)
+    }
+
+    static func rejection(_ name: String, path: String, reason: GovernanceVerdict.Reason,
+                          message: String) -> ResidueDeletionGate.Rejection {
+        ResidueDeletionGate.Rejection(name: name, path: path, reason: reason, message: message)
     }
 }

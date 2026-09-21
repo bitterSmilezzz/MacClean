@@ -1,18 +1,50 @@
 import Foundation
 import AppKit
 
-// MARK: - 系统崩溃与诊断报告智能排查扫描器
+// MARK: - 系统崩溃与诊断报告智能排查扫描器 (v1.58.0 / v1.74.0 安全加固)
+//
+// 真机实测：`/Library/Logs/DiagnosticReports` 权限是 `drwxrwx--- root:_analyticsusers`，
+// 普通用户进程**根本读不到**。而原实现清一色 `guard let enumerator = ... else { continue }`，
+// 于是"读不到"和"这里真的没有报告"在结果上完全一样 —— 都是 0 项，
+// 卡片把那 0 项渲染成"暂无匹配的崩溃或诊断日志残留"（一个绿色对勾）。
+// 用户看到的结论正好是他最需要知道的那部分被隐藏了。
+//
+// 现在：
+// ① 每个根目录先用 `FileSystem.isPermissionDenied` 区分"读不到"与"真的空"，
+//    读不到就产出一条 `GovernanceEvidenceIssue`，结论降级为"本次结果不完整"；
+// ② 全局报告目录的删除走 `.diagnosticReportsGlobal` 治理域 —— 会得到 `needsPrivilege`，
+//    UI 如实说明"该位置由 root 管理，本工具不提权，仅提供定位与建议"；
+//    用户域 `~/Library/Logs/DiagnosticReports` 走主目录护栏 + 网关；
+// ③ 已安装 bundle id 集合不再自建（原来 3 个 `try?` + `continue` 会得到"看起来合法的空集合"，
+//    把所有崩溃都判成"宿主已卸载"），改用 `AppInventory.current()`；
+//    清单不完整时一律降级为"需确认"，既不默选也不断言孤儿。
 
 public final class DiagnosticReportScanner: ObservableObject {
     public static let shared = DiagnosticReportScanner()
 
     @Published public var reports: [DiagnosticReportItem] = []
     @Published public var isScanning: Bool = false
+    /// 本轮扫描读不到/判不准的证据源。**非空即结论不完整**，卡片不得渲染成"没有异常报告"。
+    @Published public var issues: [GovernanceEvidenceIssue] = []
+    /// 最近一次批量清理被护栏拦下的原因（卡片如实展示，而不是笼统一句"清理失败"）
+    /// internal：`ResidueDeletionGate.Rejection` 是内部类型，不能挂 public 属性
+    @Published var lastRejections: [ResidueDeletionGate.Rejection] = []
+
+    /// 本轮结论是否完整可信
+    public var isResultComplete: Bool { issues.isEmpty }
+
+    /// 用户可见的不完整提示；完整时为 nil
+    public var incompletenessBanner: String? {
+        issues.isEmpty ? nil : GovernanceEvidenceIssue.incompleteBanner(issues)
+    }
 
     /// 允许清理的诊断报告文件扩展名白名单（防误删非诊断文件）
     public static let allowedExtensions: Set<String> = [
         "ips", "crash", "spin", "hang", "diag", "trace", "synced", "core", "dmp", "beta"
     ]
+
+    /// 全局（root 管理）报告目录：只授权定位与建议
+    public static let globalReportsDir = "/Library/Logs/DiagnosticReports"
 
     /// 允许扫描的诊断日志根目录
     public static var defaultReportDirs: [String] {
@@ -20,7 +52,7 @@ public final class DiagnosticReportScanner: ObservableObject {
             CleanPaths.expand(CleanPaths.diagnosticReports),
             CleanPaths.expand(CleanPaths.diagnosticReportsRetired),
             CleanPaths.expand("~/Library/Application Support/CrashReporter"),
-            "/Library/Logs/DiagnosticReports"
+            Self.globalReportsDir
         ]
     }
 
@@ -36,36 +68,58 @@ public final class DiagnosticReportScanner: ObservableObject {
         let dirsToScan = customDirs ?? Self.defaultReportDirs
 
         scanQueue.async {
-            let discovered = self.scanDirectories(dirsToScan)
+            let found = self.scanReport(dirs: dirsToScan)
             DispatchQueue.main.async {
-                self.reports = discovered
+                self.reports = found.items
+                self.issues = found.issues
                 self.isScanning = false
-                completion?(discovered)
+                completion?(found.items)
             }
         }
     }
 
-    /// 遍历指定目录搜集并深度解析报告
+    /// 遍历指定目录搜集并深度解析报告（兼容旧调用方：只要条目列表）。
     public func scanDirectories(_ dirs: [String]) -> [DiagnosticReportItem] {
+        scanReport(dirs: dirs).items
+    }
+
+    /// 同上，但把"哪个根没读到"一并交出来。
+    func scanReport(dirs: [String], inventory: AppInventory.Snapshot? = nil)
+        -> (items: [DiagnosticReportItem], issues: [GovernanceEvidenceIssue]) {
+        let fm = FileManager.default
         var results: [DiagnosticReportItem] = []
+        var issues: [GovernanceEvidenceIssue] = []
         var visitedPaths = Set<String>()
-        let installedBundles = fetchInstalledAppBundles()
+        let snapshot = inventory ?? AppInventory.current()
 
         for dir in dirs {
             let exp = CleanPaths.expand(dir)
-            guard FileManager.default.fileExists(atPath: exp) else { continue }
-
             var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: exp, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            guard fm.fileExists(atPath: exp, isDirectory: &isDirectory) else {
+                continue   // 根不存在：这台机器确实没有这个目录，不算读失败
+            }
+            guard isDirectory.boolValue else { continue }
 
-            guard let enumerator = FileManager.default.enumerator(atPath: exp) else { continue }
+            // 「读不到」≠「没有异常报告」：全局目录在真机上就是 root:_analyticsusers
+            if FileSystem.isPermissionDenied(exp) {
+                issues.append(GovernanceEvidenceIssue(
+                    kind: .permissionDenied, subject: exp,
+                    message: "权限不足，当前用户读不到该诊断目录（可能需要管理员或完全磁盘访问权限）：\(exp)"))
+                continue
+            }
+            guard let enumerator = fm.enumerator(atPath: exp) else {
+                issues.append(GovernanceEvidenceIssue(
+                    kind: .unreadable, subject: exp, message: "无法枚举诊断目录：\(exp)"))
+                continue
+            }
 
+            var rootFailed = false
             while let file = enumerator.nextObject() as? String {
                 let fullPath = (exp as NSString).appendingPathComponent(file)
                 guard !visitedPaths.contains(fullPath) else { continue }
 
                 var isSubDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: fullPath, isDirectory: &isSubDir), !isSubDir.boolValue else {
+                guard fm.fileExists(atPath: fullPath, isDirectory: &isSubDir), !isSubDir.boolValue else {
                     continue
                 }
 
@@ -74,22 +128,50 @@ public final class DiagnosticReportScanner: ObservableObject {
 
                 visitedPaths.insert(fullPath)
 
-                if let item = parseReportFile(at: fullPath, installedBundles: installedBundles) {
+                if let item = parseReport(at: fullPath, inventory: snapshot) {
                     results.append(item)
+                } else {
+                    rootFailed = true
                 }
+            }
+            if rootFailed {
+                issues.append(GovernanceEvidenceIssue(
+                    kind: .unreadable, subject: exp,
+                    message: "目录内部分报告读不到内容，元数据判定不完整：\(exp)"))
             }
         }
 
         // 按创建时间倒序排（最新报告排在最前）
         results.sort { $0.creationDate > $1.creationDate }
-        return results
+        return (results, issues)
     }
 
     // MARK: - 深度解析单个诊断报告文件
 
     /// 解析诊断日志文件头并提取核心元数据
     public func parseReportFile(at path: String, installedBundles: Set<String>? = nil) -> DiagnosticReportItem? {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else { return nil }
+        if let installed = installedBundles {
+            return parseReport(at: path, inventory: Self.snapshot(from: installed))
+        }
+        return parseReport(at: path, inventory: AppInventory.current())
+    }
+
+    /// 把一个纯 bundle id 集合包成"完整可信"的清单（兼容显式传集合的旧调用方）。
+    static func snapshot(from bundleIDs: Set<String>) -> AppInventory.Snapshot {
+        let prefixes = Set(bundleIDs.compactMap { bid -> String? in
+            let parts = bid.lowercased().split(separator: ".")
+            return parts.count >= 2 ? "\(parts[0]).\(parts[1])" : nil
+        })
+        return AppInventory.Snapshot(bundleIDs: Set(bundleIDs.map { $0.lowercased() }),
+                                     bundlePrefixes: prefixes, normalizedNames: [],
+                                     executableNames: [], runningBundleIDs: [], appPaths: [],
+                                     unreadableRoots: [])
+    }
+
+    /// 内部解析：判定依据全部来自注入过的清单，读不到即降级为"需确认"。
+    func parseReport(at path: String, inventory: AppInventory.Snapshot) -> DiagnosticReportItem? {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: path) else { return nil }
         let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
         let creationDate = (attrs[.creationDate] as? Date) ?? (attrs[.modificationDate] as? Date) ?? Date()
         let ageDays = max(0, Int(Date().timeIntervalSince(creationDate) / 86400))
@@ -112,9 +194,12 @@ public final class DiagnosticReportScanner: ObservableObject {
         }
 
         // 读取文件前 8KB 文本解析内部元数据
+        // 读不到内容 ≠ 没有归属信息：下面据此降级为"需确认"
+        var headerReadable = false
         if let handle = FileHandle(forReadingAtPath: path) {
             defer { try? handle.close() }
             let headerData = handle.readData(ofLength: 8192)
+            headerReadable = !headerData.isEmpty
             if let headerText = String(data: headerData, encoding: .utf8) ?? String(data: headerData, encoding: .ascii) {
                 parseHeaderMetadata(
                     headerText: headerText,
@@ -127,11 +212,16 @@ public final class DiagnosticReportScanner: ObservableObject {
             }
         }
 
-        // 判定是否为孤儿应用
-        let isOrphan = evaluateOrphanStatus(appName: appName, bundleID: bundleID, installedBundles: installedBundles)
+        let judgement = evaluateOrphan(appName: appName, bundleID: bundleID, inventory: inventory)
+        // 报告头读不到、又拿不到 bundle id：归属完全无从判断
+        let needsConfirmation = judgement.needsConfirmation
+            || (!headerReadable && bundleID == nil && !judgement.isOrphan)
+        let isGlobal = Self.isGlobalScopePath(path)
 
-        // 默认勾选：孤儿报告 或 >30天陈旧报告
-        let isSelected = isOrphan || ageDays > 30
+        // 默认勾选：只勾**确证**的孤儿或确证陈旧的非全局报告。
+        // 需确认项与 root 管理项一律不默选（前者证据不足，后者本工具删不掉）。
+        let isSelected = !needsConfirmation && !isGlobal
+            && (judgement.isOrphan || ageDays > 30)
 
         return DiagnosticReportItem(
             id: path,
@@ -144,9 +234,21 @@ public final class DiagnosticReportScanner: ObservableObject {
             bundleID: bundleID,
             kind: kind,
             exceptionSummary: exceptionSummary,
-            isOrphan: isOrphan,
-            isSelected: isSelected
+            isOrphan: judgement.isOrphan,
+            isSelected: isSelected,
+            needsConfirmation: needsConfirmation,
+            isGlobalScope: isGlobal,
+            note: needsConfirmation
+                ? "已安装应用清单或报告内容读不到，无法判断宿主是否已卸载：请人工确认后再删。"
+                : (isGlobal ? "该目录由 root 管理（root:_analyticsusers），MacClean 不提权，仅定位与建议。" : nil)
         )
+    }
+
+    /// 是否属于 root 管理的全局报告位置
+    static func isGlobalScopePath(_ path: String) -> Bool {
+        let real = FileSystem.normalizePath(FileSystem.realPath(path))
+        let root = FileSystem.normalizePath(FileSystem.realPath(globalReportsDir))
+        return real == root || real.hasPrefix(root + "/")
     }
 
     // MARK: - 元数据提取细节
@@ -260,133 +362,133 @@ public final class DiagnosticReportScanner: ObservableObject {
 
     // MARK: - 孤儿应用研判
 
-    /// 快速缓存系统已安装 App 的 bundle ID
+    /// 已安装应用的 bundle id 集合。
+    ///
+    /// v1.74.0：不再自己枚举 3 个 Applications 根（那份实现 `try?` 读失败就 `continue`，
+    /// 会得到一个"看起来合法的空集合"，于是所有崩溃报告都被判成"宿主已卸载"）。
+    /// 判孤儿请用 `evaluateOrphan(appName:bundleID:inventory:)`，它带"清单可不可信"。
     public func fetchInstalledAppBundles() -> Set<String> {
-        var set = Set<String>()
-        let appDirs = ["/Applications", "/System/Applications", CleanPaths.expand("~/Applications")]
-        for appDir in appDirs {
-            guard let contents = try? FileManager.default.contentsOfDirectory(atPath: appDir) else { continue }
-            for item in contents where item.hasSuffix(".app") {
-                let fullPath = (appDir as NSString).appendingPathComponent(item)
-                let plistPath = (fullPath as NSString).appendingPathComponent("Contents/Info.plist")
-                if let dict = NSDictionary(contentsOfFile: plistPath),
-                   let bid = dict["CFBundleIdentifier"] as? String {
-                    set.insert(bid)
-                }
-            }
-        }
-        return set
+        AppInventory.current().bundleIDs
     }
 
-    /// 研判崩溃所属应用是否已被卸载
-    public func evaluateOrphanStatus(appName: String, bundleID: String?, installedBundles: Set<String>?) -> Bool {
-        // 1. 系统核心组件、守护进程或 Apple 官方服务永不作为孤儿
+    /// Apple 官方组件前缀：永不作为孤儿
+    static let appleBundlePrefixes = ["com.apple.", "apple.", "system."]
+
+    /// 常见系统进程名（无 bundle id 时的兜底保护）
+    static let systemProcessNames: Set<String> = [
+        "kernel", "launchd", "WindowServer", "loginwindow", "Finder", "Dock",
+        "Spotlight", "SystemUIServer", "kernel_task",
+    ]
+
+    /// 研判崩溃所属应用是否已被卸载，**并区分"确证孤儿"与"证据不足"**。
+    func evaluateOrphan(appName: String, bundleID: String?, inventory: AppInventory.Snapshot)
+        -> (isOrphan: Bool, needsConfirmation: Bool) {
         if let bid = bundleID {
-            if bid.hasPrefix("com.apple.") {
-                return false
-            }
-            if let installed = installedBundles {
-                return !installed.contains(bid)
-            } else {
-                return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) == nil
-            }
+            let lower = bid.lowercased()
+            if Self.appleBundlePrefixes.contains(where: { lower.hasPrefix($0) }) { return (false, false) }
+            if inventory.contains(bundleID: lower) { return (false, false) }
+            // 清单不可信时，"不在清单里"推不出"宿主已卸载"
+            guard inventory.isComplete else { return (false, true) }
+            return (true, false)
         }
 
-        // 2. 无 BundleID 时，检查系统级常见进程名
-        let systemProcesses: Set<String> = [
-            "kernel", "launchd", "WindowServer", "loginwindow", "Finder", "Dock", "Spotlight", "SystemUIServer"
-        ]
-        if systemProcesses.contains(appName) {
-            return false
-        }
+        // 无 BundleID：先看系统进程兜底名单，再看已安装应用名
+        if Self.systemProcessNames.contains(appName) { return (false, false) }
+        if inventory.matchesInstalledName(appName) { return (false, false) }
+        // 开发/测试跑出来的产物不归为常规孤儿应用
+        if appName.contains("Test") || appName.contains("Runner") { return (false, false) }
+        guard inventory.isComplete else { return (false, true) }
+        return (true, false)
+    }
 
-        // 3. 检查 /Applications 中是否存在同名应用
-        let checkPath1 = "/Applications/\(appName).app"
-        let checkPath2 = CleanPaths.expand("~/Applications/\(appName).app")
-        if FileManager.default.fileExists(atPath: checkPath1) || FileManager.default.fileExists(atPath: checkPath2) {
-            return false
-        }
-
-        // 4. 若名称包含 "Tests" 或 "Test" 或 "Runner"，视作开发调试运行产物，不归为常规孤儿应用
-        if appName.contains("Test") || appName.contains("Runner") {
-            return false
-        }
-
-        return true
+    /// 研判崩溃所属应用是否已被卸载（兼容旧调用方：只回答是/否）。
+    public func evaluateOrphanStatus(appName: String, bundleID: String?,
+                                     installedBundles: Set<String>?) -> Bool {
+        let inventory: AppInventory.Snapshot = installedBundles.map(Self.snapshot(from:))
+            ?? AppInventory.current()
+        return evaluateOrphan(appName: appName, bundleID: bundleID, inventory: inventory).isOrphan
     }
 
     // MARK: - 安全清理逻辑
 
-    /// 清理单个报告
-    public func cleanReport(_ report: DiagnosticReportItem, permanently: Bool = false) -> (success: Bool, freedBytes: Int64) {
-        let path = report.path
-        let ext = (path as NSString).pathExtension.lowercased()
-
-        // 安全防线 1：后缀白名单
-        guard Self.allowedExtensions.contains(ext) else {
-            return (false, 0)
-        }
-
-        // 安全防线 2：必须位于诊断目录内
-        let normalized = FileSystem.normalizePath(path)
-        let allowedRootPrefixes = [
+    /// 授权范围内的诊断报告根（越界一律拒）
+    static var allowedRootPrefixes: [String] {
+        [
             FileSystem.normalizePath(CleanPaths.expand(CleanPaths.diagnosticReports)),
             FileSystem.normalizePath(CleanPaths.expand(CleanPaths.diagnosticReportsRetired)),
             FileSystem.normalizePath(CleanPaths.expand("~/Library/Application Support/CrashReporter")),
-            "/Library/Logs/DiagnosticReports",
-            "/tmp",
-            "/private/tmp"
+            FileSystem.normalizePath(Self.globalReportsDir),
+            "/tmp", "/private/tmp",
         ]
-        guard allowedRootPrefixes.contains(where: { normalized.hasPrefix($0) }) else {
-            return (false, 0)
+    }
+
+    static func candidates(_ items: [DiagnosticReportItem]) -> [ResidueDeletionGate.Candidate] {
+        items.map {
+            ResidueDeletionGate.Candidate($0.fileName, path: $0.path, domain: $0.governanceDomain)
         }
+    }
 
-        // 安全防线 3：通用底层安全护栏
-        guard FileSystem.isSafeToClean(path) else {
-            return (false, 0)
-        }
+    /// 真正的删除入口：唯一护栏是 `ResidueDeletionGate`
+    /// （软链防跳板 + G8 + G6 + 用户白名单 + 治理域/主目录护栏 + 真实 unlink 权限
+    ///  + 删除前实测体积 + 废纸篓撤销快照 + 历史记录）。
+    @discardableResult
+    func cleanOutcome(_ items: [DiagnosticReportItem], permanently: Bool = false,
+                      journal: ResidueDeletionGate.Journal = .module(categoryName: "诊断报告"))
+        -> ResidueDeletionGate.Outcome {
+        var byPath: [String: DiagnosticReportItem] = [:]
+        for item in items { byPath[item.path] = item }
 
-        let size = FileSystem.size(at: path)
-        var ok = false
+        let roots = Self.allowedRootPrefixes
+        let outcome = ResidueDeletionGate.execute(
+            Self.candidates(items),
+            toTrash: !permanently,
+            journal: journal,
+            policy: { candidate in
+                guard let item = byPath[candidate.path] else { return .notDeletable }
+                // ① 后缀白名单：非诊断产物（.swift/.png…）永不在此删除
+                let ext = (candidate.path as NSString).pathExtension.lowercased()
+                guard Self.allowedExtensions.contains(ext) else { return .notDeletable }
+                // ② 必须是文件：本模块不递归删目录
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir),
+                      !isDir.boolValue else { return .notDeletable }
+                // ③ 必须落在授权的诊断根内（软链逃逸也在这里被解析后再判）
+                let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
+                guard roots.contains(where: { real == $0 || real.hasPrefix($0 + "/") }) else {
+                    return .outsideDomain
+                }
+                // ④ 证据不足（清单不完整 / 报告头读不到）→ 不删，交人工确认
+                if item.needsConfirmation { return .blockedByBaseGate }
+                return nil
+            })
 
-        if permanently {
-            do {
-                try FileManager.default.removeItem(atPath: path)
-                ok = true
-            } catch {
-                ok = false
-            }
-        } else {
-            do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
-                ok = true
-            } catch {
-                ok = false
-            }
-        }
-
-        if ok {
+        lastRejections = outcome.rejected
+        if outcome.cleanedCount > 0 {
+            let cleaned = Set(outcome.cleanedPaths)
             DispatchQueue.main.async {
-                self.reports.removeAll(where: { $0.id == report.id })
+                self.reports.removeAll { cleaned.contains($0.path) || cleaned.contains($0.id) }
             }
-            return (true, size)
         }
-        return (false, 0)
+        return outcome
+    }
+
+    /// 清理单个报告
+    public func cleanReport(_ report: DiagnosticReportItem, permanently: Bool = false)
+        -> (success: Bool, freedBytes: Int64) {
+        let outcome = cleanOutcome([report], permanently: permanently)
+        return (outcome.cleanedCount > 0, outcome.freedBytes)
     }
 
     /// 批量清理报告
-    public func cleanReports(_ reportsToClean: [DiagnosticReportItem], permanently: Bool = false) -> (successCount: Int, freedBytes: Int64) {
-        var successCount = 0
-        var totalFreed: Int64 = 0
+    public func cleanReports(_ reportsToClean: [DiagnosticReportItem], permanently: Bool = false)
+        -> (successCount: Int, freedBytes: Int64) {
+        let outcome = cleanOutcome(reportsToClean, permanently: permanently)
+        return (outcome.cleanedCount, outcome.freedBytes)
+    }
 
-        for r in reportsToClean {
-            let res = cleanReport(r, permanently: permanently)
-            if res.success {
-                successCount += 1
-                totalFreed += res.freedBytes
-            }
-        }
-
-        return (successCount, totalFreed)
+    /// 一句如实的批量结论（含被拦原因），卡片直接展示。
+    func cleanSummary(_ reportsToClean: [DiagnosticReportItem], permanently: Bool = false)
+        -> ResidueDeletionGate.Outcome {
+        cleanOutcome(reportsToClean, permanently: permanently)
     }
 }
