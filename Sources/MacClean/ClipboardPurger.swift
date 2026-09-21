@@ -339,8 +339,8 @@ public final class ClipboardPurger {
             guard isDirectory else {
                 // 单文件条目：必须可识别归属
                 if !Self.hasClipboardOwnership(item.path) {
-                    blocked.append(Self.rejection(item.name, path: item.path, reason: .outsideDomain,
-                                             message: "名称不含剪贴板/拖拽标识，归属无法识别，未删除"))
+                    blocked.append(.make(name: item.name, path: item.path, reason: .outsideDomain,
+                                         message: "名称不含剪贴板/拖拽标识，归属无法识别，未删除"))
                     continue
                 }
                 candidates.append(ResidueDeletionGate.Candidate(item.name, path: item.path))
@@ -351,8 +351,8 @@ public final class ClipboardPurger {
             guard let children = try? fm.contentsOfDirectory(atPath: item.path) else {
                 let reason: GovernanceVerdict.Reason =
                     FileSystem.isPermissionDenied(item.path) ? .needsPrivilege : .blockedByBaseGate
-                blocked.append(Self.rejection(item.name, path: item.path, reason: reason,
-                                         message: "无法读取该目录内容，未删除任何文件"))
+                blocked.append(.make(name: item.name, path: item.path, reason: reason,
+                                     message: "无法读取该目录内容，未删除任何文件"))
                 continue
             }
             // 只有真正的剪贴板溢出目录才允许整目录展开；
@@ -362,16 +362,16 @@ public final class ClipboardPurger {
                 FileSystem.normalizePath(FileSystem.realPath(item.path))
             }
             guard isTemporaryItems else {
-                blocked.append(Self.rejection(item.name, path: item.path, reason: .outsideDomain,
-                                              message: "不是已登记的剪贴板溢出目录，整目录展开不予处理"))
+                blocked.append(.make(name: item.name, path: item.path, reason: .outsideDomain,
+                                     message: "不是已登记的剪贴板溢出目录，整目录展开不予处理"))
                 continue
             }
             let threshold = Self.temporaryItemsMinAge
             for child in children {
                 let childPath = (item.path as NSString).appendingPathComponent(child)
                 if !Self.hasClipboardOwnership(childPath) {
-                    blocked.append(Self.rejection(child, path: childPath, reason: .outsideDomain,
-                                             message: "归属无法识别（可能是正在编辑文档的自动恢复草稿），一律保留"))
+                    blocked.append(.make(name: child, path: childPath, reason: .outsideDomain,
+                                         message: "归属无法识别（可能是正在编辑文档的自动恢复草稿），一律保留"))
                     continue
                 }
                 candidates.append(ResidueDeletionGate.Candidate(child, path: childPath))
@@ -379,30 +379,38 @@ public final class ClipboardPurger {
             }
         }
 
-        var outcome = ResidueDeletionGate.execute(
-            candidates, toTrash: toTrash, journal: journal
-        ) { candidate in
-            let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
+        // 模块预筛的拦截项与网关结果合成一份完整结论（合并实现只有一份）
+        let outcome = ResidueDeletionGate.Outcome(rejected: blocked).merging(
+            ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal) { candidate in
+                let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
 
-            // ① 引用源读不到 → 保守放弃（"没读到引用" ≠ "没有引用"）
-            guard refs.readable else { return .blockedByBaseGate }
-            // ② 剪贴板仍指向它 → 绝对不删
-            if Self.isReferencedByPasteboard(real, refs) { return .blockedByBaseGate }
-            // ③ 归属复判（网关入参可能被上游绕过）
-            if !Self.hasClipboardOwnership(real) {
-                return .outsideDomain
-            }
-            // ④ 年龄门槛：mtime 读不到同样视为不可删
-            guard let mtime = FileSystem.modificationDate(real) else {
-                return .missing
-            }
-            let threshold = minAge[real] ?? Self.tempDirMinAge
-            if now.timeIntervalSince(mtime) < threshold {
-                return .blockedByBaseGate
-            }
-            return nil
-        }
-        outcome.rejected.append(contentsOf: blocked)
+                // ① 引用源读不到 → 保守放弃（"没读到引用" ≠ "没有引用"）
+                guard refs.readable else {
+                    return .make(candidate, reason: .blockedByBaseGate,
+                                 message: "读不到剪贴板引用列表，无法确认该项未被引用，未删除")
+                }
+                // ② 剪贴板仍指向它 → 绝对不删
+                if Self.isReferencedByPasteboard(real, refs) {
+                    return .make(candidate, reason: .inUse,
+                                 message: "剪贴板当前仍指向该项，删除会立即丢失正在使用的剪贴内容")
+                }
+                // ③ 归属复判（网关入参可能被上游绕过）
+                if !Self.hasClipboardOwnership(real) {
+                    return .make(candidate, reason: .outsideDomain,
+                                 message: "归属无法识别（可能是正在编辑文档的自动恢复草稿），一律保留")
+                }
+                // ④ 年龄门槛：mtime 读不到同样视为不可删
+                guard let mtime = FileSystem.modificationDate(real) else {
+                    return .make(candidate, reason: .missing,
+                                 message: "读不到修改时间，无法确认是否足够陈旧，未删除")
+                }
+                let threshold = minAge[real] ?? Self.tempDirMinAge
+                if now.timeIntervalSince(mtime) < threshold {
+                    return .make(candidate, reason: .blockedByBaseGate,
+                                 message: "距今仅 \(Int(now.timeIntervalSince(mtime))) 秒，可能仍在被写入，未删除")
+                }
+                return nil
+            })
 
         return ClipboardCleanResult(outcome: outcome, referencesReadable: refs.readable)
     }
@@ -420,10 +428,5 @@ public final class ClipboardPurger {
         let caches = scanClipboardCaches()
         let cacheRes = cleanClipboardCaches(items: caches, toTrash: toTrash, journal: journal)
         return (memOk, memoryFailure, cacheRes.cleanedCount, cacheRes.freedBytes, cacheRes)
-    }
-
-    static func rejection(_ name: String, path: String, reason: GovernanceVerdict.Reason,
-                          message: String) -> ResidueDeletionGate.Rejection {
-        ResidueDeletionGate.Rejection(name: name, path: path, reason: reason, message: message)
     }
 }

@@ -16,6 +16,10 @@ import Darwin
 // 现在改为：凡是要删主目录之外的东西，调用方必须先声明**治理域**，
 // 由 `FileSystem.governanceVerdict(_:domain:)` 做唯一判定。
 // 每个治理域登记的是"这个模块被授权在哪个精确根下操作"，且**永不授权删根本身**。
+//
+// 登记有两条路：根路径编译期已知的写进 `staticDomains`；只有运行时才发现得到位置的
+// （如 `$TMPDIR` 同级的 Darwin 缓存目录）调用 `GovernanceDomain.register(_:)`。
+// 两条路都进同一个 `all` 视图，因此自检那几条穷举断言对动态域同样生效。
 
 /// 一个治理模块被授权操作的精确系统位置。
 struct GovernanceDomain: Equatable, Hashable {
@@ -139,8 +143,8 @@ extension GovernanceDomain {
         note: "外接/其他卷宗上的 Spotlight 索引（重建即可恢复）",
         allowedEntryNames: [".Spotlight-V100"])
 
-    /// 全部已登记治理域。新增治理模块必须在此登记，否则网关一律拒绝。
-    static let all: [GovernanceDomain] = [
+    /// 静态清单：根路径在编译期就确定的治理域。
+    private static let staticDomains: [GovernanceDomain] = [
         fontsGlobal, printersGlobal, ppdResources, colorSyncProfiles,
         audioHAL, audioComponents,
         quickLookGlobal, spotlightImportersGlobal, internetPlugInsGlobal,
@@ -149,9 +153,77 @@ extension GovernanceDomain {
         systemCachesGlobal, appLocalizedResources, volumeSpotlightIndex,
     ]
 
+    // MARK: 运行时登记的动态域
+    //
+    // 有些域根只有**运行时**才发现得到——访达快速查看的缩略图缓存挂在
+    // `$TMPDIR` 同级的 Darwin 用户缓存目录里，路径中带着与机器、与用户相关的随机段，
+    // 不可能写进上面的静态清单。但它们**必须**进注册表，否则：
+    // ① `Selftest+DeletionGate` 里那几条穷举断言（域根永不可删 / G8 在每个域下优先 /
+    //    真实根目录软链必拒）永远扫不到它；
+    // ② 文件头"新增治理模块必须在此登记，否则网关一律拒绝"的承诺就出现一个洞——
+    //    一个从未登记却能被网关放行的域。
+    private static let registryLock = NSLock()
+    private static var dynamicDomains: [String: GovernanceDomain] = [:]
+
+    /// 登记一个运行时才发现的治理域。按 `id` 去重、同 id 覆盖，故可反复调用（幂等）。
+    ///
+    /// **root 取不到时不要调用本方法**：宁可不登记，也不要登记一个空根或 `/` 的域——
+    /// 那等于把一整棵目录树授权出去。调用方应先 `guard let root = …, !root.isEmpty`。
+    static func register(_ domain: GovernanceDomain) {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        dynamicDomains[domain.id] = domain
+    }
+
+    /// 已登记的动态域（按 id 排序，保证穷举顺序稳定）
+    static var registeredDynamicDomains: [GovernanceDomain] {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+        return dynamicDomains.values.sorted { $0.id < $1.id }
+    }
+
+    /// 全部已登记治理域 = 静态清单 + 运行时登记的动态域（按 id 去重，静态优先）。
+    ///
+    /// 新增治理模块若用了主目录之外的位置却既不在这里、也没 `register(_:)`，
+    /// 网关一律拒绝。自检的穷举断言全部遍历本属性。
+    static var all: [GovernanceDomain] {
+        let staticIDs = Set(staticDomains.map(\.id))
+        return staticDomains + registeredDynamicDomains.filter { !staticIDs.contains($0.id) }
+    }
+
     /// 域 id → 域（自检与文档用于穷举）
-    static let byID: [String: GovernanceDomain] = Dictionary(
-        uniqueKeysWithValues: all.map { ($0.id, $0) })
+    static var byID: [String: GovernanceDomain] {
+        Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
+    }
+
+    // MARK: - 路径 → 域的唯一解析器
+    //
+    // v1.72 那轮并行改动里，12 个模块各自写了一份同形代码：`normalizePath` +
+    // `realPath` + `hasPrefix(root + "/")`，只是函数名不同（`domain(for:)` /
+    // `governanceDomain(forPath:)` / 计算属性 `governanceDomain`）。收敛到这里之后，
+    // 动态登记的域天然参与匹配，不必每个模块自己去 import 某个模块的私有常量。
+    /// 该路径挂在哪个已登记治理域上（**含运行时登记的动态域**）。
+    ///
+    /// - 先解析真实位置（软链与 `..` 之后再比），与网关判据同口径；
+    /// - 多个域都能匹配时取 **root 最长**的那个——`/Library/Printers/PPDs/…` 必须落到
+    ///   `ppdResources`，落到 `printersGlobal` 会把层级下界放宽；
+    /// - 域根本身也算命中（网关随后以 `tooShallowForDomain` 拒绝删除它）。
+    /// - Returns: 命中的域；`nil` 表示不在任何登记域内（调用方走主目录护栏）。
+    static func domain(forPath path: String) -> GovernanceDomain? {
+        guard !path.isEmpty else { return nil }
+        let real = FileSystem.normalizePath(FileSystem.realPath(path))
+        var best: GovernanceDomain?
+        var bestRootLength = 0
+        for candidate in all {
+            let root = candidate.normalizedRoot
+            guard real == root || real.hasPrefix(root + "/") else { continue }
+            if root.count > bestRootLength {
+                best = candidate
+                bestRootLength = root.count
+            }
+        }
+        return best
+    }
 }
 
 // MARK: - 判定结果

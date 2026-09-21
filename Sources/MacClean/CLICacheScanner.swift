@@ -168,17 +168,17 @@ public final class CLICacheScanner {
 
             // ① 工具数据根：整项拒绝（这就是 ~/.npm 被清空的那条路径）
             if Self.isToolDataRoot(root) {
-                outcome.rejected.append(.init(name: item.title, path: item.path, reason: .hardExcluded,
+                outcome.rejected.append(.make(name: item.title, path: item.path, reason: .notDeletable,
                                               message: "这是工具的数据目录（含配置与状态），不是缓存根，拒绝清空"))
                 continue
             }
             guard Self.isAllowedCacheRoot(root) else {
-                outcome.rejected.append(.init(name: item.title, path: item.path, reason: .outsideDomain,
+                outcome.rejected.append(.make(name: item.title, path: item.path, reason: .outsideDomain,
                                               message: "该路径不是可识别的精确缓存子目录，拒绝清空"))
                 continue
             }
             guard let contents = try? fm.contentsOfDirectory(atPath: root) else {
-                outcome.rejected.append(.init(name: item.title, path: item.path, reason: .missing,
+                outcome.rejected.append(.make(name: item.title, path: item.path, reason: .missing,
                                               message: "缓存目录无法枚举或已不存在，按未清理处理"))
                 continue
             }
@@ -191,17 +191,25 @@ public final class CLICacheScanner {
         }
 
         let rootsSnapshot = governedRoots
-        let merged = ResidueDeletionGate.execute(
+        outcome.merge(ResidueDeletionGate.execute(
             candidates, toTrash: toTrash, journal: journal) { candidate in
             // ② 只允许删"已登记缓存根的直接子项"，且逐条按 childPath 校验保护清单
             let child = FileSystem.normalizePath(candidate.path)
             let parent = FileSystem.normalizePath((child as NSString).deletingLastPathComponent)
-            guard rootsSnapshot.contains(parent) else { return .outsideDomain }
-            if Self.isToolDataRoot(child) { return .hardExcluded }
-            if Self.protectedKeywordHit(in: child) != nil { return .hardExcluded }
+            guard rootsSnapshot.contains(parent) else {
+                return .make(candidate, reason: .outsideDomain,
+                             message: "父目录不是本轮已登记的缓存根，拒绝删除")
+            }
+            if Self.isToolDataRoot(child) {
+                return .make(candidate, reason: .notDeletable,
+                             message: "子项本身是工具的数据目录（含配置与状态），拒绝删除")
+            }
+            if let hit = Self.protectedKeywordHit(in: child) {
+                return .make(candidate, reason: .notDeletable,
+                             message: "命中本模块保护清单条目「\(hit)」，属配置/凭据类文件，拒绝删除")
+            }
             return nil
-        }
-        merge(merged, into: &outcome)
+        })
         return outcome
     }
 
@@ -219,19 +227,7 @@ public final class CLICacheScanner {
 
     /// 全局缓存位置（如 `/Library/Caches`）需要显式声明治理域；本模块目前只治理主目录与临时目录。
     static func governanceDomain(forPath path: String) -> GovernanceDomain? {
-        let normalized = FileSystem.normalizePath(path)
-        let root = GovernanceDomain.systemCachesGlobal.normalizedRoot
-        if normalized.hasPrefix(root + "/") { return .systemCachesGlobal }
-        return nil
-    }
-
-    private func merge(_ src: ResidueDeletionGate.Outcome, into dst: inout ResidueDeletionGate.Outcome) {
-        dst.cleanedCount += src.cleanedCount
-        dst.freedBytes += src.freedBytes
-        dst.cleanedPaths.append(contentsOf: src.cleanedPaths)
-        dst.rejected.append(contentsOf: src.rejected)
-        dst.failed.append(contentsOf: src.failed)
-        dst.trashedSnapshots.append(contentsOf: src.trashedSnapshots)
+        GovernanceDomain.domain(forPath: path)
     }
 
     /// 统计目录内文件大小与文件数

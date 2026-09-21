@@ -33,6 +33,20 @@ enum ResidueDeletionGate {
         let path: String
         let reason: GovernanceVerdict.Reason
         let message: String
+
+        /// 拒绝项的统一工厂（此前 3 个模块各写一份本地 `rejection(...)` 工厂）。
+        /// `message` 省略时回落到 `reason` 的内置文案；模块自己的中文原因请传进来。
+        static func make(name: String, path: String, reason: GovernanceVerdict.Reason,
+                         message: String? = nil) -> Rejection {
+            Rejection(name: name, path: path, reason: reason,
+                      message: message ?? GovernanceVerdict.rejected(reason).message)
+        }
+
+        /// `policy` 闭包一侧的工厂：候选自带 name/path，闭包里只给 reason + 中文原因。
+        static func make(_ candidate: Candidate, reason: GovernanceVerdict.Reason,
+                         message: String? = nil) -> Rejection {
+            make(name: candidate.name, path: candidate.path, reason: reason, message: message)
+        }
     }
 
     struct Outcome {
@@ -42,6 +56,11 @@ enum ResidueDeletionGate {
         var rejected: [Rejection] = []
         var failed: [(name: String, path: String, message: String)] = []
         var trashedSnapshots: [TrashedItemEntry] = []
+
+        init() {}
+
+        /// 以模块自己先拦下的项起步，网关结果随后 `merge` 进来。
+        init(rejected: [Rejection]) { self.rejected = rejected }
 
         /// 与旧版各模块 `(cleanedCount, freedBytes, errorCount)` 元组兼容的错误计数，
         /// 便于渐进迁移且保留既有自检断言的语义。
@@ -61,6 +80,30 @@ enum ResidueDeletionGate {
             if !failed.isEmpty { parts.append("\(failed.count) 项删除失败") }
             return parts.isEmpty ? "没有可清理的项目" : parts.joined(separator: "；")
         }
+
+        /// 两份结果相加的**唯一**实现。
+        ///
+        /// v1.72 那轮并行改动里，4 个模块各自抄了一遍同一段"逐字段相加"
+        /// （`FontCacheInspector.absorb`、`CLICacheScanner.merge`、`LoginItemCleaner`、
+        /// `PluginExtensionInspector` 里的内联版），因为网关的返回值无法预置模块
+        /// 自己先记下的拦截项。现在：
+        /// - 模块侧先拦的项用 `Outcome(rejected:)` 起步；
+        /// - 网关结果用 `merge` / `merging` 并进来（保留"模块项在前"的顺序）。
+        mutating func merge(_ other: Outcome) {
+            cleanedCount += other.cleanedCount
+            freedBytes += other.freedBytes
+            cleanedPaths.append(contentsOf: other.cleanedPaths)
+            rejected.append(contentsOf: other.rejected)
+            failed.append(contentsOf: other.failed)
+            trashedSnapshots.append(contentsOf: other.trashedSnapshots)
+        }
+
+        /// 非变异版：`Outcome(rejected: blocked).merging(gateOutcome)`
+        func merging(_ other: Outcome) -> Outcome {
+            var merged = self
+            merged.merge(other)
+            return merged
+        }
     }
 
     /// 是否写历史与撤销快照。自检传 `.none`，避免污染用户真实历史。
@@ -74,14 +117,16 @@ enum ResidueDeletionGate {
     ///   - candidates: 调用方已勾选的项（**不要**自己预筛护栏，交给网关）
     ///   - toTrash: true 移入废纸篓；false 彻底删除
     ///   - journal: 历史与撤销快照写入策略
-    ///   - policy: 模块特有的业务判据（如"状态必须是孤儿/损坏"），返回拒绝原因或 nil
+    ///   - policy: 模块特有的业务判据（如"状态必须是孤儿/损坏"）。返回 `Rejection`
+    ///     即拦下，并可携带**模块自己的中文原因**；返回 nil 表示放行。
+    ///     只想套用 `reason` 内置文案时用 `Rejection.make(candidate, reason:)`。
     /// - Returns: 逐项结果，含被拦原因
     @discardableResult
     static func execute(
         _ candidates: [Candidate],
         toTrash: Bool = true,
         journal: Journal = .module(categoryName: "治理清理"),
-        policy: (Candidate) -> GovernanceVerdict.Reason? = { _ in nil }
+        policy: (Candidate) -> Rejection? = { _ in nil }
     ) -> Outcome {
         var out = Outcome()
         let fm = FileManager.default
@@ -112,9 +157,8 @@ enum ResidueDeletionGate {
                                               reason: reason, message: verdict.message))
                 continue
             }
-            if let reason = policy(candidate) {
-                out.rejected.append(Rejection(name: candidate.name, path: candidate.path,
-                                              reason: reason, message: GovernanceVerdict.rejected(reason).message))
+            if let rejection = policy(candidate) {
+                out.rejected.append(rejection)
                 continue
             }
 
@@ -146,6 +190,24 @@ enum ResidueDeletionGate {
             record(categoryName: categoryName, outcome: out, permanently: !toTrash)
         }
         return out
+    }
+
+    /// 旧签名：`policy` 只能回一个 `GovernanceVerdict.Reason`，带不动模块自己的中文原因，
+    /// 于是 4 批工程师各自造了绕过方案（预置 blocked 数组、本地 Rejection 工厂、借用
+    /// 语义不符的 reason）。保留此重载只为让未迁移的调用方仍能编译；新代码请用
+    /// `policy: (Candidate) -> Rejection?`。
+    @available(*, deprecated, message: "改传 policy: (Candidate) -> ResidueDeletionGate.Rejection?，可携带模块自己的中文原因")
+    @discardableResult
+    static func execute(
+        _ candidates: [Candidate],
+        toTrash: Bool = true,
+        journal: Journal = .module(categoryName: "治理清理"),
+        policy: (Candidate) -> GovernanceVerdict.Reason?
+    ) -> Outcome {
+        execute(candidates, toTrash: toTrash, journal: journal) { candidate in
+            guard let reason = policy(candidate) else { return nil }
+            return Rejection.make(candidate, reason: reason)
+        }
     }
 
     /// 写历史记录与撤销快照（G3：默认移入废纸篓时才可回退）

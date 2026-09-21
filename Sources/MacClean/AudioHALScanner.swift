@@ -577,13 +577,7 @@ public final class AudioHALScanner {
 
     /// 该路径归属的治理域（主目录内的用户插件与缓存返回 nil，走主目录护栏）
     static func domain(for path: String) -> GovernanceDomain? {
-        guard !path.isEmpty else { return nil }
-        let real = FileSystem.normalizePath(FileSystem.realPath(path))
-        let hal = GovernanceDomain.audioHAL.normalizedRoot
-        if real.hasPrefix(hal + "/") { return .audioHAL }
-        let comp = GovernanceDomain.audioComponents.normalizedRoot
-        if real.hasPrefix(comp + "/") { return .audioComponents }
-        return nil
+        GovernanceDomain.domain(forPath: path)
     }
 
     /// 清理选中的音频孤儿驱动与缓存。
@@ -600,8 +594,13 @@ public final class AudioHALScanner {
                 $0.name, path: $0.path, domain: domainOverride ?? Self.domain(for: $0.path)) }
         let origin = Dictionary(items.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
         return ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal) { cand in
-            guard let item = origin[cand.path], item.status.isOrphanOrCorrupted else {
-                return .blockedByBaseGate      // 在用 / Apple 官方 / 需确认 → 一律拒删
+            guard let item = origin[cand.path] else {
+                return .make(cand, reason: .notDeletable, message: "该路径不在本轮选定清单里，未删除")
+            }
+            guard item.status.isOrphanOrCorrupted else {
+                // 在用 / Apple 官方 / 需确认 → 一律拒删，并把模块自己的研判结论如实带出去
+                return .make(cand, reason: .notDeletable,
+                             message: "研判结论为「\(item.status.rawValue)」，不是确证的孤儿/损坏，未删除")
             }
             return nil
         }

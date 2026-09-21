@@ -49,6 +49,94 @@ extension Selftest {
             return GovernanceDomain.byID.count == GovernanceDomain.all.count
         }
 
+        // 1b. 运行时登记的动态域必须真的进注册表——否则"新增治理模块必须登记"就是个空承诺，
+        // 而上面那几条穷举断言（遍历 `GovernanceDomain.all`）永远扫不到它。
+        check("治理域注册表：动态登记进 all/byID、按 id 去重，且 QuickLook 动态域已被穷举覆盖") {
+            // ① 纯注册表行为：同 id 重复登记覆盖而非追加
+            let root = makeFixture("dynamic")
+            defer { try? fm.removeItem(atPath: root) }
+            let id = "selftest.dynamic.\(UUID().uuidString)"
+            let first = GovernanceDomain(id: id, root: root, minDepthBelowRoot: 1, note: "自检动态域")
+            GovernanceDomain.register(first)
+            guard GovernanceDomain.byID[id]?.root == root,
+                  GovernanceDomain.all.filter({ $0.id == id }).count == 1 else { return false }
+            let second = GovernanceDomain(id: id, root: root + "/inner", minDepthBelowRoot: 1, note: "自检动态域")
+            GovernanceDomain.register(second)
+            guard GovernanceDomain.all.filter({ $0.id == id }).count == 1,
+                  GovernanceDomain.byID[id]?.root == root + "/inner" else { return false }
+            // ② 动态域同样吃得到穷举断言的护栏：登记后 `all` 里那条就是它，且域根不可删
+            guard let listed = GovernanceDomain.all.first(where: { $0.id == id }),
+                  case .rejected = FileSystem.governanceVerdict(listed.root, domain: listed) else { return false }
+            guard GovernanceDomain.byID.count == GovernanceDomain.all.count else { return false }
+
+            // ③ 真实案例：QuickLook 的动态域在首次使用时登记，且被 `all` 覆盖。
+            //    本机取不到该目录时跳过（不谎报，也不把这条判成失败）。
+            guard let ql = QuickLookThumbnailPurger.darwinCacheDomain() else {
+                print("      本机取不到 Darwin 用户缓存目录，跳过 QuickLook 动态域覆盖断言")
+                return true
+            }
+            guard GovernanceDomain.byID["quicklook.darwinCache"]?.root == ql.root else {
+                print("      quicklook.darwinCache 未登记进注册表")
+                return false
+            }
+            for target in ["/System/Library/Fonts/SFNS.ttf", "/private/var/db/receipts/anything"] {
+                let verdict = FileSystem.governanceVerdict(target, domain: ql)
+                guard case .rejected(let protectedReason) = verdict,
+                      protectedReason == .systemProtected else {
+                    print("      动态域放行了受保护目标: \(target) → \(verdict)")
+                    return false
+                }
+            }
+            guard case .rejected(let rootReason) = FileSystem.governanceVerdict(ql.root, domain: ql),
+                  rootReason == .tooShallowForDomain else { return false }
+            return true
+        }
+
+        // 1c. 12 份 path→domain 映射器已收敛到注册表的同一个解析器（最长 root 匹配，含动态域）
+        check("治理域注册表：统一解析器按最长 root 匹配，且各模块映射器与它结论一致") {
+            // 最长匹配：PPD 资源树必须落到 ppdResources，落到 printersGlobal 会放宽层级下界
+            guard GovernanceDomain.domain(forPath: "/Library/Printers/PPDs/Contents/Resources/HP.ppd")
+                    == .ppdResources else { return false }
+            guard GovernanceDomain.domain(forPath: "/Library/Printers/Canon") == .printersGlobal else { return false }
+            // 不在任何登记域内 → nil（由基础护栏拒绝）
+            guard GovernanceDomain.domain(forPath: "/Library/Developer/Xcode/B.plist") == nil,
+                  GovernanceDomain.domain(forPath: "") == nil else { return false }
+            // 各模块入口只是薄封装：同一位置在 12 处必须得到同一个域
+            let probes: [(String, GovernanceDomain?)] = [
+                ("/Library/Fonts/Some.ttf", .fontsGlobal),
+                ("/Library/ColorSync/Profiles/Displays/A.icc", .colorSyncProfiles),
+                ("/Library/Audio/Plug-Ins/HAL/A.driver", .audioHAL),
+                ("/Library/Audio/Plug-Ins/Components/A.component", .audioComponents),
+                ("/Library/LaunchAgents/a.plist", .launchAgentsGlobal),
+                ("/Library/LaunchDaemons/b.plist", .launchDaemonsGlobal),
+                ("/Library/QuickLook/A.qlgenerator", .quickLookGlobal),
+                ("/Applications/Foo.app/Contents/Resources/en.lproj", .appLocalizedResources),
+                (FileSystem.normalizePath(NSHomeDirectory()) + "/Library/Fonts/A.ttf", nil),
+            ]
+            for (path, expected) in probes {
+                guard GovernanceDomain.domain(forPath: path) == expected else {
+                    print("      注册表解析不一致: \(path) → \(String(describing: GovernanceDomain.domain(forPath: path)))")
+                    return false
+                }
+                let resolved: [GovernanceDomain?] = [
+                    FontCacheInspector.governanceDomain(forPath: path),
+                    CLICacheScanner.governanceDomain(forPath: path),
+                    LoginItemCleaner.governanceDomain(forPath: path),
+                    PluginExtensionInspector.governanceDomain(forPath: path),
+                    PrinterDriverScanner.domain(for: path),
+                    ColorSyncScanner.domain(for: path),
+                    AudioHALScanner.domain(for: path),
+                    LanguagePackItem(id: path, code: "en", displayName: "英语", path: path,
+                                     size: 1, isProtected: false).governanceDomain,
+                ]
+                guard resolved.allSatisfy({ $0 == expected }) else {
+                    print("      模块映射器与注册表不一致: \(path) → \(resolved.map { $0?.id ?? "nil" })")
+                    return false
+                }
+            }
+            return true
+        }
+
         // 2. 域根本身永不可删：授权精确到"根之下的条目"
         check("治理域：域根本身与层级过浅的目标一律拒绝") {
             for domain in GovernanceDomain.all {
@@ -193,8 +281,10 @@ extension Selftest {
             return outcome.cleanedCount == 1 && outcome.freedBytes == dirSize && !stillThere
         }
 
-        // 9. policy 闭包是模块特有判据的唯一插入口：拦下就不许动文件
-        check("删除网关：policy 拒绝的项必须原样保留且计入 errorCount") {
+        // 9. policy 闭包是模块特有判据的唯一插入口：拦下就不许动文件，
+        //    且必须能把**模块自己的中文原因**带出来（v1.73：此前只能回一个枚举 case，
+        //    message 被强制回填成内置文案，于是 4 批工程师各自造了绕过方案）。
+        check("删除网关：policy 拒绝的项必须原样保留、带出自定义原因且计入 errorCount") {
             let root = makeFixture("policy")
             defer { try? fm.removeItem(atPath: root) }
             makeFile(root + "/orphan.dat", 512)
@@ -204,11 +294,44 @@ extension Selftest {
                 ResidueDeletionGate.Candidate("orphan", path: root + "/orphan.dat"),
                 ResidueDeletionGate.Candidate("inuse", path: root + "/inuse.dat"),
             ], journal: .none) { candidate in
-                candidate.name == "inuse" ? .blockedByBaseGate : nil
+                guard candidate.name == "inuse" else { return nil }
+                return .make(candidate, reason: .inUse, message: "注册表显示它仍在被设备使用")
             }
-            return outcome.cleanedCount == 1 && outcome.errorCount == 1
-                && outcome.rejected.first?.path.contains("inuse.dat") == true
-                && exists(root + "/inuse.dat") && !exists(root + "/orphan.dat")
+            guard outcome.cleanedCount == 1 && outcome.errorCount == 1,
+                  outcome.rejected.first?.path.contains("inuse.dat") == true,
+                  exists(root + "/inuse.dat"), !exists(root + "/orphan.dat") else { return false }
+            // 专用 case + 自定义文案：既不借用 .systemProtected，也不被回填成枚举内置文案
+            guard outcome.rejected.first?.reason == .inUse,
+                  outcome.rejected.first?.message == "注册表显示它仍在被设备使用" else {
+                print("      policy 的自定义原因未带出: \(outcome.rejected.first?.message ?? "nil")")
+                return false
+            }
+            // 省略 message 时回落到 reason 的内置文案（旧行为仍可用）
+            let fallback = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("quiet", path: root + "/inuse.dat")],
+                journal: .none) { candidate in .make(candidate, reason: .notDeletable) }
+            return fallback.rejected.first?.message == GovernanceVerdict.rejected(.notDeletable).message
+        }
+
+        // 9b. 两份结果相加只有一份实现：模块预筛项在前、网关项在后，计数字段逐项累加
+        check("删除网关：Outcome.merge 保留模块预筛项且逐字段累加") {
+            let root = makeFixture("merge")
+            defer { try? fm.removeItem(atPath: root) }
+            makeFile(root + "/a.dat", 1024)
+
+            let pre = ResidueDeletionGate.Rejection.make(name: "预先拦下", path: root + "/pre.dat",
+                                                         reason: .notDeletable, message: "模块自己判掉的项")
+            let gate = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("a.dat", path: root + "/a.dat")], journal: .none)
+            let merged = ResidueDeletionGate.Outcome(rejected: [pre]).merging(gate)
+
+            guard merged.cleanedCount == gate.cleanedCount, merged.freedBytes == gate.freedBytes,
+                  merged.cleanedPaths == gate.cleanedPaths,
+                  merged.failed.count == gate.failed.count else { return false }
+            // 顺序即语义：模块先拦的项排在网关结论之前
+            return merged.rejected.count == gate.rejected.count + 1
+                && merged.rejected.first?.name == "预先拦下"
+                && merged.errorCount == merged.rejected.count + merged.failed.count
         }
 
         // 10. 记账诚实：freedBytes 必须等于实际被删项删除前实测体积之和

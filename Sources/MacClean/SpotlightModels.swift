@@ -145,11 +145,11 @@ public struct SpotlightStoreItem: Identifiable, Equatable, Hashable {
 
     /// 该条目走的治理域：`/Volumes/*/.Spotlight-V100` 用跨卷域，
     /// 其余（主目录内的 CoreSpotlight / 搜索缓存）走主目录护栏。
+    /// root 匹配由注册表的统一解析器负责（含运行时登记的动态域）。
     /// internal：`GovernanceDomain` 是内部类型，不能出现在 public 签名的属性上。
     var governanceDomain: GovernanceDomain? {
         guard kind == .volumeIndex else { return nil }
-        let real = FileSystem.normalizePath(FileSystem.realPath(path))
-        return real.hasPrefix("/Volumes/") ? .volumeSpotlightIndex : nil
+        return GovernanceDomain.domain(forPath: path)
     }
 }
 

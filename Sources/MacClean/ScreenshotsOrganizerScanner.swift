@@ -189,7 +189,7 @@ public final class ScreenshotsOrganizerScanner {
             return ScreenshotsArchiveResult(
                 archivedCount: 0, archivedBytes: 0,
                 rejected: items.map {
-                    Self.rejection($0.fileName, path: $0.path, reason: reason,
+                    .make(name:$0.fileName, path: $0.path, reason: reason,
                                    message: "归档目标 \(baseDir) 不在允许位置：\(GovernanceVerdict.rejected(reason).message)")
                 },
                 failed: [])
@@ -200,7 +200,7 @@ public final class ScreenshotsOrganizerScanner {
 
         for item in items {
             guard item.isSelected else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "未勾选，已跳过"))
                 continue
             }
@@ -209,12 +209,12 @@ public final class ScreenshotsOrganizerScanner {
             guard verdict.isAllowed else {
                 let reason: GovernanceVerdict.Reason
                 if case .rejected(let r) = verdict { reason = r } else { reason = .blockedByBaseGate }
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: reason, message: verdict.message))
+                blocked.append(.make(name:item.fileName, path: item.path, reason: reason, message: verdict.message))
                 continue
             }
             let realSrc = FileSystem.normalizePath(FileSystem.realPath(item.path))
             if Self.isInFlight(realSrc, now: now) {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "最近 \(Int(Self.inFlightWriteWindow)) 秒内还在被写入（可能正在录屏），未移动"))
                 continue
             }
@@ -230,7 +230,7 @@ public final class ScreenshotsOrganizerScanner {
             let destFolder = (baseDir as NSString).appendingPathComponent(subDirName)
             let realFolder = FileSystem.normalizePath(FileSystem.realPath(destFolder))
             guard !realFolder.hasPrefix(realSrc + "/") else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "归档目标就在该项内部，拒绝自我嵌套移动"))
                 continue
             }
@@ -283,22 +283,24 @@ public final class ScreenshotsOrganizerScanner {
 
         for item in items {
             guard item.isSelected else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "未勾选，已跳过"))
                 continue
             }
             candidates.append(ResidueDeletionGate.Candidate(item.fileName, path: item.path))
         }
 
-        let outcome = ResidueDeletionGate.execute(
-            candidates, toTrash: toTrash, journal: journal
-        ) { candidate in
-            Self.isInFlight(FileSystem.normalizePath(FileSystem.realPath(candidate.path)), now: now)
-                ? .blockedByBaseGate : nil
-        }
-        var merged = outcome
-        merged.rejected.append(contentsOf: blocked)
-        return ScreenshotsCleanResult(outcome: merged)
+        // 模块预筛的拦截项与网关结果合成一份完整结论（合并实现只有一份）
+        return ScreenshotsCleanResult(outcome: ResidueDeletionGate.Outcome(rejected: blocked)
+            .merging(ResidueDeletionGate.execute(
+                candidates, toTrash: toTrash, journal: journal
+            ) { candidate in
+                guard !Self.isInFlight(FileSystem.normalizePath(FileSystem.realPath(candidate.path)), now: now) else {
+                    return .make(candidate, reason: .inUse,
+                                 message: "截图文件刚刚还在被写入（保护窗口 \(Int(Self.inFlightWriteWindow)) 秒内），未删除")
+                }
+                return nil
+            }))
     }
 
     /// 文件是否"刚刚还在被写"（mtime 落在保护窗口内）。mtime 读不到时按"在用"处理。
@@ -325,10 +327,5 @@ public final class ScreenshotsOrganizerScanner {
         records.insert(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
                                    itemCount: count, bytes: 0, mode: "归档移动", failures: failures), at: 0)
         HistoryStore.save(records)
-    }
-
-    static func rejection(_ name: String, path: String, reason: GovernanceVerdict.Reason,
-                          message: String) -> ResidueDeletionGate.Rejection {
-        ResidueDeletionGate.Rejection(name: name, path: path, reason: reason, message: message)
     }
 }

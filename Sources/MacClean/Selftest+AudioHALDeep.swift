@@ -297,7 +297,10 @@ extension Selftest {
             let out3 = AudioHALScanner.shared.clean(items: [inUse], toTrash: false,
                                                     journal: .none, domainOverride: domain)
             guard out3.cleanedCount == 0 else { return false }
-            guard out3.rejected.first?.reason == .blockedByBaseGate else { return false }
+            // 状态门槛是本模块的业务判据，不是安全护栏：reason 用 .notDeletable，
+            // 且必须把"研判结论是什么"这句中文原因带出来（v1.73 起 policy 可携带消息）
+            guard out3.rejected.first?.reason == .notDeletable,
+                  out3.rejected.first?.message.contains("Apple 官方核心") == true else { return false }
             guard FileManager.default.fileExists(atPath: shielded) else { return false }
             return true
         }

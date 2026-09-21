@@ -295,23 +295,9 @@ public enum AppLocalizationScanner {
 
     /// 执行选定语言包的清理：一律交给 `ResidueDeletionGate`。
     ///
-    /// 保留旧的元组形状给 `Uninstaller` 用（`cleanedBytes` 现在是**删除前实测**的体积，
-    /// 不再是扫描时缓存的 `item.size`）。
-    static func clean(
-        bundle: AppLocalizationBundle,
-        selectedItemIDs: Set<String>,
-        permanently: Bool = false,
-        journal: ResidueDeletionGate.Journal = .module(categoryName: "多语言资源瘦身"),
-        languages: [String]? = nil,
-        inventory: AppInventory.Snapshot? = nil
-    ) -> (cleanedCount: Int, cleanedBytes: Int64, errorCount: Int) {
-        let outcome = cleanOutcome(bundle: bundle, selectedItemIDs: selectedItemIDs,
-                                  permanently: permanently, journal: journal,
-                                  languages: languages, inventory: inventory)
-        return (outcome.cleanedCount, outcome.freedBytes, outcome.errorCount)
-    }
-
-    /// 同上，返回逐项拒绝原因，卡片要如实展示而不是笼统一句"清理失败"。
+    /// 返回逐项拒绝原因，卡片要如实展示而不是笼统一句"清理失败"。
+    /// （v1.72 那批并行改动里的 `(cleanedCount, cleanedBytes, errorCount)` 元组兼容壳
+    ///   已删除：生产侧只有 `Uninstaller` 在用，且它调的就是本方法。）
     @discardableResult
     static func cleanOutcome(
         bundle: AppLocalizationBundle,
@@ -338,26 +324,38 @@ public enum AppLocalizationScanner {
             toTrash: !permanently,
             journal: journal,
             policy: { candidate in
-                guard let item = byPath[candidate.path] else { return .notDeletable }
+                guard let item = byPath[candidate.path] else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "该路径不在本轮选定的语言包清单里，未删除")
+                }
                 // ① 母语/系统语言/Base：坚决保护（用**实时**语言列表重算，不只看扫描缓存）
                 if item.isProtected || LocalizationHelper.isProtected(code: item.code, userLanguages: langs) {
-                    return .notDeletable
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "「\(item.code)」是你的母语/系统语言或 Base 资源，坚决保留")
                 }
                 // ② 运行中的 App / Apple 官方组件
-                if runningNow { return .inUse }
-                if appleNow { return .systemProtected }
+                if runningNow {
+                    return .make(candidate, reason: .inUse,
+                                 message: "\(bundle.appName) 正在运行：删除包内资源会让它立即异常")
+                }
+                if appleNow { return .make(candidate, reason: .systemProtected,
+                                           message: "Apple 官方组件（com.apple.*），不提供包内资源清理") }
                 // ③ 形状校验：必须是这个 App 自己 Contents/Resources 下的 .lproj 本体
                 let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
                 let realPrefix = FileSystem.normalizePath(FileSystem.realPath(expectedPrefix))
                 guard real.hasPrefix(realPrefix + "/"), real.hasSuffix(".lproj") else {
-                    return .notDeletable
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "不是该 App 自己 Contents/Resources 下的 .lproj 本体，未删除")
                 }
                 // ④ 只删 App 本体之下第 3 层（Contents/Resources/<x>.lproj）：
                 //    层级更浅的目标可能是 App 本体或 Resources 目录自身，一律拒。
                 let appReal = FileSystem.normalizePath(FileSystem.realPath(bundle.appPath))
                 let depthBelowApp = real.dropFirst(appReal.count)
                     .split(separator: "/").count
-                guard real.hasPrefix(appReal), depthBelowApp >= 3 else { return .tooShallowForDomain }
+                guard real.hasPrefix(appReal), depthBelowApp >= 3 else {
+                    return .make(candidate, reason: .tooShallowForDomain,
+                                 message: "层级过浅（可能是 App 本体或 Resources 目录自身），未删除")
+                }
                 return nil
             })
     }

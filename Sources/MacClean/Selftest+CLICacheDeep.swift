@@ -83,7 +83,9 @@ extension Selftest {
                 print("    ❌ 保护清单未按 childPath 生效: cleaned=\(res.cleanedCount) errors=\(res.errorCount)")
                 return false
             }
-            guard res.rejected.allSatisfy({ $0.reason == .hardExcluded }) else { return false }
+            // 保护清单命中属"本模块判它不是可清理对象"，不再借用 G6 的 .hardExcluded 语义
+            guard res.rejected.allSatisfy({ $0.reason == .notDeletable }) else { return false }
+            guard res.rejected.allSatisfy({ $0.message.contains("拒绝删除") }) else { return false }
             for name in [".npmrc", "config.toml", "settings.json"] {
                 guard fm.fileExists(atPath: testDir + "/caches/" + name) else { return false }
             }
@@ -227,7 +229,7 @@ extension Selftest {
                                       path: npmRoot, size: 1_000_000, fileCount: 4, isSelected: true)
             let res = CLICacheScanner.shared.clean(items: [forced], toTrash: false, journal: .none)
             guard res.cleanedCount == 0, res.freedBytes == 0 else { return false }
-            guard res.rejected.first?.reason == .hardExcluded,
+            guard res.rejected.first?.reason == .notDeletable,
                   res.rejected.first?.message.contains("数据目录") == true else { return false }
             let after = Set((try? fm.contentsOfDirectory(atPath: npmRoot)) ?? [])
             guard after == Set(allBefore) else {
@@ -266,7 +268,9 @@ extension Selftest {
                   fm.fileExists(atPath: cacheRoot + "/settings.json") else { return false }
             guard !fm.fileExists(atPath: cacheRoot + "/pkg.tar.gz"),
                   !fm.fileExists(atPath: cacheRoot + "/_cacache") else { return false }
-            guard res.rejected.allSatisfy({ $0.reason == .hardExcluded }) else { return false }
+            // 命中的是**本模块**的保护清单，不是 G6 硬排除：reason 必须是 .notDeletable
+            guard res.rejected.allSatisfy({ $0.reason == .notDeletable }) else { return false }
+            guard res.rejected.allSatisfy({ $0.message.contains("保护清单") }) else { return false }
             return true
         }
 
@@ -302,8 +306,14 @@ extension Selftest {
                 return false
             }
             let reasons = Set(res.rejected.map { $0.reason })
-            guard reasons.contains(.userWhitelisted), reasons.contains(.hardExcluded) else {
-                print("    ❌ 白名单与硬排除都要有拒绝原因: \(res.rejected.map { $0.reason })")
+            // 数据根命中的是**本模块**的数据根清单（`~/.cargo` 不在 G6 hardExclude 里），
+            // 因此原因必须是 .notDeletable；.hardExcluded 只留给真 G6 位置
+            guard reasons.contains(.userWhitelisted), reasons.contains(.notDeletable) else {
+                print("    ❌ 白名单与数据根都要有拒绝原因: \(res.rejected.map { $0.reason })")
+                return false
+            }
+            guard !reasons.contains(.hardExcluded) else {
+                print("    ❌ 把模块数据根伪装成了 G6 硬排除: \(res.rejected.map { $0.reason })")
                 return false
             }
             guard res.rejected.contains(where: { $0.path.hasPrefix("/System") }) else { return false }

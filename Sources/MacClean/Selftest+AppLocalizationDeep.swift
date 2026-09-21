@@ -112,7 +112,7 @@ extension Selftest {
                     LanguagePackItem(id: "/System/Applications/Test.app/Contents/Resources/fr.lproj", code: "fr", displayName: "法语", path: "/System/Applications/Test.app/Contents/Resources/fr.lproj", size: 100, isProtected: false, isSelected: true)
                 ]
             )
-            let cleanRes = AppLocalizationScanner.clean(bundle: fakeBundle, selectedItemIDs: ["/System/Applications/Test.app/Contents/Resources/fr.lproj"], permanently: false)
+            let cleanRes = AppLocalizationScanner.cleanOutcome(bundle: fakeBundle, selectedItemIDs: ["/System/Applications/Test.app/Contents/Resources/fr.lproj"], permanently: false)
             guard cleanRes.cleanedCount == 0 && cleanRes.errorCount > 0 else { return false }
 
             return true
@@ -214,7 +214,7 @@ extension Selftest {
             let targetIDs: Set<String> = [zhPath, frPath, ruPath]
 
             // 执行彻底删除测试
-            let result = AppLocalizationScanner.clean(bundle: inspected, selectedItemIDs: targetIDs,
+            let result = AppLocalizationScanner.cleanOutcome(bundle: inspected, selectedItemIDs: targetIDs,
                                                       permanently: true, journal: .none)
 
             // zh-Hans 必须被保护防线挡下：不计入清理，且**如实报为被拒**（旧实现是静默跳过）
@@ -332,7 +332,7 @@ extension Selftest {
 
             // 即使调用方硬把每一项都勾上（旧版默选的行为），一个也删不掉
             let all = Set(bundle.languagePacks.map(\.id))
-            let forced = AppLocalizationScanner.clean(
+            let forced = AppLocalizationScanner.cleanOutcome(
                 bundle: bundle, selectedItemIDs: all, permanently: true, journal: .none,
                 languages: ["zh-Hans", "en"], inventory: running)
             guard forced.cleanedCount == 0 else {
@@ -356,7 +356,7 @@ extension Selftest {
             guard native.languagePacks.first(where: { $0.code == "fr" })?.isProtected == false else { return false }
             // 母语那份即使被硬勾上，policy 也拦住（不依赖扫描时的 isProtected）
             let jaPath = native.languagePacks.first(where: { $0.code == "ja" })?.path
-            let forcedNative = AppLocalizationScanner.clean(
+            let forcedNative = AppLocalizationScanner.cleanOutcome(
                 bundle: native, selectedItemIDs: [jaPath ?? ""], permanently: true, journal: .none,
                 languages: ["ja-JP"], inventory: idle)
             guard forcedNative.cleanedCount == 0, fm.fileExists(atPath: resPath + "/ja.lproj") else {
@@ -374,7 +374,7 @@ extension Selftest {
                 print("    ❌ com.apple.* 系统应用出现了可清理项")
                 return false
             }
-            let appleForced = AppLocalizationScanner.clean(
+            let appleForced = AppLocalizationScanner.cleanOutcome(
                 bundle: appleBundle, selectedItemIDs: Set(appleBundle.languagePacks.map(\.id)),
                 permanently: true, journal: .none, languages: ["zh-Hans", "en"],
                 inventory: idle)

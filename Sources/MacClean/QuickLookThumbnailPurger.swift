@@ -63,20 +63,28 @@ public final class QuickLookThumbnailPurger {
     ///
     /// `minDepthBelowRoot = 2`：授权只覆盖 `<darwin C>/com.apple.QuickLook.thumbnailcache/<子项>`，
     /// 缓存目录本身（深度 1）与域根（深度 0）都删不掉。
+    ///
+    /// 这个根只有运行时发现得到（路径里带机器相关的随机段），因此首次使用时**登记进注册表**，
+    /// 让 `Selftest+DeletionGate` 那几条遍历 `GovernanceDomain.all` 的穷举断言覆盖到它。
     static func darwinCacheDomain() -> GovernanceDomain? {
         guard let root = getDarwinUserCacheDir(), !root.isEmpty else { return nil }
-        return GovernanceDomain(
-            id: "quicklook.darwinCache", root: root, minDepthBelowRoot: 2,
+        let domain = GovernanceDomain(
+            id: "quicklook.darwinCache",
+            root: FileSystem.normalizePath(root),
+            minDepthBelowRoot: 2,
             note: "访达快速查看在系统动态缓存目录里的缩略图数据库（删除后系统自动重建）",
             allowedEntryNames: darwinCacheEntries)
+        GovernanceDomain.register(domain)
+        return domain
     }
 
     /// 该路径挂在哪个治理域上。`nil` = 位于主目录内，走常规护栏。
+    ///
+    /// 先确保动态域已登记（首次使用即登记，之后 `all` 一直带着它），
+    /// 再交给注册表的统一解析器——本模块不再自己写 normalize + hasPrefix 那一套。
     static func domain(forPath path: String) -> GovernanceDomain? {
-        guard let domain = darwinCacheDomain() else { return nil }
-        let real = FileSystem.normalizePath(FileSystem.realPath(path))
-        let root = domain.normalizedRoot
-        return (real == root || real.hasPrefix(root + "/")) ? domain : nil
+        _ = darwinCacheDomain()
+        return GovernanceDomain.domain(forPath: path)
     }
 
     /// 路径特征判定（业务判据，非安全护栏）
@@ -181,16 +189,13 @@ public final class QuickLookThumbnailPurger {
 
             // 业务判据：路径必须带 QuickLook 标记（安全判定交给网关，不在此重复造轮子）
             guard Self.isQuickLookCachePath(path) else {
-                blocked.append(ResidueDeletionGate.Rejection(
-                    name: item.title, path: path, reason: .outsideDomain,
-                    message: "路径不含 QuickLook 标识，不在本模块授权范围内"))
+                blocked.append(.make(name: item.title, path: path, reason: .outsideDomain,
+                                     message: "路径不含 QuickLook 标识，不在本模块授权范围内"))
                 continue
             }
 
             guard FileSystem.exists(path) else {
-                blocked.append(ResidueDeletionGate.Rejection(
-                    name: item.title, path: path, reason: .missing,
-                    message: GovernanceVerdict.rejected(.missing).message))
+                blocked.append(.make(name: item.title, path: path, reason: .missing))
                 continue
             }
 
@@ -201,9 +206,8 @@ public final class QuickLookThumbnailPurger {
             } catch {
                 let reason: GovernanceVerdict.Reason =
                     FileSystem.isPermissionDenied(path) ? .needsPrivilege : .blockedByBaseGate
-                blocked.append(ResidueDeletionGate.Rejection(
-                    name: item.title, path: path, reason: reason,
-                    message: "无法读取缓存目录内容（\(error.localizedDescription)），未删除任何文件"))
+                blocked.append(.make(name: item.title, path: path, reason: reason,
+                                     message: "无法读取缓存目录内容（\(error.localizedDescription)），未删除任何文件"))
                 continue
             }
 
@@ -214,15 +218,16 @@ public final class QuickLookThumbnailPurger {
             }
         }
 
-        var outcome = ResidueDeletionGate.execute(
-            candidates,
-            toTrash: toTrash,
-            journal: journal
-        ) { candidate in
-            // 双保险：子项路径同样必须带 QuickLook 标识，否则不属于本模块
-            Self.isQuickLookCachePath(candidate.path) ? nil : GovernanceVerdict.Reason.outsideDomain
-        }
-        outcome.rejected.append(contentsOf: blocked)
+        // 模块自己先拦下的项与网关结果合成一份完整结论（合并逻辑只在 Outcome.merge 里有一份）
+        var outcome = ResidueDeletionGate.Outcome(rejected: blocked).merging(
+            ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal) { candidate in
+                // 双保险：子项路径同样必须带 QuickLook 标识，否则不属于本模块
+                guard Self.isQuickLookCachePath(candidate.path) else {
+                    return .make(candidate, reason: .outsideDomain,
+                                 message: "子项路径不含 QuickLook 标识，不属于本模块授权范围")
+                }
+                return nil
+            })
 
         var resetSucceeded = false
         var resetFailure: String?
@@ -231,9 +236,8 @@ public final class QuickLookThumbnailPurger {
             resetSucceeded = reset.reset
             resetFailure = reset.failureReason
             if let resetFailure {
-                outcome.rejected.append(ResidueDeletionGate.Rejection(
-                    name: "系统缩略图缓存重置", path: Self.qlmanagePath,
-                    reason: .blockedByBaseGate, message: resetFailure))
+                outcome.rejected.append(.make(name: "系统缩略图缓存重置", path: Self.qlmanagePath,
+                                              reason: .blockedByBaseGate, message: resetFailure))
             }
         }
 

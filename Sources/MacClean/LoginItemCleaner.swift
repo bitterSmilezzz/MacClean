@@ -222,11 +222,7 @@ public final class LoginItemCleaner {
     /// `/Library/LaunchAgents`、`/Library/LaunchDaemons` 必须声明对应治理域；
     /// 用户 `~/Library/LaunchAgents` 内的传 nil 走主目录护栏。
     static func governanceDomain(forPath path: String) -> GovernanceDomain? {
-        let normalized = FileSystem.normalizePath(path)
-        for domain in [GovernanceDomain.launchAgentsGlobal, GovernanceDomain.launchDaemonsGlobal] {
-            if normalized.hasPrefix(domain.normalizedRoot + "/") { return domain }
-        }
-        return nil
+        GovernanceDomain.domain(forPath: path)
     }
 
     /// launchd 服务寻址目标：`gui/<uid>/<label>`。
@@ -274,9 +270,9 @@ public final class LoginItemCleaner {
         var labelByPath: [String: String] = [:]
 
         for item in items {
-            if let blocked = blockReason(for: item) {
-                outcome.gate.rejected.append(.init(name: item.name, path: item.path,
-                                                   reason: .systemProtected, message: blocked))
+            if let blocked = blockVerdict(for: item) {
+                outcome.gate.rejected.append(.make(name: item.name, path: item.path,
+                                                   reason: blocked.reason, message: blocked.message))
                 continue
             }
             candidates.append(.init(item.name, path: item.path,
@@ -286,12 +282,7 @@ public final class LoginItemCleaner {
 
         // 合并而不是覆盖：网关之前被模块判据拦下的项必须留在结果里
         let gate = ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal)
-        outcome.gate.cleanedCount += gate.cleanedCount
-        outcome.gate.freedBytes += gate.freedBytes
-        outcome.gate.cleanedPaths.append(contentsOf: gate.cleanedPaths)
-        outcome.gate.rejected.append(contentsOf: gate.rejected)
-        outcome.gate.failed.append(contentsOf: gate.failed)
-        outcome.gate.trashedSnapshots.append(contentsOf: gate.trashedSnapshots)
+        outcome.gate.merge(gate)
 
         // 只有真的删掉了的，才去让 launchd 忘掉这个服务
         for deleted in gate.cleanedPaths {
@@ -302,22 +293,27 @@ public final class LoginItemCleaner {
         return outcome
     }
 
-    /// 模块级判据：返回不可删的中文原因，nil 表示可以进网关。
-    func blockReason(for item: LoginItemEntry) -> String? {
+    /// 模块级判据：返回「拒绝原因 + 中文说明」，nil 表示可以进网关。
+    ///
+    /// reason 不再一律借 `.systemProtected`：官方自启项/证据不足属"不是可清理对象"
+    /// （`.notDeletable`），可执行文件仍在的活跃服务属"在用"（`.inUse`）。
+    func blockVerdict(for item: LoginItemEntry) -> (reason: GovernanceVerdict.Reason, message: String)? {
         switch item.issue {
         case .appleManaged:
-            return "Apple 官方自启项，绝不清理"
+            return (.notDeletable, "Apple 官方自启项，绝不清理")
         case .needsReview:
-            return "证据不足（\(item.note ?? "无法读取配置")），需你手动确认"
+            return (.notDeletable, "证据不足（\(item.note ?? "无法读取配置")），需你手动确认")
         case .validActive:
-            return "目标可执行文件仍在，不是死链残留"
+            return (.inUse, "目标可执行文件仍在，不是死链残留")
         case .executableMissing:
             break
         }
-        if item.name.lowercased().hasPrefix("com.apple.") { return "标签为 com.apple.* 的官方自启项" }
+        if item.name.lowercased().hasPrefix("com.apple.") {
+            return (.notDeletable, "标签为 com.apple.* 的官方自启项")
+        }
         if let target = item.targetPath,
            LoginItemCleaner.appleManagedExecutable(FileSystem.normalizePath(target)) {
-            return "可执行文件位于 Apple 托管位置 \(target)"
+            return (.notDeletable, "可执行文件位于 Apple 托管位置 \(target)")
         }
         // 其余情形（软链跳板 / 域外 / root 只读 / 白名单）交给网关给真实原因
         return nil

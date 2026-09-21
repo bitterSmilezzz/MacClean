@@ -42,10 +42,10 @@ public struct LanguagePackItem: Identifiable, Equatable, Hashable {
 
     /// 该条目走的治理域：`/Applications` 下用包内资源域（深度 4，永删不到 .app 本体）；
     /// `~/Applications` 与自检 fixture 落在主目录/临时目录内，交主目录护栏。
+    /// 解析口径由注册表的统一实现提供（含运行时登记的动态域）。
     /// internal：`GovernanceDomain` 是内部类型，不能出现在 public 属性上。
     var governanceDomain: GovernanceDomain? {
-        let real = FileSystem.normalizePath(FileSystem.realPath(path))
-        return real.hasPrefix("/Applications/") ? .appLocalizedResources : nil
+        GovernanceDomain.domain(forPath: path)
     }
 }
 

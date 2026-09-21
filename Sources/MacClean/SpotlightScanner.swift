@@ -29,15 +29,6 @@ public final class SpotlightScanner {
         "system."
     ]
 
-    /// 获取本地所有已安装应用的 Bundle Identifier 集合。
-    ///
-    /// v1.73.0：改为从 `AppInventory` 取，不再自己枚举 3 个 Applications 根
-    /// （那份实现读失败就 `continue`，会得到一个**看起来合法的空集合**）。
-    /// 保留此入口只为兼容旧调用方；判孤儿请走 `AppInventory.Snapshot`。
-    public static func getInstalledBundleIDs() -> Set<String> {
-        AppInventory.current().bundleIDs
-    }
-
     /// 本机可发现的卷根：启动卷 + `/Volumes` 下的真实目录（跳过软链）。
     ///
     /// 只列目录、**不调用 `diskutil`/`mount`**：扫描阶段不该起子进程。
@@ -328,20 +319,30 @@ public final class SpotlightScanner {
             toTrash: toTrash,
             journal: journal,
             policy: { candidate in
-                guard let item = byPath[candidate.path] else { return .blockedByBaseGate }
+                guard let item = byPath[candidate.path] else {
+                    return .make(candidate, reason: .notDeletable, message: "该路径不在本轮选定清单里，未删除")
+                }
                 // ① 文件系统根与启动卷索引：绝对拦截
-                if item.path == "/" || item.path == "/.Spotlight-V100" { return .resolvesToRoot }
+                if item.path == "/" || item.path == "/.Spotlight-V100" {
+                    return .make(candidate, reason: .resolvesToRoot,
+                                 message: "目标是文件系统根/启动卷索引本身，绝不清理")
+                }
                 // ② 状态门槛：只删确证的孤儿/损坏项
                 switch item.status {
                 case .systemProtected:
-                    return .systemProtected
+                    return .make(candidate, reason: .systemProtected,
+                                 message: "系统索引组件，绝不清理")
                 case .activeHealthy, .needsConfirmation:
-                    return .blockedByBaseGate
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "研判结论为「\(item.status.rawValue)」，不是确证的孤儿/损坏，未删除")
                 case .orphanAppResidue, .bloatedOrCorrupted:
                     break
                 }
                 // ③ 卷索引只能靠 mdutil 重建，永不按文件删除
-                if item.kind == .volumeIndex { return .blockedByBaseGate }
+                if item.kind == .volumeIndex {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "外接卷索引请用「重建索引」，不按文件删除")
+                }
                 return nil
             })
     }
@@ -376,15 +377,6 @@ public final class SpotlightScanner {
         }
         return (true, "已向系统发送 Spotlight 索引重建指令（\(volumePath)）："
                     + (output.isEmpty ? "mdutil 返回 0" : output))
-    }
-
-    /// 只读地查询某卷的索引开关状态（`mdutil -s`），供卡片如实呈现现状。
-    public func indexStatus(of volumePath: String) -> (available: Bool, output: String) {
-        guard SafeProcess.isAvailable(Self.mdutilPath) else { return (false, "") }
-        guard let result = SafeProcess.run(Self.mdutilPath, ["-s", volumePath], timeout: 10) else {
-            return (false, "")
-        }
-        return (result.succeeded, result.output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: - 辅助：递归统计目录指标

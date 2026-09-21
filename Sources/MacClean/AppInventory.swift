@@ -4,9 +4,10 @@ import AppKit
 // MARK: - 已安装应用清单（v1.72.0 收敛）
 //
 // 这件事此前有 6 份实现：`Scanner.buildInstalledApps`、`Scanner.buildInstalledBundlePrefixes`、
-// `OrphanScanner.InstalledDatabase.build`、`UninstallerScanner.scanApps`、
-// `AudioHALScanner.getInstalledBundleIDs`、`SpotlightScanner.getInstalledBundleIDs`、
-// `CLICacheScanner`/`AppLocalizationScanner`/`DiagnosticReportScanner` 又各有变体。
+// `OrphanScanner.InstalledDatabase.build`、`UninstallerScanner.scanApps`，
+// 以及 `AudioHALScanner` / `SpotlightScanner` / `DiagnosticReportScanner` 里各份
+// "枚举 3 个 Applications 根"的变体（`getInstalledBundleIDs`、`fetchInstalledAppBundles`
+// 等兼容壳已随本类型落地删除）。
 // 打开一次卸载器（列 App → 查孤儿 → 查偏好残留 → 查插件残存）会**重建约 5 次**，
 // 每次枚举 4 个 Applications 根并读 200–400 份 `Info.plist`。
 //

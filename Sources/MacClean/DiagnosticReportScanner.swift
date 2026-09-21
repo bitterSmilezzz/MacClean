@@ -78,12 +78,7 @@ public final class DiagnosticReportScanner: ObservableObject {
         }
     }
 
-    /// 遍历指定目录搜集并深度解析报告（兼容旧调用方：只要条目列表）。
-    public func scanDirectories(_ dirs: [String]) -> [DiagnosticReportItem] {
-        scanReport(dirs: dirs).items
-    }
-
-    /// 同上，但把"哪个根没读到"一并交出来。
+    /// 遍历指定目录搜集并深度解析报告，同时把"哪个根没读到"交出来。
     func scanReport(dirs: [String], inventory: AppInventory.Snapshot? = nil)
         -> (items: [DiagnosticReportItem], issues: [GovernanceEvidenceIssue]) {
         let fm = FileManager.default
@@ -362,15 +357,6 @@ public final class DiagnosticReportScanner: ObservableObject {
 
     // MARK: - 孤儿应用研判
 
-    /// 已安装应用的 bundle id 集合。
-    ///
-    /// v1.74.0：不再自己枚举 3 个 Applications 根（那份实现 `try?` 读失败就 `continue`，
-    /// 会得到一个"看起来合法的空集合"，于是所有崩溃报告都被判成"宿主已卸载"）。
-    /// 判孤儿请用 `evaluateOrphan(appName:bundleID:inventory:)`，它带"清单可不可信"。
-    public func fetchInstalledAppBundles() -> Set<String> {
-        AppInventory.current().bundleIDs
-    }
-
     /// Apple 官方组件前缀：永不作为孤儿
     static let appleBundlePrefixes = ["com.apple.", "apple.", "system."]
 
@@ -444,21 +430,33 @@ public final class DiagnosticReportScanner: ObservableObject {
             toTrash: !permanently,
             journal: journal,
             policy: { candidate in
-                guard let item = byPath[candidate.path] else { return .notDeletable }
+                guard let item = byPath[candidate.path] else {
+                    return .make(candidate, reason: .notDeletable, message: "该路径不在本轮选定清单里，未删除")
+                }
                 // ① 后缀白名单：非诊断产物（.swift/.png…）永不在此删除
                 let ext = (candidate.path as NSString).pathExtension.lowercased()
-                guard Self.allowedExtensions.contains(ext) else { return .notDeletable }
+                guard Self.allowedExtensions.contains(ext) else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: ".\(ext) 不是诊断报告产物，本模块不清理")
+                }
                 // ② 必须是文件：本模块不递归删目录
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir),
-                      !isDir.boolValue else { return .notDeletable }
+                      !isDir.boolValue else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "不是报告文件本体（目录不递归删），未删除")
+                }
                 // ③ 必须落在授权的诊断根内（软链逃逸也在这里被解析后再判）
                 let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
                 guard roots.contains(where: { real == $0 || real.hasPrefix($0 + "/") }) else {
-                    return .outsideDomain
+                    return .make(candidate, reason: .outsideDomain,
+                                 message: "解析后的真实位置 \(real) 不在已登记的诊断报告根内，未删除")
                 }
                 // ④ 证据不足（清单不完整 / 报告头读不到）→ 不删，交人工确认
-                if item.needsConfirmation { return .blockedByBaseGate }
+                if item.needsConfirmation {
+                    return .make(candidate, reason: .blockedByBaseGate,
+                                 message: "证据不足（\(item.note ?? "无法确认宿主")），需你手动确认后再处理")
+                }
                 return nil
             })
 

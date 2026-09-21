@@ -541,16 +541,27 @@ public final class StartupItemManager {
             toTrash: toTrash,
             journal: journal,
             policy: { candidate in
-                guard let item = byPath[candidate.path] else { return .notDeletable }
+                guard let item = byPath[candidate.path] else {
+                    return .make(candidate, reason: .notDeletable, message: "该路径不在本轮选定清单里，未删除")
+                }
                 // ① 系统受保护项（com.apple.* / /System）永不删
-                if item.status == .systemProtected { return .systemProtected }
+                if item.status == .systemProtected {
+                    return .make(candidate, reason: .systemProtected,
+                                 message: "\(item.name) 是 macOS 官方自启项，绝不清理")
+                }
                 // ② 定义文件必须是文件本体，不递归删目录
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDir),
-                      !isDir.boolValue else { return .notDeletable }
+                      !isDir.boolValue else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "不是 launchd 定义文件本体（目录不递归删），未删除")
+                }
                 // ③ 扩展名白名单：只删 launchd 定义
                 let ext = (candidate.path as NSString).pathExtension.lowercased()
-                guard ext == "plist" || ext == "disabled" else { return .notDeletable }
+                guard ext == "plist" || ext == "disabled" else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "扩展名 .\(ext) 不是 launchd 定义文件，未删除")
+                }
                 return nil
             })
     }

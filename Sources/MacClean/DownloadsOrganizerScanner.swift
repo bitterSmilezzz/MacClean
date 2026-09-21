@@ -153,12 +153,12 @@ public final class DownloadsOrganizerScanner {
 
         for item in items {
             guard item.isSelected else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "未勾选，已跳过"))
                 continue
             }
             guard FileSystem.exists(item.path) else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .missing,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .missing,
                                               message: GovernanceVerdict.rejected(.missing).message))
                 continue
             }
@@ -168,19 +168,23 @@ public final class DownloadsOrganizerScanner {
             }
         }
 
-        let outcome = ResidueDeletionGate.execute(
-            candidates, toTrash: toTrash, journal: journal
-        ) { candidate in
-            let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
-            guard watchInFlight.contains(real) else { return nil }
-            // 刚被写过的安装包/压缩包 → 可能正在下载，删了就是毁一次下载
-            guard let mtime = FileSystem.modificationDate(real) else { return .missing }
-            return now.timeIntervalSince(mtime) < Self.inFlightWriteWindow
-                ? GovernanceVerdict.Reason.blockedByBaseGate : nil
-        }
-        var merged = outcome
-        merged.rejected.append(contentsOf: blocked)
-        return DownloadsCleanResult(outcome: merged)
+        // 模块预筛的拦截项与网关结果合成一份完整结论（合并实现只有一份）
+        return DownloadsCleanResult(outcome: ResidueDeletionGate.Outcome(rejected: blocked)
+            .merging(ResidueDeletionGate.execute(
+                candidates, toTrash: toTrash, journal: journal
+            ) { candidate in
+                let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
+                guard watchInFlight.contains(real) else { return nil }
+                // 刚被写过的安装包/压缩包 → 可能正在下载，删了就是毁一次下载
+                guard let mtime = FileSystem.modificationDate(real) else {
+                    return .make(candidate, reason: .missing, message: "读不到修改时间，无法确认是否仍在下载，未删除")
+                }
+                guard now.timeIntervalSince(mtime) >= Self.inFlightWriteWindow else {
+                    return .make(candidate, reason: .inUse,
+                                 message: "\(Int(now.timeIntervalSince(mtime))) 秒前刚被写入，疑似仍在下载，未删除")
+                }
+                return nil
+            }))
     }
 
     /// 执行智能归档整理（将选定文件归档移动到指定子目录）。
@@ -207,7 +211,7 @@ public final class DownloadsOrganizerScanner {
         if let reason = Self.destinationRejection(targetDirectory) {
             return DownloadsArchiveResult(movedCount: 0, movedBytes: 0,
                                           rejected: items.map {
-                                              Self.rejection($0.fileName, path: $0.path, reason: reason,
+                                              .make(name:$0.fileName, path: $0.path, reason: reason,
                                                              message: "归档目标 \(targetDirectory) 不在允许位置：\(GovernanceVerdict.rejected(reason).message)")
                                           },
                                           failed: [])
@@ -227,7 +231,7 @@ public final class DownloadsOrganizerScanner {
 
         for item in items {
             guard item.isSelected else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "未勾选，已跳过"))
                 continue
             }
@@ -236,19 +240,19 @@ public final class DownloadsOrganizerScanner {
             guard verdict.isAllowed else {
                 let reason: GovernanceVerdict.Reason
                 if case .rejected(let r) = verdict { reason = r } else { reason = .blockedByBaseGate }
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: reason, message: verdict.message))
+                blocked.append(.make(name:item.fileName, path: item.path, reason: reason, message: verdict.message))
                 continue
             }
             let realSrc = FileSystem.normalizePath(FileSystem.realPath(item.path))
             guard realSrc != realDest, !realDest.hasPrefix(realSrc + "/") else {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "归档目标就在该项内部，拒绝自我嵌套移动"))
                 continue
             }
             if item.kind == .installer || item.kind == .archive,
                let mtime = FileSystem.modificationDate(realSrc),
                now.timeIntervalSince(mtime) < Self.inFlightWriteWindow {
-                blocked.append(Self.rejection(item.fileName, path: item.path, reason: .blockedByBaseGate,
+                blocked.append(.make(name:item.fileName, path: item.path, reason: .blockedByBaseGate,
                                               message: "疑似仍在下载（\(Int(now.timeIntervalSince(mtime))) 秒前刚被写入），未移动"))
                 continue
             }
@@ -300,10 +304,5 @@ public final class DownloadsOrganizerScanner {
         records.insert(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
                                    itemCount: count, bytes: 0, mode: "归档移动", failures: failures), at: 0)
         HistoryStore.save(records)
-    }
-
-    static func rejection(_ name: String, path: String, reason: GovernanceVerdict.Reason,
-                          message: String) -> ResidueDeletionGate.Rejection {
-        ResidueDeletionGate.Rejection(name: name, path: path, reason: reason, message: message)
     }
 }

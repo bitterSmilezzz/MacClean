@@ -504,7 +504,11 @@ public final class PrinterDriverScanner {
         metricsReadable: Bool = true
     ) -> (vendor: String, kind: PrinterDriverKind, status: PrinterDriverStatus, note: String?) {
         // 1. 系统受保护核心（与证据无关的硬事实）
-        if FileSystem.isSystemProtected(path) || path.hasPrefix("/System") {
+        //    判据只有一条：`FileSystem.isSystemProtected`（内部已 normalize 后按
+        //    `CleanPaths.systemProtected` 前缀比对）。旧代码在这里还多写了一行
+        //    `|| path.hasPrefix("/System")`——那是同一条规则的**弱形式**（原始字符串、
+        //    不解析 `..`、不统一 /private 别名），永远不可能比左侧多拦下东西，属死条件。
+        if FileSystem.isSystemProtected(path) {
             return ("Apple", .vendorDriverBundle, .systemProtected, "位于系统硬保护位置，永不触碰")
         }
 
@@ -560,15 +564,10 @@ public final class PrinterDriverScanner {
     // MARK: - 删除（统一交给网关）
 
     /// 该路径归属的治理域。主目录内的用户队列返回 nil（走主目录护栏）。
+    /// 匹配口径由注册表的统一解析器给出（最长 root 优先，故 PPD 资源树不会落到 printersGlobal）。
     /// （返回类型 `GovernanceDomain` 是模块内部类型，故本方法为 internal。）
     static func domain(for path: String) -> GovernanceDomain? {
-        guard !path.isEmpty else { return nil }
-        let real = FileSystem.normalizePath(FileSystem.realPath(path))
-        let ppdRoot = GovernanceDomain.ppdResources.normalizedRoot
-        if real.hasPrefix(ppdRoot + "/") { return .ppdResources }
-        let printersRoot = GovernanceDomain.printersGlobal.normalizedRoot
-        if real.hasPrefix(printersRoot + "/") { return .printersGlobal }
-        return nil
+        GovernanceDomain.domain(forPath: path)
     }
 
     /// 清理选中的打印机驱动与废弃 PPD。
@@ -593,8 +592,13 @@ public final class PrinterDriverScanner {
             }
         }
         return ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal) { cand in
-            guard let item = origin[cand.path], item.status.isOrphanOrCorrupted else {
-                return .blockedByBaseGate      // 在用/系统核心/需确认 → 一律拒删
+            guard let item = origin[cand.path] else {
+                return .make(cand, reason: .notDeletable, message: "该路径不在本轮选定清单里，未删除")
+            }
+            guard item.status.isOrphanOrCorrupted else {
+                // 在用 / 系统核心 / 需确认 → 一律拒删，并把模块自己的研判结论如实带出去
+                return .make(cand, reason: .notDeletable,
+                             message: "研判结论为「\(item.status.rawValue)」，不是确证的孤儿/损坏，未删除")
             }
             return nil
         }

@@ -258,9 +258,7 @@ public final class FontCacheInspector {
 
     /// 全局字体位置声明 `.fontsGlobal`；主目录内的传 nil 走主目录护栏。
     static func governanceDomain(forPath path: String) -> GovernanceDomain? {
-        let normalized = FileSystem.normalizePath(path)
-        let root = GovernanceDomain.fontsGlobal.normalizedRoot
-        return normalized.hasPrefix(root + "/") ? .fontsGlobal : nil
+        GovernanceDomain.domain(forPath: path)
     }
 
     // MARK: - 删除（全部走统一网关）
@@ -284,38 +282,44 @@ public final class FontCacheInspector {
         var candidates: [ResidueDeletionGate.Candidate] = []
 
         for item in items {
-            if let blocked = blockReason(for: item, registry: registry) {
-                outcome.rejected.append(.init(name: item.fileName, path: item.path,
-                                              reason: .systemProtected, message: blocked))
+            if let blocked = blockVerdict(for: item, registry: registry) {
+                outcome.rejected.append(.make(name: item.fileName, path: item.path,
+                                              reason: blocked.reason, message: blocked.message))
                 continue
             }
             candidates.append(.init(item.fileName, path: item.path,
                                     domain: Self.governanceDomain(forPath: item.path)))
         }
 
-        absorb(ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal), into: &outcome)
+        outcome.merge(ResidueDeletionGate.execute(candidates, toTrash: toTrash, journal: journal))
         return outcome
     }
 
-    /// 单个字体条目的模块级判据：返回不可删的中文原因，nil 表示可以进网关。
-    func blockReason(for item: FontItem, registry: Set<String>?) -> String? {
-        if item.isSystemProtected { return "系统受保护字体，绝不可删" }
+    /// 单个字体条目的模块级判据：返回「拒绝原因 + 中文说明」，nil 表示可以进网关。
+    ///
+    /// reason 用各自的语义位（在用 → `.inUse`，证据不足/非清理对象 → `.notDeletable`，
+    /// 系统受保护 → `.systemProtected`），不再一律借 `.systemProtected` 冒充业务结论。
+    func blockVerdict(for item: FontItem, registry: Set<String>?)
+        -> (reason: GovernanceVerdict.Reason, message: String)? {
+        if item.isSystemProtected {
+            return (.systemProtected, "系统受保护字体，绝不可删")
+        }
         if registry == nil {
-            return "系统字体注册表读取失败，无法确认是否在用——按「读不到 ≠ 可以删」保留"
+            return (.notDeletable, "系统字体注册表读取失败，无法确认是否在用——按「读不到 ≠ 可以删」保留")
         }
         if Self.isRegistered(item.path, in: registry) || item.isRegisteredInUse {
-            return "正在被系统使用（已注册进 CoreText 字体注册表），坚决保留"
+            return (.inUse, "正在被系统使用（已注册进 CoreText 字体注册表），坚决保留")
         }
         if !item.status.providesDeletionEvidence {
             switch item.status {
             case .webFormat:
-                return "WOFF/WOFF2 属 Web 字体格式，CoreText 解析不了属正常现象，不按损坏处理"
+                return (.notDeletable, "WOFF/WOFF2 属 Web 字体格式，CoreText 解析不了属正常现象，不按损坏处理")
             case .needsReview:
-                return "证据不足（无法确认文件已损坏），需你手动确认后再处理"
+                return (.notDeletable, "证据不足（无法确认文件已损坏），需你手动确认后再处理")
             case .valid:
-                return "字体解析正常，不是残留"
+                return (.notDeletable, "字体解析正常，不是残留")
             case .orphan:
-                return "本模块不产出孤儿结论，需确认"
+                return (.notDeletable, "本模块不产出孤儿结论，需确认")
             case .corrupted, .duplicate:
                 break
             }
@@ -337,7 +341,7 @@ public final class FontCacheInspector {
 
         for item in items {
             guard Self.isUserCachePath(item.path) else {
-                outcome.rejected.append(.init(name: item.name, path: item.path, reason: .outsideDomain,
+                outcome.rejected.append(.make(name: item.name, path: item.path, reason: .outsideDomain,
                                               message: "不在用户 ~/Library/Caches 下的已登记缓存路径，拒绝"))
                 continue
             }
@@ -353,23 +357,16 @@ public final class FontCacheInspector {
             }
         }
 
-        let merged = ResidueDeletionGate.execute(
+        outcome.merge(ResidueDeletionGate.execute(
             candidates, toTrash: toTrash, journal: journal) { candidate in
             // 只允许删已登记缓存目录的**直接子项**，且不得是整个缓存根自己
-            Self.isUserCachePath(candidate.path) ? nil : .outsideDomain
-        }
-        absorb(merged, into: &outcome)
+            guard Self.isUserCachePath(candidate.path) else {
+                return .make(candidate, reason: .outsideDomain,
+                             message: "子项不在本模块登记的缓存目录内，拒绝删除")
+            }
+            return nil
+        })
         return outcome
-    }
-
-    /// 把网关结果并进模块结果（保留模块自己先记下的拦截项）。
-    private func absorb(_ src: ResidueDeletionGate.Outcome, into dst: inout ResidueDeletionGate.Outcome) {
-        dst.cleanedCount += src.cleanedCount
-        dst.freedBytes += src.freedBytes
-        dst.cleanedPaths.append(contentsOf: src.cleanedPaths)
-        dst.rejected.append(contentsOf: src.rejected)
-        dst.failed.append(contentsOf: src.failed)
-        dst.trashedSnapshots.append(contentsOf: src.trashedSnapshots)
     }
 
     // MARK: - ATS 字体数据库重置

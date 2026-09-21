@@ -229,13 +229,7 @@ final class PluginExtensionInspector {
     /// 全局扩展根 → 已登记治理域；主目录内的返回 nil（走主目录护栏）。
     /// 既不在主目录、也不在任何登记域下的位置同样返回 nil，由基础护栏拦下。
     static func governanceDomain(forPath path: String) -> GovernanceDomain? {
-        let normalized = FileSystem.normalizePath(path)
-        for domain in [GovernanceDomain.quickLookGlobal, .spotlightImportersGlobal,
-                       .internetPlugInsGlobal, .contextualMenuGlobal, .screenSaversGlobal,
-                       .inputMethodsGlobal, .colorPickersGlobal] {
-            if normalized.hasPrefix(domain.normalizedRoot + "/") { return domain }
-        }
-        return nil
+        GovernanceDomain.domain(forPath: path)
     }
 
     /// 用户创作物判定：用户域 Services 根之下，或任意 `.workflow`（Automator 导出物）。
@@ -527,9 +521,9 @@ final class PluginExtensionInspector {
 
         for item in items {
             onProgress("正在提交 \(item.name)…")
-            if let blocked = blockReason(for: item) {
-                outcome.rejected.append(.init(name: item.name, path: item.path,
-                                              reason: .systemProtected, message: blocked))
+            if let blocked = blockVerdict(for: item) {
+                outcome.rejected.append(.make(name: item.name, path: item.path,
+                                              reason: blocked.reason, message: blocked.message))
                 continue
             }
             candidates.append(.init(item.name, path: item.path,
@@ -537,13 +531,8 @@ final class PluginExtensionInspector {
             deletableItems.append(item)
         }
 
-        let gateOutcome = ResidueDeletionGate.execute(candidates, toTrash: !permanently, journal: journal)
-        outcome.cleanedCount += gateOutcome.cleanedCount
-        outcome.freedBytes += gateOutcome.freedBytes
-        outcome.cleanedPaths.append(contentsOf: gateOutcome.cleanedPaths)
-        outcome.rejected.append(contentsOf: gateOutcome.rejected)
-        outcome.failed.append(contentsOf: gateOutcome.failed)
-        outcome.trashedSnapshots.append(contentsOf: gateOutcome.trashedSnapshots)
+        // 合并逻辑只在 `Outcome.merge` 里有一份实现
+        outcome.merge(ResidueDeletionGate.execute(candidates, toTrash: !permanently, journal: journal))
 
         // QuickLook 生成器被动过 → 刷新缓存，并**如实**记下是否成功
         let cleanedQLPaths = Set(outcome.cleanedPaths)
@@ -566,21 +555,24 @@ final class PluginExtensionInspector {
             outcome: outcome)
     }
 
-    /// 模块级判据：返回不可删的中文原因，nil 表示可以进网关。
-    func blockReason(for item: PluginExtensionItem) -> String? {
-        if item.status == .system { return "macOS 官方组件，绝不清理" }
+    /// 模块级判据：返回「拒绝原因 + 中文说明」，nil 表示可以进网关。
+    ///
+    /// 不再一律借 `.systemProtected`：官方组件/用户创作物/证据不足属"不是可清理对象"
+    /// （`.notDeletable`），宿主仍在安装清单里属"在用"（`.inUse`）。
+    func blockVerdict(for item: PluginExtensionItem) -> (reason: GovernanceVerdict.Reason, message: String)? {
+        if item.status == .system { return (.notDeletable, "macOS 官方组件，绝不清理") }
         if item.isUserAuthoredContent {
-            return "这是你自己创建的扩展（Automator 服务/快捷指令），宿主是系统本身，不清理"
+            return (.notDeletable, "这是你自己创建的扩展（Automator 服务/快捷指令），宿主是系统本身，不清理")
         }
         switch item.status {
         case .orphan, .broken:
             return nil
         case .installed:
-            return "宿主应用仍在已安装清单里，不是残留"
+            return (.inUse, "宿主应用仍在已安装清单里，不是残留")
         case .system:
-            return "macOS 官方组件，绝不清理"
+            return (.notDeletable, "macOS 官方组件，绝不清理")
         case .needsReview:
-            return "证据不足（\(item.note ?? "无法确认宿主")），需你手动确认"
+            return (.notDeletable, "证据不足（\(item.note ?? "无法确认宿主")），需你手动确认")
         }
     }
 

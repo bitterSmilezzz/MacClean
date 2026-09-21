@@ -265,7 +265,10 @@ extension Selftest {
                   !FileManager.default.fileExists(atPath: hpB),
                   !FileManager.default.fileExists(atPath: hpSub) else { return false }
             // 受保护的 Canon 组被 policy 拦下（即便调用方误传）
-            guard outcome.rejected.contains(where: { $0.reason == .blockedByBaseGate }) else { return false }
+            // 业务判据不再是"被基础护栏拦下"：reason = .notDeletable，原因里带上研判结论
+            guard outcome.rejected.contains(where: {
+                $0.reason == .notDeletable && $0.message.contains("当前在用配置")
+            }) else { return false }
             return true
         }
 
@@ -297,7 +300,10 @@ extension Selftest {
             guard outcome.cleanedCount == 0 else { return false }
             guard outcome.freedBytes == 0 else { return false }
             guard outcome.rejected.contains(where: { $0.reason == .symlinkJump }) else { return false }
-            guard outcome.rejected.contains(where: { $0.reason == .blockedByBaseGate }) else { return false }
+            // 在用配置的拦截来自 policy：原因里必须能看到"当前在用配置"这句结论
+            guard outcome.rejected.contains(where: {
+                $0.reason == .notDeletable && $0.message.contains("当前在用配置")
+            }) else { return false }
             // 软链与被指向的真实位置都还在
             guard FileManager.default.fileExists(atPath: jump) else { return false }
             guard FileManager.default.fileExists(atPath: "/System/Library/Fonts") else { return false }
