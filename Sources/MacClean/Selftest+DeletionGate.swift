@@ -275,6 +275,34 @@ extension Selftest {
             return true
         }
 
+        // 18. 历史上限必须长在**唯一写入口**上。
+        // v1.72 之后写历史的入口有 5 个（AppState、AutoCleanService、统一网关、
+        // 下载归档、截图归档、硬链接去重），原先 200 条上限只写在 AppState 里，
+        // 其余路径全部绕过 → 磁盘上的 history.json 只增不减。
+        check("HistoryStore：save 自身截断到上限，且保留的是最新记录") {
+            let saved = HistoryStore.load()
+            defer { HistoryStore.save(saved) }
+
+            let flood = (0..<(HistoryStore.recordLimit + 50)).map {
+                CleanRecord(id: UUID(), date: Date().addingTimeInterval(Double($0)),
+                            categoryName: "自检灌入-\($0)", itemCount: 1, bytes: 1,
+                            mode: "废纸篓", failures: 0)
+            }
+            // 调用方按"新的在前"传入（全仓所有写入点都是 insert(at: 0)）
+            HistoryStore.save(flood)
+            let reloaded = HistoryStore.load()
+            guard reloaded.count == HistoryStore.recordLimit else {
+                print("      未截断：\(reloaded.count) 条")
+                return false
+            }
+            // 调用方按"新的在前"传入（全仓所有写入点都是 insert(at: 0)），
+            // 所以 flood[0] 代表最新一条：截断必须留头部、砍掉尾部的旧记录。
+            let newestLabel = flood[0].categoryName
+            let oldestLabel = flood[flood.count - 1].categoryName
+            return reloaded.first?.categoryName == newestLabel
+                && !reloaded.contains { $0.categoryName == oldestLabel }
+        }
+
         // 12. AppInventory 的完整性标记必须真的反映"读不到"
         check("AppInventory：根目录读不到时 isComplete 为假，不得据此判孤儿") {
             let root = makeFixture("inventory")

@@ -40,13 +40,24 @@ enum HistoryStore {
         return MacCleanState.stateDirectory.appendingPathComponent("history.json")
     }
 
+    /// 历史记录条数上限。
+    ///
+    /// 原先这个上限只写在 `AppState.recordClean` 里（`history.count > 200` 才截断），
+    /// 而 `HistoryStore.save` 自己不设限。v1.72 之后写历史的入口多了好几个
+    /// （统一删除网关、下载/截图归档、硬链接去重都直接 `HistoryStore.save`），
+    /// 它们全都不经过 AppState → 磁盘上的 `history.json` 只增不减。
+    /// 上限必须放在唯一的写入口上，而不是放在某个调用方里。
+    static let recordLimit = 200
+
     static func load() -> [CleanRecord] {
         guard let data = try? Data(contentsOf: fileURL) else { return [] }
-        return (try? JSONDecoder().decode([CleanRecord].self, from: data)) ?? []
+        // 已经被写爆的老文件：读的时候就裁，下次 save 自然落回上限
+        return (try? JSONDecoder().decode([CleanRecord].self, from: data)).map { Array($0.prefix(recordLimit)) } ?? []
     }
 
     static func save(_ records: [CleanRecord]) {
-        guard let data = try? JSONEncoder().encode(records) else { return }
+        let bounded = Array(records.prefix(recordLimit))
+        guard let data = try? JSONEncoder().encode(bounded) else { return }
         try? data.write(to: fileURL, options: .atomic)
     }
 
