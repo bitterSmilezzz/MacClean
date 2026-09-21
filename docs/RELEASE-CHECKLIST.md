@@ -71,6 +71,11 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       `drwxrwxr-t root:admin` 而 admin 可写）。**不许**把"没权限删"报成"已清理"
 - [ ] 改动涉及 UI 时：`--selftest` 中视图用例已覆盖或手动确认，并对照 `docs/DESIGN.md`
       检查是否引入了新的"AI 仪表盘"痕迹（图标彩色底板 / 卡片套卡片 / 多强调色 / emoji 文案）
+- [ ] **新增确认弹窗（`confirmationDialog` / `.sheet` / `.alert`）时**：present 修饰符必须挂在
+      **有尺寸的容器**上。写成 `EmptyView().confirmationDialog(...)` 再塞进 `VStack` 时，
+      SwiftUI 可能不呈现它——而 ViewInspector 自检里 `isPresented` 照样会翻转，**测试通过、真机没弹窗**。
+      本仓库真踩过：剪贴板「全量净化」的确认自检全绿，人工点开界面前往下点会直接执行删除。
+      因此新增确认路径后必须**人工或用 Computer Use 真点一次**，不能只信自检。
 - [ ] **改动了并发/共享状态时**：跑一遍 Thread Sanitizer，必须零报告
       ```bash
       swift build --sanitize=thread && swift run --sanitize=thread MacClean --selftest

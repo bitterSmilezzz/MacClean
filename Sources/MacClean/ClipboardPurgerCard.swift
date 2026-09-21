@@ -30,7 +30,6 @@ public struct ClipboardPurgerCard: View {
             topHeader
             metricsSummaryBar
             contentListContainer
-            purgeConfirmation
             if let feedback = bannerFeedback {
                 bannerBar(feedback)
             }
@@ -41,6 +40,28 @@ public struct ClipboardPurgerCard: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
         .onAppear {
             loadData()
+        }
+        // 确认弹窗挂在卡片根容器上。先前写成 `EmptyView().confirmationDialog(...)`
+        // 再塞进 VStack：SwiftUI 对零尺寸视图上的 present 修饰符不可靠，实测点
+        // 「全量净化」后弹窗根本不出现——自检里 isPresented 会翻转所以照样通过，
+        // 真机上却等于没有确认。
+        .confirmationDialog(
+            pendingAction == .all ? "确认全量净化剪贴板与临时缓存" : "确认清理剪贴板临时缓存",
+            isPresented: Binding(
+                get: { pendingAction != nil },
+                set: { if !$0 { pendingAction = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingAction
+        ) { action in
+            Button(action == .all ? "清空并移入废纸篓" : "移入废纸篓", role: .destructive) {
+                if action == .all { executePurgeAll() } else { executeCleanCaches() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: { action in
+            Text(action == .all
+                 ? "将清空系统剪贴板内容，并把 \(report.cacheItems.count) 项临时缓存移入废纸篓（可放回）。这里可能包含正在编辑文档的自动恢复草稿，请确认你没有未保存的工作。"
+                 : "将把 \(report.cacheItems.count) 项临时缓存移入废纸篓（可放回）。归属不可识别或仍然新鲜的条目不会被处理。")
         }
     }
 
@@ -275,28 +296,6 @@ public struct ClipboardPurgerCard: View {
         .padding(.vertical, 6)
         .background(Signal.positive.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
-    }
-
-    private var purgeConfirmation: some View {
-        EmptyView()
-            .confirmationDialog(
-                pendingAction == .all ? "确认全量净化剪贴板与临时缓存" : "确认清理剪贴板临时缓存",
-                isPresented: Binding(
-                    get: { pendingAction != nil },
-                    set: { if !$0 { pendingAction = nil } }
-                ),
-                titleVisibility: .visible,
-                presenting: pendingAction
-            ) { action in
-                Button(action == .all ? "清空并移入废纸篓" : "移入废纸篓", role: .destructive) {
-                    if action == .all { executePurgeAll() } else { executeCleanCaches() }
-                }
-                Button("取消", role: .cancel) {}
-            } message: { action in
-                Text(action == .all
-                     ? "将清空系统剪贴板内容，并把 \(report.cacheItems.count) 项临时缓存移入废纸篓（可放回）。这里可能包含正在编辑文档的自动恢复草稿，请确认你没有未保存的工作。"
-                     : "将把 \(report.cacheItems.count) 项临时缓存移入废纸篓（可放回）。归属不可识别或仍然新鲜的条目不会被处理。")
-            }
     }
 
     // MARK: - 底栏
