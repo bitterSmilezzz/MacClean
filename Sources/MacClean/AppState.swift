@@ -133,6 +133,10 @@ final class AppState: ObservableObject {
     /// 全部分类累计的扫描问题。非空即代表"当前结果不完整"，界面要如实说明。
     var allScanIssues: [ScanIssue] { categories.flatMap(\.issues) }
 
+    /// 「空间审计」的数据源：各分类扫出的"只报告、不删除"项（决策 D-3）。
+    var allAuditItems: [CleanItem] { categories.flatMap(\.auditItems) }
+    var auditTotalBytes: Int64 { allAuditItems.reduce(0) { $0 + $1.size } }
+
     /// 结论构成：各结论档位的可清理体积。
     ///
     /// 取代了历史上的 `riskTotals`（按"风险等级"汇总）。注意与 `riskCounts` / `riskItems`
@@ -223,6 +227,7 @@ final class AppState: ObservableObject {
             let outcome = Scanner.scanDetailed(cat)
             DispatchQueue.main.async {
                 st.items = outcome.items
+                st.auditItems = outcome.auditItems
                 st.issues = outcome.issues
                 st.isScanned = true
                 st.isScanning = false
@@ -277,6 +282,7 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 if let st = categoryStates[cat] {
                     st.items = outcome.items
+                    st.auditItems = outcome.auditItems
                     st.issues = outcome.issues
                     st.isScanned = true
                     st.isScanning = false
@@ -354,6 +360,9 @@ final class AppState: ObservableObject {
     func refreshCurrentContext() {
         switch destination {
         case .dashboard, .history, .search:
+            scanAll()
+        case .spaceAudit:
+            // 审计数据全部来自各分类扫描，所以这一页的"刷新"就是重扫一轮
             scanAll()
         case .category(let cat):
             scan(cat)

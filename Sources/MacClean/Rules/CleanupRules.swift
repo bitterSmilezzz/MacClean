@@ -100,6 +100,13 @@ enum CleanupRules {
         let cleanup: CleanupMethod
         /// 是否为 v1.1 新增规则
         let isNew: Bool
+        /// **只报告、不进删除列表**（规则 v2 步骤 7 / 决策 D-3）。
+        ///
+        /// 判据只是"它很大 / 它很久没动"的规则，永远不能出现在清理页：
+        /// 大小和年龄与"这是垃圾"没有因果关系，把它们列进一个带勾选框和「清理」按钮的
+        /// 页面，等于用界面语言宣称工具认为它们可删——而工具并不知道。
+        /// 这类项改由「空间审计」呈现：给证据、给去处，但不给删除按钮。
+        let auditOnly: Bool
 
         // ── v2 四维权度 + 档位（无默认值：新登记规则必须显式表态）──
         let contract: Contract
@@ -111,6 +118,7 @@ enum CleanupRules {
         init(id: String, category: CleanCategory, nature: ItemNature,
              consequence: String, summary: String,
              cleanup: CleanupMethod = .trash, isNew: Bool = false,
+             auditOnly: Bool = false,
              contract: Contract, ownership: Ownership, hostState: HostState,
              restore: RestoreCost, tier: Tier) {
             self.id = id
@@ -120,6 +128,7 @@ enum CleanupRules {
             self.summary = summary
             self.cleanup = cleanup
             self.isNew = isNew
+            self.auditOnly = auditOnly
             self.contract = contract
             self.ownership = ownership
             self.hostState = hostState
@@ -143,6 +152,12 @@ enum CleanupRules {
     static func rule(id: String?) -> Rule? {
         guard let id, !id.isEmpty else { return nil }
         return all.first { $0.id == id }
+    }
+
+    /// 这条规则的产出是否只该出现在「空间审计」里，而不是清理页的删除列表。
+    /// 没有规则编号的项（治理模块产出的）一律返回 false——它们走各自的治理域判定。
+    static func isAuditOnly(_ id: String?) -> Bool {
+        rule(id: id)?.auditOnly ?? false
     }
 
     // MARK: - 档位自洽校验（v2 步骤 1）
@@ -493,21 +508,25 @@ enum CleanupRules {
         Rule(id: "T2", category: .largeFiles, nature: .userData,
              consequence: "下载目录里的文件，是你自己的东西",
              summary: "~/Downloads/*（>500MB 或 >180 天未访问）",
+             auditOnly: true,
              contract: .userData, ownership: .unknown, hostState: .unknown,
              restore: .impossible, tier: .t3),
         Rule(id: "T3", category: .largeFiles, nature: .userData,
              consequence: "大文件，删了不可恢复",
              summary: "大文件（>/1GB，深度 ≤2）",
+             auditOnly: true,
              contract: .userData, ownership: .unknown, hostState: .unknown,
              restore: .impossible, tier: .t3),
         Rule(id: "T4", category: .largeFiles, nature: .inferredUnused,
              consequence: "模拟器设备镜像（依据 90 天未使用推断）：删除后需重新创建并重装其中的 App",
              summary: "~/Library/Developer/CoreSimulator/Devices/*（>90 天未使用）",
+             auditOnly: true,
              contract: .userData, ownership: .uniquePath, hostState: .unknown,
              restore: .impossible, tier: .t3),
         Rule(id: "T5", category: .largeFiles, nature: .userData,
              consequence: "iPhone/iPad 本地备份，删了不可恢复",
              summary: "~/Library/Application Support/MobileSync/Backup/*（>180 天）",
+             auditOnly: true,
              contract: .userData, ownership: .uniqueBundle, hostState: .unknown,
              restore: .impossible, tier: .t3),
 

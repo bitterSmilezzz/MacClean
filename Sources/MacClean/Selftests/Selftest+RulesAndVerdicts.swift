@@ -738,6 +738,88 @@ extension Selftest {
             return bad.isEmpty
         }
 
+        check("步骤7：只报告名单点名——恰好 T2/T3/T4/T5，且都不是 T0") {
+            let actual = Set(CleanupRules.all.filter { $0.auditOnly }.map(\.id))
+            let want: Set<String> = ["T2", "T3", "T4", "T5"]
+            if actual != want {
+                print("      多出的只报告规则：\(actual.subtracting(want).sorted())；"
+                    + "被移回的：\(want.subtracting(actual).sorted())")
+                return false
+            }
+            // 反证：只报告的东西绝不可能同时是"确定是垃圾、默认勾选"
+            if CleanupRules.all.contains(where: { $0.auditOnly && $0.tier == .t0 }) { return false }
+            // 只报告规则全部属于同一个分类——这条成立，下面那条自检才不需要扫遍 6 类
+            let cats = Set(CleanupRules.all.filter { $0.auditOnly }.map { "\($0.category)" })
+            if cats != ["largeFiles"] {
+                print("      只报告规则散落到别的分类：\(cats)")
+                return false
+            }
+            return true
+        }
+
+        check("步骤7：清理页拿不到只报告项（largeFiles 真机分流 + 其余分类本就没有）") {
+            for cat in CleanCategory.allCases where cat != .largeFiles {
+                if CleanupRules.rules(in: cat).contains(where: { $0.auditOnly }) {
+                    print("      \(cat.title) 分类下出现了只报告规则，分流必须逐类重测")
+                    return false
+                }
+            }
+            FileSystem.beginMeasurementSession()
+            let outcome = Scanner.scanDetailed(.largeFiles)
+            var bad: [String] = []
+            if let leak = outcome.items.first(where: { CleanupRules.isAuditOnly($0.rule) }) {
+                bad.append("清理列表里出现了只报告项 \(leak.rule ?? "?")：\(leak.path)")
+            }
+            if let wrong = outcome.auditItems.first(where: { !CleanupRules.isAuditOnly($0.rule) }) {
+                bad.append("审计桶里混进了可删项 \(wrong.rule ?? "nil")：\(wrong.path)")
+            }
+            let both = Set(outcome.items.map(\.path)).intersection(outcome.auditItems.map(\.path))
+            if !both.isEmpty { bad.append("同一路径既在删除列表又在审计列表：\(both)") }
+            print("      本机实测：废纸篓可删 \(outcome.items.count) 项，只报告 \(outcome.auditItems.count) 项")
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("步骤7：迁出后废纸篓分类的标题与规则区间同步收窄") {
+            // 标题还写"大文件"而列表里只剩废纸篓，就是界面在替工具说谎
+            if CleanCategory.largeFiles.title != "废纸篓" { return false }
+            if CleanCategory.largeFiles.ruleRef != "T1" { return false }
+            if CleanupRules.rules(in: .largeFiles).count != 5 { return false }   // 规则仍在册
+            return true
+        }
+
+        check("步骤7：空间审计页只有证据与去处，没有任何删除入口") {
+            let app = AppState()
+            let st = app.state(for: .largeFiles)
+            st.isScanned = true
+            var audit = CleanItem(name: "huge-installer.dmg", path: "/private/tmp/huge-installer.dmg",
+                                  size: 2_000_000_000, nature: .userData, category: .largeFiles,
+                                  rule: "T3")
+            audit.isSelected = false
+            st.auditItems = [audit]
+            if app.allAuditItems.count != 1 || app.auditTotalBytes <= 0 { return false }
+            let view = SpaceAuditView().environmentObject(app)
+            guard let root = try? view.inspect() else { return false }
+            let texts = root.findAll(ViewType.Text.self).compactMap { try? $0.string() }
+            var bad: [String] = []
+            if !texts.contains(where: { $0.contains("没有删除按钮") }) {
+                bad.append("页面上没有明说这一页不提供删除")
+            }
+            if !texts.contains(where: { $0.contains("huge-installer.dmg") }) {
+                bad.append("审计项没有列出来")
+            }
+            if !texts.contains(where: { $0.contains("判据") }) {
+                bad.append("没写凭什么列出来（只报告的东西必须自证）")
+            }
+            for forbidden in ["清理已选项", "全选可清理项", "移入废纸篓", "彻底删除", "勾选本组"] {
+                if texts.contains(where: { $0.contains(forbidden) }) {
+                    bad.append("审计页出现了删除入口：\(forbidden)")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("规则 v2：反证——数据契约或高重建代价伪装 T0 必须被拒") {
             func fake(id: String, contract: CleanupRules.Contract,
                       restore: CleanupRules.RestoreCost,
@@ -779,8 +861,11 @@ extension Selftest {
                 // ② 数字部分为 1...n 连续（缺号会让区间声明失真，如曾出现的 "B1–B4"）
                 let numbers = ids.compactMap { Int($0.dropFirst()) }
                 guard numbers == Array(1...ids.count) else { return false }
-                // ③ UI 展示的 ruleRef 必须与登记区间相符
-                let expected = ids.count == 1 ? ids[0] : "\(ids[0])–\(ids[ids.count - 1])"
+                // ③ UI 展示的 ruleRef 必须与"这一页真的会列出的规则"相符。
+                //    决策 D-3 之后 `auditOnly` 的规则不进清理页，所以区间要排除它们——
+                //    给用户看一个本页永远不会出现的编号，和写错编号是同一类假。
+                let shown = CleanupRules.rules(in: category).filter { !$0.auditOnly }.map(\.id)
+                let expected = shown.count == 1 ? shown[0] : "\(shown[0])–\(shown[shown.count - 1])"
                 guard category.ruleRef == expected else { return false }
             }
             return true

@@ -164,7 +164,14 @@ final class Scanner {
             if item.paths.contains(where: { whitelist.isExtensionWhitelisted(path: $0) }) { return false }
             return true
         }
-        outcome.items = applyDefaultSelection(filtered.map { annotateUsage($0) })
+        let annotated = applyDefaultSelection(filtered.map { annotateUsage($0) })
+        // 决策 D-3（规则 v2 步骤 7）：判据只是"很大 / 很久没动"的项不进删除列表，改由
+        // 「空间审计」呈现。拆在**这一个收口处**而不是让 6 个扫描函数各自决定，
+        // 是为了让"清理页绝不会出现它们"成为一条能被单条自检整体钉住的性质——
+        // 散在各扫描器里的写法，漏一处就破功，而且没人会想到去查第 7 处。
+        let auditable = annotated.filter { CleanupRules.isAuditOnly($0.rule) }
+        outcome.items = annotated.filter { !CleanupRules.isAuditOnly($0.rule) }
+        outcome.auditItems = auditable
         // 子目录级盲区要在**遍历之后**才拿得到（遍历过程本身才是证据来源），
         // 且要与根探测去重：同一个位置报两条会让"N 个位置读不到"这个数虚高。
         let known = Set(outcome.issues.map { FileSystem.normalizePath($0.path) })

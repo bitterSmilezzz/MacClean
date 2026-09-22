@@ -97,6 +97,10 @@ enum Destination: Hashable, Identifiable {
     case riskCheck
     case duplicates
     case spaceTreemap
+    /// 空间审计：只报告"很大/很久没动"的项（规则 v2 步骤 7 / 决策 D-3）。
+    /// 与「空间透视」的分工：透视回答"空间被什么占了"，审计回答"哪些东西值得你自己看一眼"，
+    /// 而**两者都不给删除按钮**——判据是大小和年龄时，工具没有资格替你决定删不删。
+    case spaceAudit
     case startupItems
 
     var id: String {
@@ -109,6 +113,7 @@ enum Destination: Hashable, Identifiable {
         case .riskCheck: return "riskCheck"
         case .duplicates: return "duplicates"
         case .spaceTreemap: return "spaceTreemap"
+        case .spaceAudit: return "spaceAudit"
         case .startupItems: return "startupItems"
         }
     }

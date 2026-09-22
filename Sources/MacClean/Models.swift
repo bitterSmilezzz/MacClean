@@ -25,7 +25,7 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
         case .logsAndTemp: return "日志与临时文件"
         case .devResidue: return "开发残留"
         case .appResidue: return "App 残留"
-        case .largeFiles: return "大文件与垃圾箱"
+        case .largeFiles: return "废纸篓"
         case .browserAndSystem: return "浏览器与系统数据"
         }
     }
@@ -36,7 +36,7 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
         case .logsAndTemp: return "日志、崩溃报告与临时文件"
         case .devResidue: return "DerivedData 与包管理器缓存"
         case .appResidue: return "已卸载应用的遗留数据"
-        case .largeFiles: return "垃圾箱、旧下载与超大文件"
+        case .largeFiles: return "已被你丢进垃圾箱的内容（清理 = 彻底删除）"
         case .browserAndSystem: return "浏览器缓存与站点数据"
         }
     }
@@ -47,7 +47,7 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
         case .logsAndTemp: return "doc.text"
         case .devResidue: return "hammer"
         case .appResidue: return "shippingbox"
-        case .largeFiles: return "externaldrive"
+        case .largeFiles: return "trash"
         case .browserAndSystem: return "globe"
         }
     }
@@ -55,8 +55,11 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
     /// 本分类的规则编号区间（如 "C1–C7"）。
     /// v1.1：改为从 `CleanupRules` 动态派生，避免硬编码编号与规则源头失配
     /// （v1.0 曾出现 `B1–B4` 但实际只有 B1–B3 的幽灵规则）。
+    /// v1.72.12：只算**清理页真的会列出**的规则——`auditOnly` 的规则（决策 D-3）
+    /// 仍然登记在册（编号连续性由自检守住），但这一行是给用户看的"这页凭什么"，
+    /// 写着一个本页永远不会出现的编号就是假。
     var ruleRef: String {
-        let ids = CleanupRules.rules(in: self).map(\.id)
+        let ids = CleanupRules.rules(in: self).filter { !$0.auditOnly }.map(\.id)
         guard let first = ids.first, let last = ids.last else { return "" }
         return first == last ? first : "\(first)–\(last)"
     }
@@ -482,6 +485,11 @@ struct ScanOutcome {
     var items: [CleanItem] = []
     /// 扫描过程中遇到的问题。非空即代表**结果不完整**，UI 必须如实说明。
     var issues: [ScanIssue] = []
+    /// 只报告、不删除的项（规则 v2 步骤 7 / 决策 D-3）。
+    ///
+    /// 它们**不在** `items` 里：清理页的勾选框 + 「清理已选项」按钮是一种承诺，
+    /// 而"这个文件 1.2 GB、半年没动"不构成"它可以删"。这些项改由「空间审计」呈现。
+    var auditItems: [CleanItem] = []
 
     /// 结果是否完整可信（没有读不到的根目录）
     var isComplete: Bool { issues.isEmpty }
@@ -492,6 +500,9 @@ struct ScanOutcome {
 final class CategoryState: ObservableObject, Identifiable {
     let category: CleanCategory
     @Published var items: [CleanItem] = []
+    /// 本分类扫出的"只报告、不删除"项（决策 D-3）。放在分类上，
+    /// 这样单独重扫一个分类只会替换它自己那一份，不会把别的分类的审计结果清掉。
+    @Published var auditItems: [CleanItem] = []
     @Published var isScanned = false
     @Published var isScanning = false
     @Published var lastError: String?

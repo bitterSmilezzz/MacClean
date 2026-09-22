@@ -247,7 +247,7 @@ struct MacCleanApp: App {
             }
             .keyboardShortcut("5", modifiers: .command)
 
-            Button("大文件与垃圾箱") {
+            Button("废纸篓") {
                 withAnimation(.easeOut(duration: 0.15)) { app.destination = .category(.largeFiles) }
             }
             .keyboardShortcut("6", modifiers: .command)
@@ -258,6 +258,11 @@ struct MacCleanApp: App {
             .keyboardShortcut("7", modifiers: .command)
 
             Divider()
+
+            Button("空间审计") {
+                withAnimation(.easeOut(duration: 0.15)) { app.destination = .spaceAudit }
+            }
+            .keyboardShortcut("9", modifiers: .command)
 
             Button("重复文件查找") {
                 withAnimation(.easeOut(duration: 0.15)) { app.destination = .duplicates }
@@ -448,6 +453,8 @@ struct ContentView: View {
                 RiskView()
             case .spaceTreemap:
                 SpaceVisualizerView()
+            case .spaceAudit:
+                SpaceAuditView()
             case .startupItems:
                 StartupItemManagerView()
             }

@@ -29,6 +29,9 @@ struct SidebarView: View {
                     navRow(.dashboard, title: "概览", icon: "square.grid.2x2")
                     navRow(.search, title: "检索", icon: "magnifyingglass")
                     navRow(.spaceTreemap, title: "空间透视", icon: "square.split.bottomrightquarter")
+                    navRow(.spaceAudit, title: "空间审计", icon: "chart.bar.doc.horizontal",
+                           trailing: app.allAuditItems.isEmpty ? nil : "\(app.allAuditItems.count)",
+                           trailingColor: Ink.tertiary)
                 }
 
                 Section("清理") {
