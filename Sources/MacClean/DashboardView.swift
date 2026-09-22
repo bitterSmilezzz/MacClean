@@ -186,6 +186,7 @@ struct DashboardView: View {
 
     /// 扫描完整度提示。非空即代表"总数被低估了"——必须说出来，
     /// 否则用户会以为 0 KB 就是真的没东西可清。
+    /// "查看"不是装饰：点了要真的到那个授权面板去，不然这句话只是让人更焦虑。
     @ViewBuilder
     private var incompleteScanNotice: some View {
         let issues = app.allScanIssues
@@ -197,9 +198,15 @@ struct DashboardView: View {
                 Text("\(issues.count) 个位置因权限无法读取，实际可清理量可能更高")
                     .font(Typo.caption)
                     .foregroundColor(Ink.secondary)
-                Text("查看")
-                    .font(Typo.caption)
-                    .foregroundColor(Accent.tint)
+                Button {
+                    PermissionGuide.openSettings()
+                } label: {
+                    Text(PermissionGuide.hasFullDiskAccess ? "查看位置" : "去授权")
+                        .font(Typo.caption)
+                        .foregroundColor(Accent.tint)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("dashboardPermissionAction")
             }
             .padding(.top, Space.xxs)
         }

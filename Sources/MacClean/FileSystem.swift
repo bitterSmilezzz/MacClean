@@ -114,6 +114,132 @@ enum FileSystem {
         normalizePath(path)
     }
 
+    // MARK: - 权限盲区登记（G9 / 规则 v2 步骤 6）
+    //
+    // 扫描链路里每一个"存在但读不到"的位置，都会从测量遍历的
+    // `errorHandler: { _, _ in true }` 里过一遍然后被丢掉。于是**权限不足和真的空
+    // 在结果上完全一样**（都是 0 项），用户看到「用户缓存 65 项」不会想到
+    // `~/Library/Caches/CloudKit` 与 Safari 容器根本没能打开。
+    //
+    // 记录点选在测量遍历里，是因为它是**唯一真正看见这些错误的地方**：
+    // 想"发现盲区"另外补一趟 stat/opendir 是白花 I/O，而这一趟本来就要走。
+    //
+    // 单独一把锁（不复用 `measurementLock`）：errorHandler 是在遍历回调里被同步调用的，
+    // 复用同一把锁就把"调用方恰好持锁"变成了一条必须永远为真的隐式约定。
+    private static let deniedLock = NSLock()
+    private static var deniedRoots: [String: Int] = [:]
+    /// 盲区条目上限。真出问题时一个卷上能拒几百次，界面只需要知道"有多少处、举几例"。
+    static let deniedAccessLimit = 64
+
+    /// 记一次"存在但读不到"。
+    ///
+    /// 只收权限类错误：`EPERM`（TCC / 沙盒拒绝）与 `EACCES`（Unix 权限拒绝）。
+    /// 其余错误（遍历中途文件被删、符号链断裂）不算盲区——那是真的没了，
+    /// 报出来会把用户训练成忽略这条提示。
+    ///
+    /// **必须顺着 `NSUnderlyingErrorKey` 往外剥**：`FileManager` 交给调用方的
+    /// 是 `NSCocoaErrorDomain 257`（`NSFileReadNoPermissionError`），真正的
+    /// `POSIX EACCES(13)` 藏在 userInfo 里。只判顶层 domain 的话，
+    /// 整条盲区记账在真机上一条都不会成立——这条是自检先红出来的。
+    static func recordDeniedAccess(_ url: URL, error: Error) {
+        guard isPermissionError(error) else { return }
+        let path = normalizePath(url.path)
+        guard !path.isEmpty else { return }
+        deniedLock.lock()
+        defer { deniedLock.unlock() }
+        if deniedRoots[path] != nil {
+            deniedRoots[path, default: 1] += 1
+            return
+        }
+        // 父目录已经记过 → 子项被拒是同一件事，不重复占额度
+        if deniedRoots.keys.contains(where: { path.hasPrefix($0 + "/") }) { return }
+        // 反过来：这次记到的是更浅的位置，把先前记的深层条目并进来
+        for existing in deniedRoots.keys where existing.hasPrefix(path + "/") {
+            deniedRoots.removeValue(forKey: existing)
+        }
+        guard deniedRoots.count < deniedAccessLimit else { return }
+        deniedRoots[path] = 1
+    }
+
+    /// 是不是"权限不够"类错误（顺着 underlying 链最多剥三层）。
+    static func isPermissionError(_ error: Error) -> Bool {
+        var current: NSError? = error as NSError
+        for _ in 0..<3 {
+            guard let ns = current else { return false }
+            if ns.domain == NSPOSIXErrorDomain,
+               ns.code == Int(EACCES) || ns.code == Int(EPERM) { return true }
+            // Cocoa 侧的"没权限读/写"码，即使拿不到 underlying 也认
+            if ns.domain == NSCocoaErrorDomain,
+               ns.code == 257 || ns.code == 513 { return true }
+            current = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
+    }
+
+    /// 本轮看到的权限盲区，已剔除"我们本来就不该去读"的位置。
+    ///
+    /// 最后一步很重要：`~/Library/Mobile Documents`、照片图库、`~/Library/Accounts`
+    /// 这些是 G6 主动硬排除的用户数据，读不到是**设计如此**。把它们也报成盲区，
+    /// 就等于每轮扫描都喊一次狼来了，真正该授权的 Safari 容器反而被忽略。
+    static func deniedAccessSnapshot() -> [String] {
+        deniedLock.lock()
+        let all = Array(deniedRoots.keys)
+        deniedLock.unlock()
+        return all
+            .filter { !isSystemProtectedNormalized($0) && !isHardExcludedNormalized($0) }
+            .sorted()
+    }
+
+    static func resetDeniedAccess() {
+        deniedLock.lock()
+        deniedRoots.removeAll()
+        deniedLock.unlock()
+    }
+
+    /// 显式问一次"这个目录读得到吗"，读不到就记进盲区清单并返回 true。
+    ///
+    /// 为什么不能只靠遍历顺手记：`measure(at:)` 会命中**跨会话增量指纹缓存**，
+    /// 而指纹只看目录自身的 lstat——一次被权限挡住的遍历得到的 0 字节会被缓存成
+    /// "这个目录是空的"，之后每轮都直接复用、再也不会走进去，也就再也不会报错。
+    /// 于是"看不见"被永久固化成"干净"，正是这一步要消灭的失败模式。
+    ///
+    /// 但"主动去开"必须只在人在屏幕前时做，见 `proactiveBlindSpotProbe`。
+    static func recordBlindSpotIfNeeded(at path: String) -> Bool {
+        guard proactiveBlindSpotProbe else { return false }
+        var st = stat()
+        guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
+        guard !canOpenDirectory(path) else { return false }
+        recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true),
+                           error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)))
+        return true
+    }
+
+    private static let probeModeLock = NSLock()
+    private static var _proactiveBlindSpotProbe = true
+
+    /// 本轮扫描要不要**主动打开**可能被 TCC 拒掉的目录。默认要。
+    ///
+    /// 真机实测：打开别的 App 的容器/缓存会让 macOS 弹出
+    /// "「MacClean」想访问其他 App 的数据"——那是个**模态**对话框。
+    /// 用户亲手点扫描时弹得正好（他正想找授权入口）；但 `DiskMonitor` 每 3 小时
+    /// 无人值守扫一轮，弹出来没人点，扫描就挂在那儿了。
+    /// 所以无人值守路径必须关掉它：盲区少报一轮，比整轮扫描卡死好。
+    ///
+    /// **约定**：每个扫描入口都要在开工时显式设一次（`AppState.scan`/`scanAll`、
+    /// `Scanner.scan`），不要依赖上一轮留下的值。
+    static var proactiveBlindSpotProbe: Bool {
+        get {
+            probeModeLock.lock()
+            defer { probeModeLock.unlock() }
+            return _proactiveBlindSpotProbe
+        }
+        set {
+            probeModeLock.lock()
+            defer { probeModeLock.unlock() }
+            _proactiveBlindSpotProbe = newValue
+        }
+    }
+
     /// 开启新一轮测量会话（清空缓存）。
     ///
     /// **每次扫描开始时必须调用**：否则缓存会跨扫描累积，用户清理完之后
@@ -123,6 +249,8 @@ enum FileSystem {
         measurementCache.removeAll(keepingCapacity: true)
         sampledOnlyKeys.removeAll()
         measurementLock.unlock()
+        // 盲区清单按"一轮扫描"为口径：跨轮累积会让界面永远显示一堆早就解决掉的授权提示。
+        resetDeniedAccess()
 
         // 新一轮扫描开始时丢弃运行态快照。
         //
@@ -176,8 +304,15 @@ enum FileSystem {
             at: URL(fileURLWithPath: path, isDirectory: true),
             includingPropertiesForKeys: keys,
             options: [.skipsPackageDescendants],
-            errorHandler: { _, _ in true }
+            errorHandler: { url, error in
+                recordDeniedAccess(url, error: error)
+                return true
+            }
         ) else {
+            if isPermissionDenied(path) {
+                recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true),
+                                   error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)))
+            }
             return Measurement(newest: modificationDate(path), isDirectory: true, exists: true)
         }
         var result = Measurement(isDirectory: true, exists: true)
@@ -263,9 +398,16 @@ enum FileSystem {
             at: URL(fileURLWithPath: path, isDirectory: true),
             includingPropertiesForKeys: keys,
             options: [.skipsPackageDescendants],
-            errorHandler: { _, _ in true }
+            errorHandler: { url, error in
+                recordDeniedAccess(url, error: error)
+                return true
+            }
         ) else {
-            // 枚举器建不起来（权限等）→ 至少保留"存在"这一事实
+            // 枚举器建不起来（权限等）→ 至少保留"存在"这一事实，并把盲区记下来
+            if isPermissionDenied(path) {
+                recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true),
+                                   error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)))
+            }
             return Measurement(newest: modificationDate(path), isDirectory: true, exists: true)
         }
 
@@ -298,10 +440,18 @@ enum FileSystem {
     }
 
     /// 目录下的直接子项（不含 . 开头隐藏项，除非 keepHidden）
+    ///
+    /// 读不到时返回 `[]`——但**先记进盲区清单**：扫描器大量用 `children(of:)`，
+    /// 一个被 TCC 拒掉的容器在这里和"空容器"长得一模一样。
     static func children(of path: String, keepHidden: Bool = false) -> [String] {
-        guard let items = try? FileManager.default.contentsOfDirectory(atPath: path) else { return [] }
-        return items.filter { keepHidden || !$0.hasPrefix(".") }
-            .map { (path as NSString).appendingPathComponent($0) }
+        do {
+            let items = try FileManager.default.contentsOfDirectory(atPath: path)
+            return items.filter { keepHidden || !$0.hasPrefix(".") }
+                .map { (path as NSString).appendingPathComponent($0) }
+        } catch {
+            recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true), error: error)
+            return []
+        }
     }
 
     /// 目录下的直接子目录。
@@ -564,21 +714,29 @@ enum FileSystem {
         return true
     }
 
+    /// 能不能打开这个目录（一次 `opendir` 即返回，不读条目）。
+    ///
+    /// 为什么不用 `access(path, R_OK)`：TCC 是在**打开**那一刻拒绝的，`access` 只看
+    /// Unix 权限位——`~/Library/Caches/CloudKit` 的权限位是允许的，`access` 会答"可以"，
+    /// 于是恰好漏掉这一整类盲区。
+    /// 为什么不用 `contentsOfDirectory`：那要把顶层条目全读一遍，而扫描紧接着就要
+    /// 为同一条路径做一次全量遍历；探测只需要回答"开不开得了"。
+    static func canOpenDirectory(_ path: String) -> Bool {
+        guard let handle = opendir(path) else { return false }
+        closedir(handle)
+        return true
+    }
+
     /// G9：区分「因权限读不到」与「真的空目录」。
     /// 教训来源（v1.1）：`ls xxx 2>/dev/null | wc -l` 在权限不足时 stdout 为空、
     /// 被 `wc` 计成 `0`，于是「权限被拒」被误读为「空目录」——务必用本函数显式判定。
     static func isPermissionDenied(_ path: String) -> Bool {
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return false }
-        if !isDir.boolValue {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return false }
+        if (st.st_mode & S_IFMT) != S_IFDIR {
             return !FileManager.default.isReadableFile(atPath: path)
         }
-        do {
-            _ = try FileManager.default.contentsOfDirectory(atPath: path)
-            return false
-        } catch {
-            return true
-        }
+        return !canOpenDirectory(path)
     }
 
     /// G8：系统级硬保护判定（文档 §7：SIP restricted / sunlnk / 系统必需）。

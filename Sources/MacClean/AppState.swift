@@ -194,6 +194,9 @@ final class AppState: ObservableObject {
     }
 
     func scan(_ cat: CleanCategory) {
+        // 用户在屏幕前亲手点的扫描：允许主动打开可能被 TCC 拒掉的目录（真机实测会弹出
+        // "想访问其他 App 的数据"的模态框，这正是人不在时不能弹的东西）。
+        FileSystem.proactiveBlindSpotProbe = true
         scan(cat, resetMeasurementSession: true)
     }
 
@@ -235,11 +238,16 @@ final class AppState: ObservableObject {
 
     /// 扫描全部分类（侧边栏「全部扫描」）
     ///
+    /// - Parameter unattended: 无人值守的那一轮（`DiskMonitor` 定时触发）必须传 true。
+    ///   主动探测权限盲区会让 macOS 弹出模态授权框，没人点就把整轮扫描挂住；
+    ///   代价是那一轮的"读不到"统计会偏少——这是有意的取舍。
+    ///
     /// **v1.33.0 重构**：改用 `DispatchGroup` + `Scanner.scanAllCategoriesWithProgress`
     /// 实现真正的多核并发扫描。每个分类完成后立即刷新对应 UI（渐进式），
     /// 而不是等全部做完才一次性显示。同时记录整轮扫描耗时供 Dashboard 展示。
-    func scanAll() {
+    func scanAll(unattended: Bool = false) {
         guard !isScanningAll, !isCleaning else { return }
+        FileSystem.proactiveBlindSpotProbe = !unattended
 
         // 重置进度与增量缓存统计
         isScanningAll = true

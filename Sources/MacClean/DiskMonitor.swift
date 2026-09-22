@@ -180,7 +180,8 @@ final class DiskMonitor: ObservableObject {
 
         // 2. 自动静默全部分类扫描
         if config.autoScanEnabled && !app.categories.contains(where: { $0.isScanning }) {
-            app.scanAll()
+            // unattended：这一轮没人守在屏幕前，不能让主动探测弹出模态授权框把扫描挂住
+            app.scanAll(unattended: true)
 
             // 3. 智能静默自动清理（若启用且处于设定允许时段）
             if config.autoCleanEnabled && config.isWithinAllowedWindow() {

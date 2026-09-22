@@ -234,6 +234,13 @@ struct CategoryDetailView: View {
                         .font(Typo.rowStrong)
                         .foregroundColor(Ink.primary)
                     Spacer()
+                    // 只说"去哪儿勾"不够：那个面板藏在系统设置三级里，且授权后必须重扫才生效，
+                    // 所以两个动作都要在原地给出。
+                    Button("打开系统设置") { PermissionGuide.openSettings() }
+                        .buttonStyle(.borderless)
+                        .font(Typo.rowStrong)
+                        .foregroundColor(Accent.tint)
+                        .accessibilityIdentifier("permissionSettingsButton")
                     Button("重新扫描") { app.scan(category) }
                         .buttonStyle(.borderless)
                         .font(Typo.rowStrong)
@@ -885,10 +892,15 @@ struct CategoryDetailView: View {
     }
 
     private var emptyResultView: some View {
+        // 「没有发现可清理项」在本轮有读不到的位置时**不能**说成"当前是干净的"——
+        // 缺 FDA 时废纸篓稳定返回 0 项，这句会把"没看到"直接坐实成"没有"。
         EmptyState(
-            icon: "checkmark.circle",
-            title: "没有发现可清理项",
-            message: "此分类当前是干净的。"
+            icon: st.issues.isEmpty ? "checkmark.circle" : "lock.fill",
+            title: st.issues.isEmpty ? "没有发现可清理项" : "本次没有可清理项（结果不完整）",
+            message: st.issues.isEmpty
+                ? "此分类当前是干净的。"
+                : "有 \(st.issues.count) 个位置因权限读不到，未计入本次结果——"
+                    + "授权「完全磁盘访问权限」后重新扫描，这里可能不再是空的。"
         )
         .frame(maxHeight: .infinity)
     }

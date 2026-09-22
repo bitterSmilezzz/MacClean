@@ -319,5 +319,74 @@ extension Selftest {
             // 修好之前的实测是 **14.6 倍**（清单常量的重复归一化占掉 215/299 µs）。
             return ratio < 3.0
         }
+
+        // 规则 v2 步骤 6 给 C1/C6/A1 各加了一次"这个目录读得到吗"探测（每个候选目录一次）。
+        // 探测走 `opendir`+`closedir` 而不是 `contentsOfDirectory`：后者要把顶层条目全读一遍，
+        // 而扫描紧接着就要为同一条路径做一次全量遍历——那是白花一趟 readdir。
+        check("盲区探测的开销相对同一路径体积测算的倍数（且必须真的能发现被拒目录）") {
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean_s6_perf_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root + "/locked")
+                try? fm.removeItem(atPath: root)
+            }
+            var paths: [String] = []
+            for i in 0..<150 {
+                let p = "\(root)/c\(i)"
+                try? fm.createDirectory(atPath: p + "/sub", withIntermediateDirectories: true)
+                // 每个候选目录放 60 个条目：让"读一遍顶层"与"只开一下"的代价差暴露出来
+                for j in 0..<60 {
+                    fm.createFile(atPath: p + "/sub/f\(j).bin", contents: Data(repeating: 1, count: 512))
+                }
+                paths.append(p)
+            }
+            let locked = root + "/locked"
+            try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+            fm.createFile(atPath: locked + "/secret.bin", contents: Data(repeating: 2, count: 1024))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+
+            // 先钉正确性：便宜的那个原语必须仍然看得见 TCC/权限拒绝
+            var bad: [String] = []
+            if FileSystem.canOpenDirectory(locked) {
+                bad.append("opendir 探测没发现 mode 000 的目录（探测换便宜写法把能力换掉了）")
+            }
+            FileSystem.resetDeniedAccess()
+            if !FileSystem.recordBlindSpotIfNeeded(at: locked) {
+                bad.append("recordBlindSpotIfNeeded 没把被拒目录记成盲区")
+            }
+            if FileSystem.recordBlindSpotIfNeeded(at: paths[0]) {
+                bad.append("可读目录被误判成盲区")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            guard bad.isEmpty else { return false }
+
+            func timed(_ body: (String) -> Void) -> TimeInterval {
+                let start = Date()
+                for p in paths { body(p) }
+                return Date().timeIntervalSince(start)
+            }
+            /// 体积测算必须先失效两级缓存。
+            /// 第一版没有这一步，测出来是"探测 2.2 ms ÷ 测算 0.4 ms = 5.13 倍"——
+            /// 看着像探测太贵，实际是分母被 `measure` 的会话缓存 + 跨会话增量指纹缓存
+            /// 打成了空调用。拿缓存命中当基准，任何新增 I/O 都会被判成 regression。
+            func timedMeasure() -> TimeInterval {
+                FileSystem.invalidateMeasurements(for: paths)
+                return timed { _ = FileSystem.size(at: $0) }
+            }
+            let probe1 = timed { _ = FileSystem.recordBlindSpotIfNeeded(at: $0) }
+            let size1 = timedMeasure()
+            let probe2 = timed { _ = FileSystem.recordBlindSpotIfNeeded(at: $0) }
+            let size2 = timedMeasure()
+            let probe = min(probe1, probe2), measure = min(size1, size2)
+            let ratio = measure > 0 ? probe / measure : .greatestFiniteMagnitude
+            print(String(format: "      150 个目录（每个 60 个条目，测算前失效缓存）："
+                            + "盲区探测 %.1f ms，体积测算 %.1f ms → %.2f 倍",
+                         probe * 1000, measure * 1000, ratio))
+            // 上界 0.5：探测是 3 个 syscall（lstat/opendir/closedir），
+            // 体积测算对同一路径至少还要枚举一遍子树。比值一旦接近 1，
+            // 说明探测又退化成"读一遍目录内容"了。
+            return ratio < 0.5
+        }
     }
 }

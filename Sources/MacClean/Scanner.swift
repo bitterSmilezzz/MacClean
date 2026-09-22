@@ -165,6 +165,12 @@ final class Scanner {
             return true
         }
         outcome.items = applyDefaultSelection(filtered.map { annotateUsage($0) })
+        // 子目录级盲区要在**遍历之后**才拿得到（遍历过程本身才是证据来源），
+        // 且要与根探测去重：同一个位置报两条会让"N 个位置读不到"这个数虚高。
+        let known = Set(outcome.issues.map { FileSystem.normalizePath($0.path) })
+        for issue in permissionIssues(for: category) where !known.contains(issue.path) {
+            outcome.issues.append(issue)
+        }
         return outcome
     }
 
@@ -190,7 +196,10 @@ final class Scanner {
     static func scanRoots(for category: CleanCategory) -> [(path: String, label: String)] {
         switch category {
         case .userCaches:
-            return [(CleanPaths.userCaches, "用户缓存目录")]
+            // 沙盒容器也要列进来：C6 扫的是 `~/Library/Containers/*/Data/Library/Caches`，
+            // 不列这个根，容器级盲区就无处归属（它们不在 `~/Library/Caches` 下面）。
+            return [(CleanPaths.userCaches, "用户缓存目录"),
+                    (CleanPaths.containersCaches, "沙盒容器目录")]
         case .logsAndTemp:
             return [(CleanPaths.logs, "日志目录"),
                     (CleanPaths.diagnosticReports, "诊断报告目录"),
@@ -209,6 +218,7 @@ final class Scanner {
             return [("/Applications", "已安装应用目录"),
                     (CleanPaths.appSupport, "Application Support"),
                     (CleanPaths.preferences, "偏好设置目录"),
+                    (CleanPaths.savedApplicationState, "窗口恢复状态目录"),
                     (CleanPaths.launchAgents, "启动代理目录")]
         case .largeFiles:
             return [(CleanPaths.trash, "废纸篓"),
@@ -231,18 +241,42 @@ final class Scanner {
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { return nil }
         guard FileSystem.isPermissionDenied(path) else { return nil }
 
-        let isTCC = CleanPaths.tccProtected.contains {
-            FileSystem.normalizePath(CleanPaths.expand($0)) == FileSystem.normalizePath(path)
-        }
-        let needsFDA = isTCC && !FileSystem.hasFullDiskAccess()
+        // 此前这里写的是 `isTCC && !hasFullDiskAccess()`，而 `isTCC` 查的是
+        // `CleanPaths.tccProtected` 那份**四条**清单——Safari 容器、`~/Library/Safari`
+        // 这些同样要 FDA 的位置不在清单里，于是 needsFDA 恒为 false，
+        // 用户拿到的补救建议是"该目录当前用户不可读，结果可能不完整"：
+        // 一句没有下一步的话。判据改成直接看权限本身。
+        let needsFDA = !FileSystem.hasFullDiskAccess()
         return ScanIssue(
             kind: .permissionDenied,
             path: path,
             message: "\(label)无法读取：权限不足，其中内容未计入本次扫描结果",
-            remedy: needsFDA
-                ? "在「系统设置 → 隐私与安全性 → 完全磁盘访问权限」中勾选 MacClean，然后重新扫描"
-                : "该目录当前用户不可读，结果可能不完整"
+            remedy: PermissionGuide.remedy(path: path, needsFDA: needsFDA)
         )
+    }
+
+    /// 把本轮实测到的**子目录级**权限盲区，变成属于本分类的 `ScanIssue`。
+    ///
+    /// 为什么根目录探测不够：`~/Library/Caches` 本身可读，所以根探测一切正常，
+    /// 但里面的 `CloudKit`、每个沙盒容器的 `Data/Library/Caches` 可以逐个被 TCC 拒掉。
+    /// 这些拒绝只有测量遍历知道（见 `FileSystem.recordDeniedAccess`）。
+    ///
+    /// 必须按本分类的根过滤：快照是整轮扫描共用的，而 6 个分类并发跑，
+    /// 不过滤就会把邻居的盲区报到自己账上（同一轮里 `Application Support` 还被两个分类共用）。
+    static func permissionIssues(for category: CleanCategory) -> [ScanIssue] {
+        let roots = scanRoots(for: category).map {
+            FileSystem.normalizePath(CleanPaths.expand($0.path)) + "/"
+        }
+        let needsFDA = !FileSystem.hasFullDiskAccess()
+        return FileSystem.deniedAccessSnapshot().compactMap { path in
+            guard roots.contains(where: { path.hasPrefix($0) }) else { return nil }
+            return ScanIssue(
+                kind: .permissionDenied,
+                path: path,
+                message: PermissionGuide.message(path: path),
+                remedy: PermissionGuide.remedy(path: path, needsFDA: needsFDA)
+            )
+        }
     }
 
     /// 整轮扫描（全部 6 个分类），由本方法划定测量会话边界。
@@ -406,6 +440,9 @@ final class Scanner {
             let bundle = (dir as NSString).lastPathComponent
             if runningBundleIDs.contains(bundle)
                 || CleanPaths.runningAppAliases.contains(CleanPaths.normalize(bundle)) { continue }
+            // 读不到的缓存目录要显式记成盲区（本机实测 `~/Library/Caches/CloudKit` 就是 EPERM）：
+            // 否则它和"这个缓存是空的"在结果上一模一样。
+            guard !FileSystem.recordBlindSpotIfNeeded(at: dir) else { continue }
             let size = FileSystem.size(at: dir)
             if size > 0 {
                 items.append(CleanItem(
@@ -538,6 +575,8 @@ final class Scanner {
             if CleanPaths.runningBundleIDs.contains(bundle) { continue }
             let cacheDir = (container as NSString).appendingPathComponent("Data/Library/Caches")
             guard FileSystem.isDir(cacheDir), FileSystem.isSafeToClean(cacheDir) else { continue }
+            // 沙盒容器的缓存是 FDA 缺失时最常"整片消失"的一类，逐个记账
+            guard !FileSystem.recordBlindSpotIfNeeded(at: cacheDir) else { continue }
             let size = FileSystem.size(at: cacheDir)
             if size > 0 {
                 items.append(CleanItem(
@@ -1397,6 +1436,9 @@ final class Scanner {
             // G17：永不归属词元（MobileSync / Knowledge / CrashReporter / swiftpm …）
             // 是系统级或多 app 共享状态，不得当作某个 app 的残留卖出去
             if CleanupRules.isNeverAttributable(normalized) { continue }
+            // 走到这里说明"本来要判它是不是残留"，此时读不到才需要报出来；
+            // 放在 G17/共享目录跳过之前，会把本来就不该碰的位置也报成盲区。
+            guard !FileSystem.recordBlindSpotIfNeeded(at: dir) else { continue }
             // 活跃度：180 天内有更新 → 在用数据，不列为残留（与 A2 同门槛）
             if let mdate = FileSystem.modificationDate(dir), mdate > residueCutoff { continue }
             // 兼容 bundle-id 形式目录名（com.qoder.app.stable → 各段与 app 名比对）

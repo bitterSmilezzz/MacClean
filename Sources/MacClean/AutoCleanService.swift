@@ -73,6 +73,8 @@ enum AutoCleanService {
         }
 
         // 4. 并发扫描收集候选项
+        // 无人值守路径：关掉权限盲区的主动探测，否则 macOS 的模态授权框会没人点而卡住这轮
+        FileSystem.proactiveBlindSpotProbe = false
         var allScannedItems: [CleanItem] = []
         for cat in categoriesToScan {
             if let items = try? Scanner.scan(cat) {
