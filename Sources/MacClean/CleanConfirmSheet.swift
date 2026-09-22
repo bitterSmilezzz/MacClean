@@ -49,10 +49,10 @@ struct CleanConfirmSheet: View {
                     .foregroundStyle(Ink.secondary)
             }
 
-            // 近期使用警告（用户诉求：最近在用/频繁使用的项先提醒）
+            // 近期写入警告（用户诉求：最近还在动的项先提醒）
             if recentlyUsedCount > 0 {
                 noticeRow(icon: "clock.badge.exclamationmark",
-                          text: "其中 \(recentlyUsedCount) 项近期或频繁使用中，确认删除前请留意",
+                          text: "其中 \(recentlyUsedCount) 项 30 天内还有过写入，确认删除前请留意",
                           color: Signal.caution)
             }
 

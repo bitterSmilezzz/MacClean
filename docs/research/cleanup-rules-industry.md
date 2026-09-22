@@ -14,7 +14,13 @@
 - `com.apple.bsd.dirhelper.plist` 里 `CLEAN_FILES_OLDER_THAN_DAYS = 3`，每日 03:35 + RunAtLoad；而 `dirhelper(8)` 手册页只自称"特殊目录创建助手"，**不记载清理职责** [实测]。
 - 磁盘"可用空间"多口径并存：`df` 92.0 GB vs `diskutil` Container Free Space 94.2 GB；Apple 未公开定义磁盘侧 purgeable space `（未验证）`。
 
-**atime 可用性**：Data 卷挂载参数无 `noatime`（`/System/Volumes/VM`、`xarts` 有），实测读取后 atime 确实更新；抽样 `~/Library/Caches` 400 文件：338 个 `atime==mtime`、60 个 `>mtime`、2 个 `<mtime` [实测]。可用但**不可单独作证据**（外接卷可能 noatime；`kMDItemLastUsedDate` 本机仅 134 个文件有值）。
+**atime 可用性（2026-09-22 复测，推翻本节上一版结论）**：Data 卷挂载参数无 `noatime`（`/System/Volumes/VM`、`xarts` 有），
+但**读取并不更新 atime**：三次独立实验都没让它动 —— ① 新建文件把 atime/mtime 一起回拨 10 天后整读；
+② 读 `/private/tmp/b2.log`（atime 已落后 13 h）后等 25 s；③ 读 `~/Library/Caches/com.apple.appleaccountd/Cache.db`
+（atime 落后 9.5 天）后等 20 s。`lsof` 类"谁在读"的证据因此**不能**取自 atime。
+抽样 `~/Library/Caches` 800 个文件仍有 260 个 `atime > mtime`、425 个相等、115 个 `atime < mtime`，
+`atime > mtime` 的来源无法用"被读过"解释（拷贝、还原、显式 `utimes` 都会造成）。
+**结论：临时项/日志的"多久没被动过"一律用 mtime**，且这保证判据字段不会被自家扫描改动。
 
 ## 2. 同行怎么做（可核查部分）
 

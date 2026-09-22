@@ -63,22 +63,27 @@ enum CleanCategory: String, CaseIterable, Identifiable, Codable {
 
 }
 
-// MARK: - 使用频率（用户诉求：判断"是否最近在频繁使用"，决定值不值得删）
+// MARK: - 使用档位（用户诉求：判断"最近还在不在动"，决定值不值得删）
+//
+// 档位标签只说**量到的东西**。历史上这里叫"频繁使用中/偶尔使用"，可我们手上只有一个
+// mtime——单次时间戳推不出"频率"。后果不是措辞不雅，而是用户不敢用：
+// 同一行既写"使用:5 天前 · 频繁使用中"、又写"确定是垃圾"，两句互相打架，
+// 唯一理性的反应是两个都不信（用户原话："很多标记高频使用中的文件还标记了安全，这种我都不敢删"）。
 
 enum UsageLevel: Int, Codable {
-    case active       // 7 天内使用过：频繁使用中
-    case recent       // 30 天内使用过：近期使用
-    case occasional   // 90 天内使用过：偶尔使用
-    case dormant      // 超过 90 天未用：长期未用
+    case active       // 7 天内有写入
+    case recent       // 7–30 天
+    case occasional   // 30–90 天
+    case dormant      // 90 天以上
     case unknown      // 无法判定
 
     var label: String {
         switch self {
-        case .active: return "频繁使用中"
-        case .recent: return "近期使用"
-        case .occasional: return "偶尔使用"
-        case .dormant: return "长期未用"
-        case .unknown: return "使用情况未知"
+        case .active: return "7 天内有写入"
+        case .recent: return "7–30 天内有写入"
+        case .occasional: return "30–90 天内有写入"
+        case .dormant: return "90 天以上无写入"
+        case .unknown: return "写入时间未知"
         }
     }
 

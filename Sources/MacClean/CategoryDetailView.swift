@@ -141,10 +141,19 @@ struct CategoryDetailView: View {
             // 不封顶的话整个 VStack 会高出窗口，SwiftUI 不是滚动而是**上下两头一起裁**——
             // 分类标题、过滤/扫描那一排和底部「已选 / 清理」全部消失，这页就再也点不动了。
             // 真机实测过这个坏法，所以列表区永远要留住自己的高度。
-            ScrollView {
+            //
+            // 但 `ScrollView + maxHeight` 是**贪心**的：里面只剩一排胶囊时它照样把 340 pt 占满。
+            // v1.72.6 没暴露这个问题是因为当时每类都是几百项，列表把空间挤没了；v1.72.9 的
+            // L3 判据收紧后「日志与临时文件」只剩 11 项，列表上方就凭空多出一条近 300 pt 的空带。
+            // 所以限高滚动只在**真的有面板展开时**套上。
+            if anyGovernancePanelOpen {
+                ScrollView {
+                    subCategoryFilterBarIfNeeded
+                }
+                .frame(maxHeight: 340)
+            } else {
                 subCategoryFilterBarIfNeeded
             }
-            .frame(maxHeight: 340)
             contentArea(filtered: filtered, grouped: grouped)
             footer(filtered: filtered, visibleSelectedCount: visibleSelectedCount)
         }
@@ -308,6 +317,15 @@ struct CategoryDetailView: View {
                 .motionSafeTransition(.move(edge: .top).combined(with: .opacity))
             }
         }
+    }
+
+    /// 是否有治理面板正展开着（决定面板区要不要套限高滚动，见 `body`）。
+    private var anyGovernancePanelOpen: Bool {
+        showPivotCard || showDownloadsOrganizer || showScreenshotsOrganizer
+            || showFontCacheInspector || showColorSyncOptimizer || showSpotlightOptimizer
+            || showAudioHALOptimizer || showPrinterDriverOptimizer || showCLICacheOptimizer
+            || showQuickLookPurger || showDeepStorageInspector || showCrashReportInspector
+            || showProjectInspector
     }
 
     /// 分类细分筛选条（大文件、应用残留与日志临时）
@@ -2251,7 +2269,7 @@ enum DevResidueFilterKind: String, CaseIterable, Identifiable {
         case .buildArtifacts:
             return ["D1", "D2", "D11", "D13", "D14", "D22"].contains(item.rule)
         case .packageCaches:
-            return ["D4", "D5", "D6", "D7", "D8", "D9", "D10", "D15", "D16", "D18", "D19"].contains(item.rule)
+            return ["D4", "D5", "D6", "D7", "D8", "D9", "D10", "D15", "D16", "D18", "D19", "D24"].contains(item.rule)
         case .ideCaches:
             return ["D3", "D20", "D21"].contains(item.rule)
         case .environments:

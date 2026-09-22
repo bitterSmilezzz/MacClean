@@ -148,7 +148,7 @@ enum HistoryExporter {
         总计项目：\(items.count) 项
         总计占用：\(totalBytes.byteStringCN) (\(totalBytes) 字节)
 
-        | 名称 | 大小 | 处置结论 | 结论依据 | 使用频率 | 路径 |
+        | 名称 | 大小 | 处置结论 | 结论依据 | 写入档位 | 路径 |
         | :--- | :--- | :--- | :--- | :--- | :--- |
 
         """

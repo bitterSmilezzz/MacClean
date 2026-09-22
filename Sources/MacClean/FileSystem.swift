@@ -337,12 +337,126 @@ enum FileSystem {
         return (try? url.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate)
     }
 
+    // MARK: - 归属与时间证据（规则 v2 判据的底座）
+
+    /// 一趟 `lstat` 拿到的归属、时间与类型事实。
+    ///
+    /// 为什么不用 Foundation：`attributesOfItem` 给不出属主 uid，`resourceValues` 要先构造
+    /// URL 再走一趟 getattrlist，而这类判定要对每个候选项各跑一次。
+    /// 用 `lstat` 而非 `stat`：粘滞目录里"能不能删"取决于**软链本身**的属主（sticky(7)）。
+    struct ItemEvidence {
+        let ownerUID: UInt32
+        let modificationDate: Date
+        let accessDate: Date
+        let isDirectory: Bool
+        let isRegularFile: Bool
+        let isSymlink: Bool
+        let isSocket: Bool
+        let isFIFO: Bool
+    }
+
+    static func evidence(at path: String) -> ItemEvidence? {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return nil }
+        let type = st.st_mode & S_IFMT
+        func date(_ tv: timespec) -> Date {
+            Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_nsec) / 1_000_000_000)
+        }
+        return ItemEvidence(ownerUID: st.st_uid,
+                            modificationDate: date(st.st_mtimespec),
+                            accessDate: date(st.st_atimespec),
+                            isDirectory: type == S_IFDIR,
+                            isRegularFile: type == S_IFREG,
+                            isSymlink: type == S_IFLNK,
+                            isSocket: type == S_IFSOCK,
+                            isFIFO: type == S_IFIFO)
+    }
+
+    /// "这一项的用途完成了吗"的判定结果。
+    ///
+    /// 分档返回而不是给 Bool：自检要能钉住**是哪一维把它挡住的**，
+    /// 只测"列出/没列出"的话，一条永远返回 false 的判据也能测过。
+    enum IdleVerdict: Equatable {
+        case discardable
+        /// 阈值内还有写入，用途可能没完
+        case writtenRecently
+        /// 属主不是当前用户。`/private/tmp` 可写不等于"我们能删"——
+        /// sticky(7)：粘滞目录里只有文件属主、目录属主和 root 有删除权。
+        case notOwnedByCurrentUser
+        /// socket / FIFO：长期不动也可能是某个进程唯一的 IPC 地址，删了没人能重建
+        case interprocessChannel
+        /// 软链：真正的东西在别处，该按目标的位置判，不在临时目录判据里处理
+        case symlink
+        case unreadable
+    }
+
+    /// Apple 自己的临时文件阈值，本机复核过两处一手依据：
+    /// `confstr(3)` 的 `_CS_DARWIN_USER_TEMP_DIR` 说明"放了 3 天以后可能被丢弃"，
+    /// `/System/Library/LaunchDaemons/com.apple.bsd.dirhelper.plist` 的
+    /// `CLEAN_FILES_OLDER_THAN_DAYS = 3`（每天 03:35 跑）。
+    /// 用它不是为了跟 Apple 保持一致，而是为了**不依赖某个用户的习惯**。
+    static let appleTempIdleDays = 3
+
+    /// 临时目录项与进程日志的"已完成用途"判定。
+    ///
+    /// 时间只看 **mtime**，不用 atime。本机实测三条：
+    /// ① 读文件、读目录，等 20–25 秒后 atime 不动；
+    /// ② 挑一个 atime 已落后 9.5 天的既有文件（`~/Library/Caches/com.apple.appleaccountd/Cache.db`）
+    ///    整读一遍，atime 仍不动——这台机器的 Data 卷读取不更新 atime，atime 没有"谁还在读"的信息量；
+    /// ③ 抽样 `~/Library/Caches` 800 个文件仍有 260 个 atime > mtime，来源无法解释（拷贝、还原都会造成）。
+    /// 更根本的约束是：**判据用的字段不能是自家探查会改动的字段**。
+    /// `size(at:)` 对目录要 opendir，在会更新 atime 的卷上，每轮扫描都会把候选项的 atime 刷新，
+    /// 那些项就永远过不了 3 天门槛——扫描把自己扫成了"还在用"。
+    static func idleVerdict(at path: String,
+                            now: Date = Date(),
+                            idleDays: Int = appleTempIdleDays,
+                            ownerUID: UInt32 = geteuid()) -> IdleVerdict {
+        guard let e = evidence(at: path) else { return .unreadable }
+        if e.isSymlink { return .symlink }
+        if e.isSocket || e.isFIFO { return .interprocessChannel }
+        guard e.ownerUID == ownerUID else { return .notOwnedByCurrentUser }
+        guard now.timeIntervalSince(e.modificationDate) >= Double(idleDays) * 86400 else {
+            return .writtenRecently
+        }
+        return .discardable
+    }
+
     // MARK: - 使用频率检测（用户诉求：最近使用时间 + 使用频率，判断值不值得删）
 
     /// 轻量使用检测结果
     struct UsageInfo {
         var lastUsed: Date?      // 最近使用时间（文件 accessDate/mtime 较新者；目录为样本内最新）
         var level: UsageLevel    // 使用频率分级
+    }
+
+    /// 使用频率分级的阈值（7 / 30 / 90 天）。抽出来是为了让"按父目录量"和"按本项自己的
+    /// 路径量"两条路共用同一套分级，不出现同一个时间在两处算出不同档位。
+    static func usageLevel(forAge age: TimeInterval) -> UsageLevel {
+        let day: TimeInterval = 86400
+        switch age {
+        case ..<(7 * day): return .active
+        case ..<(30 * day): return .recent
+        case ..<(90 * day): return .occasional
+        default: return .dormant
+        }
+    }
+
+    /// 一组路径的合并使用度：以"最近被碰过的那一个"为准。
+    ///
+    /// 为什么需要：聚合项（D19 守护进程日志、L5 旋转旧日志、C4 过期下载）的主路径是**父目录**，
+    /// 而父目录里总有别的文件在写。按父目录量，就把"这 16 个 3 天没动的日志"说成
+    /// "几秒前还有写入"，`.staleArtifact` 随即被运行时钳制成「使用中」——
+    /// 那不是保守，是**假**：要删的那批一个都没在动。实测本机 D19 就是这么被压住的。
+    /// 成本：每项一次 `lstat`，最多看 400 条；一旦已经落进"活跃"档就提前停。
+    static func usage(ofPaths paths: [String], now: Date = Date(), limit: Int = 400) -> UsageInfo {
+        var newest: Date?
+        for path in paths.prefix(limit) {
+            guard let e = evidence(at: path) else { continue }
+            if newest == nil || e.modificationDate > newest! { newest = e.modificationDate }
+            if let n = newest, now.timeIntervalSince(n) < 7 * 86400 { break }
+        }
+        guard let newest else { return UsageInfo(lastUsed: nil, level: .unknown) }
+        return UsageInfo(lastUsed: newest, level: usageLevel(forAge: now.timeIntervalSince(newest)))
     }
 
     /// 检测路径最近使用情况。
@@ -354,14 +468,7 @@ enum FileSystem {
         let now = Date()
         let day: TimeInterval = 86400
 
-        func level(for age: TimeInterval) -> UsageLevel {
-            switch age {
-            case ..<(7 * day): return .active
-            case ..<(30 * day): return .recent
-            case ..<(90 * day): return .occasional
-            default: return .dormant
-            }
-        }
+        func level(for age: TimeInterval) -> UsageLevel { usageLevel(forAge: age) }
 
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else {

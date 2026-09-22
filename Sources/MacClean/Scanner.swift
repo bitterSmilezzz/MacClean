@@ -17,7 +17,7 @@ final class Scanner {
         "C1", "C2", "C3", "C4", "C5", "C6", "C7", "D1",
         "D10", "D11", "D12", "D13", "D14", "D15", "D16",
         "D17", "D18", "D19", "D2", "D20", "D21", "D22",
-        "D23", "D3",
+        "D23", "D24", "D3",
         "D4", "D5", "D6", "D7", "D8", "D9", "L1", "L2",
         "L3", "L4", "L5", "L6", "L7", "T1", "T2", "T3", "T4",
         "T5",
@@ -323,9 +323,16 @@ final class Scanner {
     /// `[安全] … 使用:12 天前 · 近期使用` 这种自相矛盾的标注。
     /// 现在把"所属 App 是否在运行"一并采集，交给 `CleanItem.recommendation` 统一出结论。
     ///
-    /// 对主路径检测；聚合项主路径为父目录，`FileSystem.usage` 会抽样反映整体活跃度。
-    private static func annotateUsage(_ item: CleanItem) -> CleanItem {
-        let info = FileSystem.usage(of: item.path)
+    /// 对主路径检测；**聚合项**（`paths` 多条、主路径是父目录）改为直接量自己要删的那些路径。
+    ///
+    /// 为什么不能一律用父目录：`~/Library/Logs` 这种位置随时都有 App 在写，按父目录量会得到
+    /// "几秒前还有写入"，于是 L5/D19 这类"集合本身已经 3 天没动"的项永远被压成「使用中」。
+    /// 那是**假**的占用证据——要删的那批文件一个都没在动。
+    /// internal 而非 private：自检要能直接钉住"聚合项的占用来自自己那批路径"。
+    static func annotateUsage(_ item: CleanItem) -> CleanItem {
+        let info = item.paths.count > 1
+            ? FileSystem.usage(ofPaths: item.paths)
+            : FileSystem.usage(of: item.path)
         let owner = CleanPaths.ownerApp(of: item.path)
         var copy = item
         copy.use = UseState(
@@ -430,22 +437,56 @@ final class Scanner {
         return items
     }
 
-    // C4: Homebrew 下载缓存
+    // C4: Homebrew 下载缓存——只认 brew 自己会清的那部分
+    //
+    // `brew cleanup` 的契约是"清掉超过 HOMEBREW_CLEANUP_MAX_AGE_DAYS（默认 120）天的下载"，
+    // 120 天之内的它自己留着复用。旧实现是"目录存在且非空就整体进废纸篓"，比 brew 自己还激进：
+    // 昨天刚下的 bottle 也在其中，而那恰恰是最可能马上要用的一份。
+    // 另外两处"读不准就不列"：进行中的下载（.part/.lock/.downloading）不是缓存，是**没做完的事**；
+    // `api/` 下是 brew 的元数据增量，删了会让下次 `brew update` 全量重拉。
     private static func scanC4HomebrewCache() -> [CleanItem] {
-        var items: [CleanItem] = []
-        do {
-            let dir = CleanPaths.expand(CleanPaths.homebrewCache)
-            if FileSystem.isDir(dir), FileSystem.isSafeToClean(dir) {
-                let size = FileSystem.size(at: dir)
-                if size > 0 {
-                    items.append(CleanItem(
-                        name: (dir as NSString).lastPathComponent,
-                        path: dir, size: size, rule: "C4", category: .userCaches,
-                        note: CleanPaths.homebrewCache))
-                }
+        let dir = CleanPaths.expand(CleanPaths.homebrewCache)
+        guard FileSystem.isDir(dir), FileSystem.isSafeToClean(dir) else { return [] }
+        let cutoff = Date().addingTimeInterval(
+            -Double(CleanupRules.homebrewDownloadMaxAgeDays) * 86400)
+        var stale: [String] = []
+        var bytes: Int64 = 0
+        collectStaleHomebrewDownloads(in: dir, depth: 0, cutoff: cutoff,
+                                      into: &stale, bytes: &bytes)
+        guard !stale.isEmpty else { return [] }
+        return [CleanItem(
+            name: "Homebrew 过期下载 (\(stale.count) 个文件)",
+            path: dir, paths: stale, size: bytes, rule: "C4", category: .userCaches,
+            note: "已超出 Homebrew 自己的 120 天保留期（HOMEBREW_CLEANUP_MAX_AGE_DAYS）")]
+    }
+
+    /// 深度 ≤ 2 收集已过保留期的**已完成**下载；软链、进行中的分片、`api/` 都不列。
+    /// internal 而非 private：自检要能对 fixture 直接验证"哪些文件进了候选"。
+    static func collectStaleHomebrewDownloads(in dir: String, depth: Int, cutoff: Date,
+                                                      into paths: inout [String],
+                                                      bytes: inout Int64) {
+        guard depth <= 2 else { return }
+        for child in FileSystem.children(of: dir) {
+            guard FileSystem.isSafeToClean(child),
+                  let ev = FileSystem.evidence(at: child),
+                  !ev.isSymlink else { continue }
+            if ev.isDirectory {
+                guard depth < 2,
+                      (child as NSString).lastPathComponent != "api" else { continue }
+                collectStaleHomebrewDownloads(in: child, depth: depth + 1, cutoff: cutoff,
+                                              into: &paths, bytes: &bytes)
+                continue
             }
+            guard ev.isRegularFile else { continue }
+            let name = (child as NSString).lastPathComponent
+            if name.hasSuffix(".lock") || name.hasSuffix(".part")
+                || name.hasSuffix(".downloading") || name.hasSuffix(".incomplete") { continue }
+            guard ev.modificationDate < cutoff else { continue }
+            let sz = FileSystem.size(at: child)
+            guard sz > 0 else { continue }
+            paths.append(child)
+            bytes += sz
         }
-        return items
     }
 
     // C5: 浏览器缓存
@@ -574,38 +615,80 @@ final class Scanner {
         return items
     }
 
-    // L3: /private/tmp 与 /private/var/tmp（仅可写项）
+    // L3: /private/tmp 与 /private/var/tmp
+    //
+    // 判据从"当前用户可写"换成「属主==本用户 且 mtime 超过 Apple 的 3 天阈值」，两条都是
+    // 实测换来的，不是措辞调整：
+    //  · `sticky(7)`：粘滞目录里的删除权来自**文件属主**，目录可写不等于我们删得掉。
+    //    本机 `/private/tmp` 里就有 root 的 `adb.0.log`、uid 200 的 `SoftwareUpdateCore_NRD`。
+    //  · 旧判据会把几秒前刚创建的 socket、正在编辑的中间文件当成"可清理"，而这些恰恰是
+    //    v2 规格里 T0 最不能碰的形状——T0 是唯一允许默认勾选的档。
+    // 阈值不靠"某个用户觉得自己不用了"，靠 Apple 自己清理临时目录用的那个 3 天。
     private static func scanL3TempDirs() -> [CleanItem] {
         var items: [CleanItem] = []
+        let now = Date()
         for tmpPath in [CleanPaths.tmp, CleanPaths.varTmp] {
-            guard FileManager.default.isWritableFile(atPath: tmpPath) else { continue }
+            guard FileManager.default.isWritableFile(atPath: tmpPath),
+                  FileSystem.isDir(tmpPath) else { continue }
             for child in FileSystem.children(of: tmpPath) {
                 guard FileSystem.isSafeToClean(child) else { continue }
+                guard FileSystem.idleVerdict(at: child, now: now) == .discardable else { continue }
                 let size = FileSystem.size(at: child)
-                if size > 0 {
-                    items.append(CleanItem(
-                        name: (child as NSString).lastPathComponent,
-                        path: child, size: size, rule: "L3", category: .logsAndTemp,
-                        note: "临时文件（需确认）"))
-                }
+                guard size > 0 else { continue }
+                let idle = FileSystem.evidence(at: child).map {
+                    Int(now.timeIntervalSince($0.modificationDate) / 86400)
+                } ?? FileSystem.appleTempIdleDays
+                items.append(CleanItem(
+                    name: (child as NSString).lastPathComponent,
+                    path: child, size: size, rule: "L3", category: .logsAndTemp,
+                    note: "属主为本用户、已 \(idle) 天未写入（Apple 清理临时目录用的就是 3 天）"))
             }
         }
         return items
     }
 
     // L4: TemporaryItems
+    //
+    // 旧实现把整个目录当成一项列出，而同一位置在 `ClipboardPurger` 里是"认不出归属就一律保留"
+    // ——两个模块对同一个目录的口径相反，而这里正是 Office 自动恢复草稿的住所。
+    // 现在逐子项判：属主 + 3 天没写入 + 名字看不出属于哪个 App，三者同时成立才列。
     private static func scanL4TemporaryItems() -> [CleanItem] {
         var items: [CleanItem] = []
+        let now = Date()
         let tempItems = CleanPaths.expand(CleanPaths.temporaryItems)
-        if FileSystem.isDir(tempItems) {
-            let size = FileSystem.size(at: tempItems)
-            if size > 0 {
-                items.append(CleanItem(
-                    name: "TemporaryItems", path: tempItems, size: size,
-                    rule: "L4", category: .logsAndTemp, note: "未完成写入的临时项"))
-            }
+        guard FileSystem.isDir(tempItems) else { return items }
+        for child in FileSystem.children(of: tempItems) {
+            guard FileSystem.isSafeToClean(child) else { continue }
+            guard FileSystem.idleVerdict(at: child, now: now) == .discardable else { continue }
+            guard !looksAppOwnedInTemporaryItems(child) else { continue }
+            let size = FileSystem.size(at: child)
+            guard size > 0 else { continue }
+            items.append(CleanItem(
+                name: (child as NSString).lastPathComponent,
+                path: child, size: size,
+                rule: "L4", category: .logsAndTemp,
+                note: "超过 3 天未写入，且看不出属于哪个 App"))
         }
         return items
+    }
+
+    /// TemporaryItems 子项是否"看得出属于某个 App"——这类留给 App 自己管。
+    ///
+    /// 只按名字形状判，而且方向固定为**保守**：认不准就不列。`com.microsoft.Word/`、
+    /// `AutoRecovery saving….data` 里面可能是唯一一份未保存的内容，
+    /// "3 天没写"在这类文件上不构成"可以丢"的证据。
+    static func looksAppOwnedInTemporaryItems(_ path: String) -> Bool {
+        let name = ((path as NSString).lastPathComponent).lowercased()
+        if name.contains("autorecovery") || name.contains("auto-recovery")
+            || name.contains("自动恢复") || name.contains("autosave") {
+            return true
+        }
+        // 反 DNS 式标识符（com.microsoft.Word）：至少 3 段点分隔，且每段都是字母/数字
+        let labels = name.split(separator: ".", omittingEmptySubsequences: true).map(String.init)
+        guard labels.count >= 3 else { return false }
+        return labels.allSatisfy { label in
+            !label.isEmpty && label.allSatisfy { $0.isLetter || $0.isNumber }
+        }
     }
 
     // L5: 旋转/压缩旧日志（*.log.N / *.gz，>30 天，仅 Logs 内递归深度 3）
@@ -1043,43 +1126,63 @@ final class Scanner {
         return items
     }
 
-    // D19: Gradle 守护进程日志与历史 Wrapper
+    // D19 / D24: Gradle 守护进程日志 与 Wrapper 发行包（v2 步骤 5 拆成两条规则）
+    //
+    // 顺带修掉一个**从未生效过的分支**。旧代码把 `FileSystem.children(of:)`（返回**全路径**）
+    // 的结果再 `appendingPathComponent` 拼一遍，得到
+    // `~/.gradle/daemon/8.10.2/Users/…/daemon-65720.out.log` —— 这种路径永远不存在，
+    // `size` 恒为 0，于是本机 49 MB 守护进程日志一条都没列出来过，而规则表里 D19 一直"在册"。
+    // 这类"声明了但探不到"的分支用肉眼看不出来：列表里少一项不像 bug，只像"这里没东西"。
     private static func scanD19GradleDaemonAndWrapper() -> [CleanItem] {
         var items: [CleanItem] = []
+        let now = Date()
+        var activeVersions: Set<String> = []
+        var logPaths: [String] = []
+        var totalSize: Int64 = 0
+
         let daemonDir = CleanPaths.expand(CleanPaths.gradleDaemon)
         if FileSystem.isDir(daemonDir), FileSystem.isSafeToClean(daemonDir) {
-            var logPaths: [String] = []
-            var totalSize: Int64 = 0
             for sub in FileSystem.subdirs(of: daemonDir) {
-                for file in FileSystem.children(of: sub) {
-                    if file.hasSuffix(".log") || file.hasSuffix(".out") {
-                        let full = (sub as NSString).appendingPathComponent(file)
-                        guard FileSystem.isSafeToClean(full) else { continue }
+                var versionActive = false
+                for full in FileSystem.children(of: sub) {
+                    guard full.hasSuffix(".log") || full.hasSuffix(".out") else { continue }
+                    guard FileSystem.isSafeToClean(full) else { continue }
+                    switch FileSystem.idleVerdict(at: full, now: now) {
+                    case .discardable:
                         let sz = FileSystem.size(at: full)
                         if sz > 0 {
                             logPaths.append(full)
                             totalSize += sz
                         }
+                    case .writtenRecently:
+                        // 3 天内还在写 = 这个 Gradle 版本当前在用，D24 不得把它的发行包算作历史
+                        versionActive = true
+                    default:
+                        break
                     }
                 }
+                if versionActive { activeVersions.insert((sub as NSString).lastPathComponent) }
             }
             if !logPaths.isEmpty {
                 items.append(CleanItem(
                     name: "Gradle 历史守护进程日志 (\(logPaths.count) 个)",
                     path: daemonDir, paths: logPaths, size: totalSize, rule: "D19",
-                    category: .devResidue, note: "Gradle daemon 运行日志与堆栈"))
+                    category: .devResidue, note: "对应守护进程已 3 天以上没有写入"))
             }
         }
+
         let wrapperDir = CleanPaths.expand(CleanPaths.gradleWrapperDists)
         if FileSystem.isDir(wrapperDir), FileSystem.isSafeToClean(wrapperDir) {
             for dist in FileSystem.subdirs(of: wrapperDir) {
                 guard FileSystem.isSafeToClean(dist) else { continue }
+                let name = (dist as NSString).lastPathComponent   // gradle-8.10.2-bin
+                if activeVersions.contains(where: { name.contains($0) }) { continue }
                 let sz = FileSystem.size(at: dist)
                 if sz > 0 {
                     items.append(CleanItem(
-                        name: "Gradle Wrapper (\((dist as NSString).lastPathComponent))",
-                        path: dist, size: sz, rule: "D19", category: .devResidue,
-                        note: "历史下载的 Gradle 发行包"))
+                        name: "Gradle Wrapper (\(name))",
+                        path: dist, size: sz, rule: "D24", category: .devResidue,
+                        note: "项目重新构建时要重新下载发行包"))
                 }
             }
         }

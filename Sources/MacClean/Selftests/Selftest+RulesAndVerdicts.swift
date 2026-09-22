@@ -20,12 +20,13 @@ extension Selftest {
         //   ③ README 写「23 条」而文档实际 32 条、代码 35 条。
         // 下列自检把这类不一致变成可自动发现的失败。
 
-        check("清理规则：登记条数与分类分布一致（6 大类 52 条）") {
+        check("清理规则：登记条数与分类分布一致（6 大类 53 条）") {
             // 49 → 52：v1.44.0 新增 L7(CrashReporter)、A4(Saved Application State)、A5(ByHost Preferences)
-            guard CleanupRules.count == 52 else { return false }
+            // 52 → 53：规则 v2 步骤 5 把 D19 拆成"守护进程日志 / Wrapper 发行包"两条（D19 + D24）
+            guard CleanupRules.count == 53 else { return false }
             // 顺序对应 CleanCategory.allCases：C / L / D / A / T / B
             let byCategory = CleanCategory.allCases.map { CleanupRules.rules(in: $0).count }
-            return byCategory == [7, 7, 23, 5, 5, 5]
+            return byCategory == [7, 7, 24, 5, 5, 5]
         }
 
         // MARK: - 结论一致性不变量
@@ -80,8 +81,12 @@ extension Selftest {
             return true
         }
 
-        check("不变量：靠推断的规则永不自动判「可清理」（L3/D8/D12/D15/T4）") {
-            for id in ["L3", "D8", "D12", "D15", "T4"] {
+        check("不变量：靠推断的规则永不自动判「可清理」（D8/D12/D15/T4）") {
+            // L3 原先在这张名单里：它的判据是"当前用户可写"，本质是推断。
+            // v2 步骤 5 把它换成「属主==本用户 且 mtime 超过 3 天」的实测判据之后，
+            // nature 从 inferredUnused 改为 staleArtifact——名单变短是**证据变硬**的结果，
+            // 不是把不变量放宽。这里同时守住反方向：不许靠改 nature 蒙混升级。
+            for id in ["D8", "D12", "D15", "T4"] {
                 guard let rule = CleanupRules.rule(id), rule.nature == .inferredUnused else { return false }
                 // 即便"没在运行、长期未用"，也只能是「需确认」
                 let use = UseState(ownerIsRunning: false, ownerName: nil,
@@ -190,8 +195,9 @@ extension Selftest {
 
             let row = ItemRowView(item: item, isSelected: false) { _ in }
             let texts = try row.inspect().findAll(ViewType.Text.self).compactMap { try? $0.string() }
-            // 不得出现与结论矛盾的"安全"或"频繁使用中"字样
-            return !texts.contains("安全") && !texts.contains("频繁使用中")
+            // 不得出现与结论矛盾的字样：旧版的"安全"，以及从单个 mtime 推不出来的"频繁/偶尔"
+            return !texts.contains("安全")
+                && !texts.contains(where: { $0.contains("频繁") || $0.contains("偶尔使用") })
         }
 
         check("未知规则编号退化为「需确认」，不会变成「可清理」") {
@@ -345,21 +351,22 @@ extension Selftest {
             return g.isSafe && !g.blocksBulkSelection && g.label == "确定是垃圾"
         }
 
-        check("规则 v2 步骤3：T0 名单里有 4 条依据尚未落地，不得假装已生效") {
-            // 结论引擎只在 nature 能产出 safe 时才升级。T0 名单里有 4 条的 nature 还是
+        check("规则 v2 步骤3：T0 名单里仍有 3 条依据没落地，不得假装已生效") {
+            // 结论引擎只在 nature 能产出 safe 时才升级。T0 名单里还有 3 条的 nature 是
             // 「推断/孤儿」，今天仍然落在需确认——这是**如实的缺口**，不是 bug：
-            // L3 要等步骤 5 换成「属主==euid 且 >3 天」的结构判据，D8/D12 要等实现侧
-            // 补上工具契约证据，A4 要等 nature 从 orphanedResidue 改为 staleArtifact。
-            // 把它们写成断言，是为了防止下一轮有人直接改 nature 让名单"看起来"全部生效。
+            // D8/D12 要等实现侧补上工具契约证据，A4 要等 nature 从 orphanedResidue 改为
+            // staleArtifact。把它们写成断言，是为了防止下一轮有人直接改 nature 让名单
+            // "看起来"全部生效。
+            // 步骤 5 之后 L3 离开了这份名单：它的判据换成了实测的「属主 + 3 天未写入」。
             let promotable: Set<ItemNature> = [.losslessCache, .rebuildable, .staleArtifact]
             let t0 = CleanupRules.all.filter { $0.tier == .t0 }
             let live = Set(t0.filter { promotable.contains($0.nature) }.map(\.id))
             let pending = Set(t0.filter { !promotable.contains($0.nature) }.map(\.id))
-            guard live == ["C7", "L4", "L5", "L6", "D11", "D13", "D14"] as Set<String> else {
+            guard live == ["C7", "L3", "L4", "L5", "L6", "D11", "D13", "D14", "D19"] as Set<String> else {
                 print("      今天真能进「确定是垃圾」的规则变了：\(live.sorted())")
                 return false
             }
-            guard pending == ["L3", "D8", "D12", "A4"] as Set<String> else {
+            guard pending == ["D8", "D12", "A4"] as Set<String> else {
                 print("      T0 里待补证据的规则变了：\(pending.sorted())")
                 return false
             }
@@ -417,7 +424,7 @@ extension Selftest {
             // T0 是唯一允许默认勾选的档，所以这里用**白名单点名**而不是只查数量：
             // 悄悄把某条改成 T0，即使四维看着自洽，也会在这里红。
             let expected: Set<String> = ["C7", "L3", "L4", "L5", "L6",
-                                         "D8", "D11", "D12", "D13", "D14", "A4"]
+                                         "D8", "D11", "D12", "D13", "D14", "D19", "A4"]
             let actual = Set(CleanupRules.all.filter { $0.tier == .t0 }.map(\.id))
             guard actual == expected else {
                 print("      多出的 T0：\(actual.subtracting(expected).sorted())；"
@@ -427,15 +434,218 @@ extension Selftest {
             return true
         }
 
-        check("规则 v2：档位分布与规格一致（11 / 16 / 17 / 8）") {
+        check("规则 v2：档位分布与规格一致（12 / 16 / 17 / 8）") {
             let count: (CleanupRules.Tier) -> Int = { t in CleanupRules.all.filter { $0.tier == t }.count }
             let got = (count(.t0), count(.t1), count(.t2), count(.t3))
-            guard got == (11, 16, 17, 8) else {
+            guard got == (12, 16, 17, 8) else {
                 print("      实际档位分布 T0/T1/T2/T3 = \(got.0)/\(got.1)/\(got.2)/\(got.3)")
                 return false
             }
             // 四档之和必须等于全表：不能有规则漏填档位或被重复计档
             return got.0 + got.1 + got.2 + got.3 == CleanupRules.all.count
+        }
+
+        // MARK: 规则 v2 步骤 5 —— 判据的证据底座
+
+        /// 在指定根下建一次性 fixture，跑完立刻删（绝不留到下一轮扫描）。
+        /// body 返回问题清单，空清单即通过。
+        func withScratchRoot(_ tag: String, under base: String,
+                             _ body: (String) -> [String]) -> Bool {
+            let root = (base as NSString).appendingPathComponent("macclean-s5-\(tag)-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+            let problems = body(root)
+            try? FileManager.default.removeItem(atPath: root)
+            if !problems.isEmpty { print("      " + problems.joined(separator: "\n      ")) }
+            return problems.isEmpty
+        }
+
+        /// 建一个文件并把 atime/mtime 一起回拨 `days` 天。
+        /// 两个时间一起设：判据只看 mtime，但这样 fixture 就不依赖"读会不会改 atime"。
+        @discardableResult
+        func makeAgedFile(_ path: String, days: Double, bytes: Int = 4096) -> Bool {
+            guard FileManager.default.createFile(atPath: path,
+                                                 contents: Data(repeating: 7, count: bytes))
+                else { return false }
+            let sec = Int(Date().timeIntervalSince1970 - days * 86400)
+            var tv = [timeval(tv_sec: sec, tv_usec: 0), timeval(tv_sec: sec, tv_usec: 0)]
+            return utimes(path, &tv) == 0
+        }
+
+        check("步骤5 证据底座：idleVerdict 每一维各挡一次，全过才放行") {
+            withScratchRoot("idle", under: NSTemporaryDirectory()) { root in
+                func p(_ n: String) -> String { (root as NSString).appendingPathComponent(n) }
+                makeAgedFile(p("fresh.log"), days: 0)
+                makeAgedFile(p("old.log"), days: 10)
+                makeAgedFile(p("target.bin"), days: 10)
+                symlink(p("target.bin"), p("link.bin"))
+                mkfifo(p("channel"), 0o600)
+                let now = Date()
+                var bad: [String] = []
+                if FileSystem.idleVerdict(at: p("fresh.log"), now: now) != .writtenRecently {
+                    bad.append("刚写入的项没被时间维挡住")
+                }
+                if FileSystem.idleVerdict(at: p("old.log"), now: now) != .discardable {
+                    bad.append("本用户 10 天未写的普通文件没放行")
+                }
+                if FileSystem.idleVerdict(at: p("old.log"), now: now, ownerUID: 0)
+                    != .notOwnedByCurrentUser {
+                    bad.append("属主不符也放行——粘滞目录里「目录可写」不是删除权（sticky(7)）")
+                }
+                if FileSystem.idleVerdict(at: p("link.bin"), now: now) != .symlink {
+                    bad.append("软链没有单独归类")
+                }
+                if FileSystem.idleVerdict(at: p("channel"), now: now) != .interprocessChannel {
+                    bad.append("FIFO/socket 类没有单独归类")
+                }
+                if FileSystem.idleVerdict(at: p("不存在的项"), now: now) != .unreadable {
+                    bad.append("读不到的路径给了实质判定")
+                }
+                return bad
+            }
+        }
+
+        check("步骤5：Apple 的 3 天阈值是硬边界，两侧差半天判定就翻") {
+            withScratchRoot("edge", under: NSTemporaryDirectory()) { root in
+                func p(_ n: String) -> String { (root as NSString).appendingPathComponent(n) }
+                makeAgedFile(p("under.log"), days: 2.5)
+                makeAgedFile(p("over.log"), days: 3.5)
+                let now = Date()
+                var bad: [String] = []
+                guard FileSystem.appleTempIdleDays == 3 else {
+                    return ["阈值不再是 3 天，规格与依据要同步改"]
+                }
+                if FileSystem.idleVerdict(at: p("under.log"), now: now) != .writtenRecently {
+                    bad.append("2.5 天的项被放行（还没到 Apple 的阈值）")
+                }
+                if FileSystem.idleVerdict(at: p("over.log"), now: now) != .discardable {
+                    bad.append("3.5 天的项没放行")
+                }
+                // 反向证据：自家扫描不会改动判据字段——size/遍历只用 lstat，不动 mtime
+                _ = FileSystem.size(at: p("over.log"))
+                _ = FileSystem.evidence(at: p("over.log"))
+                if FileSystem.idleVerdict(at: p("over.log"), now: now) != .discardable {
+                    bad.append("探查一次之后判定翻转：判据字段被自家扫描改动了")
+                }
+                return bad
+            }
+        }
+
+        check("步骤5：TemporaryItems 只挡「看得出属于某个 App」的子项") {
+            var bad: [String] = []
+            for owned in ["com.microsoft.Word", "com.apple.TextEdit.autosave",
+                          "AutoRecovery saving 未命名.docx", "com.google.Chrome",
+                          "com.microsoft.Word.tar.gz.bak"] {
+                if !Scanner.looksAppOwnedInTemporaryItems("/x/Library/TemporaryItems/" + owned) {
+                    bad.append("App 归属的形状没认出来：\(owned)")
+                }
+            }
+            for generic in ["dnd-pasteboard.URL", "untitled folder", "DT8A2f.tmp",
+                            "ImageCache", "node-compile-cache"] {
+                if Scanner.looksAppOwnedInTemporaryItems("/x/Library/TemporaryItems/" + generic) {
+                    bad.append("通用临时项被误判成 App 归属（会漏清）：\(generic)")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("步骤5：C4 只收超出 brew 120 天保留期的已完成下载") {
+            guard CleanupRules.homebrewDownloadMaxAgeDays == 120 else {
+                print("      C4 的保留期不再是 120 天")
+                return false
+            }
+            // fixture 必须建在 /tmp：`isSafeToClean` 的允许根是家目录与 /tmp、/var/tmp，
+            // 放在 NSTemporaryDirectory() 下会被闸门全部拒掉（下一条就是把这个差异钉住）。
+            return withScratchRoot("c4", under: "/private/tmp") { root in
+                func p(_ n: String) -> String { (root as NSString).appendingPathComponent(n) }
+                let cutoff = Date().addingTimeInterval(
+                    -Double(CleanupRules.homebrewDownloadMaxAgeDays) * 86400)
+                makeAgedFile(p("old.tar.gz"), days: 200)
+                makeAgedFile(p("young.tar.gz"), days: 5)
+                makeAgedFile(p("stale.part"), days: 300)
+                makeAgedFile(p("Formula.lock"), days: 300)
+                makeAgedFile(p(".hidden-entry"), days: 300)
+                makeAgedFile(p("empty.bin"), days: 400, bytes: 0)
+                try? FileManager.default.createDirectory(atPath: p("downloads"),
+                                                         withIntermediateDirectories: true)
+                makeAgedFile(p("downloads/deep.zip"), days: 250)
+                try? FileManager.default.createDirectory(atPath: p("api"),
+                                                         withIntermediateDirectories: true)
+                makeAgedFile(p("api/formula.json"), days: 300)
+                symlink(p("old.tar.gz"), p("linked.tar.gz"))
+
+                var paths: [String] = []
+                var bytes: Int64 = 0
+                Scanner.collectStaleHomebrewDownloads(in: root, depth: 0, cutoff: cutoff,
+                                                      into: &paths, bytes: &bytes)
+                let names = Set(paths.map { (($0 as NSString).lastPathComponent) })
+                var bad: [String] = []
+                if names != ["old.tar.gz", "deep.zip"] as Set<String> {
+                    bad.append("实际收进：\(names.sorted())（应为 old.tar.gz + downloads/deep.zip）")
+                }
+                if bytes <= 0 { bad.append("体积没有累计到真实字节") }
+                if paths.contains(where: { $0.hasSuffix("/api/formula.json") }) {
+                    bad.append("brew 的 api 元数据被当成下载清掉了")
+                }
+
+                // 反证：同一个 fixture 换到闸门不放行的位置，必须一项都不收
+                var outside: [String] = []
+                var outsideBytes: Int64 = 0
+                Scanner.collectStaleHomebrewDownloads(in: NSTemporaryDirectory() + "nope-\(UUID().uuidString)",
+                                                      depth: 0, cutoff: cutoff,
+                                                      into: &outside, bytes: &outsideBytes)
+                if !outside.isEmpty { bad.append("闸门外的路径也收了候选：\(outside)") }
+                return bad
+            }
+        }
+
+        check("步骤5：聚合项的占用状态来自己要删的那批路径，不被父目录里的写入者牵连") {
+            withScratchRoot("usage", under: NSTemporaryDirectory()) { root in
+                func p(_ n: String) -> String { (root as NSString).appendingPathComponent(n) }
+                makeAgedFile(p("old1.log"), days: 40)
+                makeAgedFile(p("old2.log"), days: 35)
+                makeAgedFile(p("hot.log"), days: 0)      // 同一父目录里别人刚写的
+                let cold = [p("old1.log"), p("old2.log")]
+
+                var bad: [String] = []
+                // 先确认污染是真的：按父目录量必然得到"活跃"
+                if FileSystem.usage(of: root).level != .active {
+                    bad.append("父目录并不活跃，本条反例失效（换机器要重新设计 fixture）")
+                }
+                let byPaths = FileSystem.usage(ofPaths: cold)
+                if byPaths.level != .occasional || byPaths.lastUsed == nil {
+                    bad.append("按自身路径量出的档位不对：\(byPaths.level)，应为 occasional")
+                }
+                if FileSystem.usage(ofPaths: []).level != .unknown {
+                    bad.append("空路径集给了实质档位")
+                }
+                if FileSystem.usage(ofPaths: [p("不存在.log"), p("old1.log")]).lastUsed == nil {
+                    bad.append("路径里混一个读不到的项，就把整组判成未知")
+                }
+                // 接线：聚合 CleanItem 走 annotateUsage 之后不得再是"使用中"
+                let item = CleanItem(name: "聚合日志", path: root, paths: cold, size: 8192,
+                                     rule: "D19", category: .devResidue)
+                let annotated = Scanner.annotateUsage(item)
+                if annotated.recommendation.kind == .inUse {
+                    bad.append("聚合项仍被父目录的写入者牵连成「使用中」")
+                }
+                return bad
+            }
+        }
+
+        check("步骤5 反证：children(of:) 给的是全路径，再 join 一次必然永扫不到（D19 死分支根因）") {
+            withScratchRoot("join", under: NSTemporaryDirectory()) { root in
+                makeAgedFile((root as NSString).appendingPathComponent("daemon-1.out.log"), days: 10)
+                let kids = FileSystem.children(of: root)
+                var bad: [String] = []
+                guard let kid = kids.first else { return ["fixture 子项枚举为空"] }
+                if !FileSystem.exists(kid) { bad.append("children(of:) 返回的不是可用路径") }
+                let rejoined = (root as NSString).appendingPathComponent(kid)
+                if FileSystem.exists(rejoined) {
+                    bad.append("重复 join 后仍存在——本条断言的前提（这是死路径）变了，请复核 D19")
+                }
+                return bad
+            }
         }
 
         check("规则 v2：反证——数据契约或高重建代价伪装 T0 必须被拒") {

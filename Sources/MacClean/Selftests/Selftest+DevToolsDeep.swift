@@ -3,24 +3,29 @@ import Foundation
 // 自检套件：专业开发工具与容器深度清理 (v1.43.0)
 extension Selftest {
     static func suiteDevToolsDeep() {
-        check("开发工具增强：D20–D23 规则登记与编号连续性") {
+        check("开发工具增强：D20–D24 规则登记与编号连续性") {
             let devRules = CleanupRules.rules(in: .devResidue)
             let ids = devRules.map(\.id)
 
-            // ① 规则必须包含 D1 到 D23
-            guard ids.count == 23 else { return false }
-            guard ids == (1...23).map({ "D\($0)" }) else { return false }
+            // ① 规则必须包含 D1 到 D24，且**按编号顺序登记**
+            //（缺号或乱号会让"分类内规则"的区间声明 ruleRef 失真，D24 起初插在 D19 后面就是这种情况）
+            guard ids.count == 24 else { return false }
+            guard ids == (1...24).map({ "D\($0)" }) else { return false }
 
-            // ② ruleRef 动态计算必须为 D1–D23
-            guard CleanCategory.devResidue.ruleRef == "D1–D23" else { return false }
+            // ② ruleRef 动态计算必须为 D1–D24
+            guard CleanCategory.devResidue.ruleRef == "D1–D24" else { return false }
 
-            // ③ D20–D23 性质与后果声明验证
+            // ③ D20–D24 性质与后果声明验证
             guard let d20 = CleanupRules.rule("D20"), d20.nature == .losslessCache else { return false }
             guard let d21 = CleanupRules.rule("D21"), d21.nature == .staleArtifact else { return false }
             guard let d22 = CleanupRules.rule("D22"), d22.nature == .rebuildable else { return false }
             guard let d23 = CleanupRules.rule("D23"), d23.nature == .inferredUnused else { return false }
+            // D24 是从 D19 拆出来的 Wrapper 发行包：本质是"要重下"，不是"日志"
+            guard let d24 = CleanupRules.rule("D24"), d24.nature == .redownloadable,
+                  d24.tier == .t2 else { return false }
 
-            guard !d20.consequence.isEmpty, !d21.consequence.isEmpty, !d22.consequence.isEmpty, !d23.consequence.isEmpty else {
+            guard !d20.consequence.isEmpty, !d21.consequence.isEmpty, !d22.consequence.isEmpty,
+                  !d23.consequence.isEmpty, !d24.consequence.isEmpty else {
                 return false
             }
 

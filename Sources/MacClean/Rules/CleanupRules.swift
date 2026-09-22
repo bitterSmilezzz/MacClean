@@ -180,6 +180,20 @@ enum CleanupRules {
         }
     }
 
+    // MARK: - 契约里的数字（不是我们拍的）
+    //
+    // 这两个阈值都来自"被清理的那个工具/系统自己声明的策略"，所以把它们写在规则源头，
+    // 而不是散在扫描器里当魔法数——用户的抱怨是"有些不能删的你却说能删"，
+    // 解药是让每个数字都能回答"凭什么"。
+
+    /// Homebrew 自己的下载保留期：`brew cleanup` 只清 `HOMEBREW_CLEANUP_MAX_AGE_DAYS`
+    /// （默认 120）天之前的下载，其余保留。此前 C4 是"目录存在就整体进废纸篓"，
+    /// 比 brew 自己激进——昨天刚下的 bottle 也会被清掉。
+    static let homebrewDownloadMaxAgeDays = 120
+
+    /// Gradle / 临时项的"写完了"阈值，沿用 Apple 的 3 天（见 `FileSystem.appleTempIdleDays`）。
+    static var daemonLogIdleDays: Int { FileSystem.appleTempIdleDays }
+
     // MARK: - G17 永不归属词元表
     //
     // 这些名字看着像"某个 app 留下的残留"，实际是**系统级或多 app 共享**的状态。
@@ -233,8 +247,8 @@ enum CleanupRules {
              contract: .appleCaches, ownership: .shared, hostState: .unknown,
              restore: .autoExpensive, tier: .t2),
         Rule(id: "C4", category: .userCaches, nature: .losslessCache,
-             consequence: "Homebrew 下载缓存，下次安装时重新下载",
-             summary: "~/Library/Caches/Homebrew",
+             consequence: "Homebrew 下载缓存中已超出其自身 120 天保留期的部分，下次安装时重新下载",
+             summary: "~/Library/Caches/Homebrew 内 mtime 超过 120 天的已完成下载（跳过 .part/.lock/.downloading）",
              contract: .toolPrune, ownership: .shared, hostState: .unknown,
              restore: .autoExpensive, tier: .t1),
         Rule(id: "C5", category: .userCaches, nature: .losslessCache,
@@ -265,17 +279,18 @@ enum CleanupRules {
              summary: "~/Library/Logs/DiagnosticReports/*",
              contract: .namedPattern, ownership: .shared, hostState: .unknown,
              restore: .impossible, tier: .t2),
-        // ⚠️ L3/L4 的档位已按 v2 规格登记为 T0，但**实现判据还没跟上**：现在只筛"当前用户可写"，
-        // 未按「属主==euid 且 >3 天未访问」过滤（Apple 自己的阈值，见 confstr 与 dirhelper.plist）。
-        // 因此 T0 的默认勾选（步骤 4）必须晚于这次判据改写（步骤 5），否则会把刚被写过的临时文件也勾上。
-        Rule(id: "L3", category: .logsAndTemp, nature: .inferredUnused,
-             consequence: "系统临时目录：通常可以丢弃，但可能有进程正在使用其中文件，请确认后再删",
-             summary: "/private/tmp/*、/private/var/tmp/*（仅可写项）",
+        // L3/L4 的 T0 依据是**测出来的**，不是名字猜的：属主==当前用户（sticky(7)：粘滞目录里
+        // 删除权来自文件属主，"目录可写"不是删除权）+ mtime 超过 Apple 自己的 3 天阈值。
+        // 时间字段用 mtime 而不用 atime，理由见 `FileSystem.idleVerdict`：本机实测读取不更新
+        // atime，而且判据字段必须是自家扫描不会改动的字段。
+        Rule(id: "L3", category: .logsAndTemp, nature: .staleArtifact,
+             consequence: "系统临时目录里已超过 3 天没有写入的项；Apple 自己就按这个阈值清理临时目录",
+             summary: "/private/tmp/*、/private/var/tmp/*（属主==本用户，且 mtime 超过 3 天）",
              contract: .tempDir, ownership: .unknown, hostState: .unknown,
              restore: .none, tier: .t0),
         Rule(id: "L4", category: .logsAndTemp, nature: .losslessCache,
-             consequence: "应用临时文件，应用会重新创建",
-             summary: "~/Library/TemporaryItems/*",
+             consequence: "系统临时项，超过 3 天没有写入；看得出属于哪个 App 的自动恢复草稿一律不列",
+             summary: "~/Library/TemporaryItems/* 内可归属为临时项的子项（不整目录处理）",
              contract: .tempDir, ownership: .shared, hostState: .unknown,
              restore: .none, tier: .t0),
         Rule(id: "L5", category: .logsAndTemp, nature: .staleArtifact,
@@ -393,12 +408,15 @@ enum CleanupRules {
              isNew: true,
              contract: .namedPattern, ownership: .shared, hostState: .unknown,
              restore: .autoExpensive, tier: .t2),
+        // D19/D24 是同一位置上两类完全不同的东西，v2 步骤 5 拆开：
+        // daemon 日志是"进程早就写完了的历史输出"（T0），wrapper/dists 是"重下一份 Gradle 发行包"
+        // （auto-expensive，T2）。合在一条规则里时，152 MB 的发行包被当成和几 KB 日志同级的东西。
         Rule(id: "D19", category: .devResidue, nature: .staleArtifact,
-             consequence: "Gradle 历史守护进程日志与过时 Wrapper 发行包，不影响当前项目构建",
-             summary: "~/.gradle/daemon/*/*.log 与 ~/.gradle/wrapper/dists/*",
+             consequence: "Gradle 守护进程的历史运行日志，对应的守护进程 3 天内没有再写入",
+             summary: "~/.gradle/daemon/<版本>/*.log、*.out（mtime 超过 3 天）",
              isNew: true,
              contract: .namedPattern, ownership: .shared, hostState: .unknown,
-             restore: .autoExpensive, tier: .t2),
+             restore: .none, tier: .t0),
         Rule(id: "D20", category: .devResidue, nature: .losslessCache,
              consequence: "JetBrains IDE 历史版本索引缓存与运行日志，打开对应 IDE 时会自动重建索引",
              summary: "~/Library/Caches/JetBrains/* 与 ~/Library/Logs/JetBrains/* 历史版本索引与运行日志",
@@ -423,6 +441,12 @@ enum CleanupRules {
              isNew: true,
              contract: .userData, ownership: .uniquePath, hostState: .unknown,
              restore: .impossible, tier: .t3),
+        Rule(id: "D24", category: .devResidue, nature: .redownloadable,
+             consequence: "Gradle Wrapper 发行包，项目再次构建时需要重新下载",
+             summary: "~/.gradle/wrapper/dists/*（跳过当前仍有活跃守护进程的版本）",
+             isNew: true,
+             contract: .namedPattern, ownership: .shared, hostState: .unknown,
+             restore: .autoExpensive, tier: .t2),
 
         // MARK: 4. App 残留 A1–A3（原 A3「孤儿缓存」已删除，见下方说明）
         Rule(id: "A1", category: .appResidue, nature: .orphanedResidue,

@@ -20,11 +20,14 @@ extension Selftest {
             Int64(1_500_000_000).byteStringCN == "1.5 GB" &&
             Int64(150_000_000_000).byteStringCN == "150 GB"
         }
-        check("UsageLevel 频率分级标签") {
-            UsageLevel.active.label == "频繁使用中" &&
-            UsageLevel.recent.label == "近期使用" &&
-            UsageLevel.occasional.label == "偶尔使用" &&
-            UsageLevel.dormant.label == "长期未用" &&
+        check("UsageLevel 写入档位标签：只说量到的事，不宣称「频率」") {
+            UsageLevel.active.label == "7 天内有写入" &&
+            UsageLevel.recent.label == "7–30 天内有写入" &&
+            UsageLevel.occasional.label == "30–90 天内有写入" &&
+            UsageLevel.dormant.label == "90 天以上无写入" &&
+            // 反证：标签里不许再出现从单个 mtime 推不出来的词
+            ![UsageLevel.active, .recent, .occasional, .dormant, .unknown]
+                .contains(where: { $0.label.contains("频繁") || $0.label.contains("偶尔") }) &&
             UsageLevel.active.isRecentlyUsed && UsageLevel.recent.isRecentlyUsed &&
             !UsageLevel.occasional.isRecentlyUsed && !UsageLevel.dormant.isRecentlyUsed
         }
@@ -68,7 +71,7 @@ extension Selftest {
                                  lastUsed: Date().addingTimeInterval(-3 * 86400),
                                  usage: .active)
             let text = AIService.render(context: ctx)
-            return text.contains("最近使用：") && text.contains("使用频率：频繁使用中")
+            return text.contains("最近写入：") && text.contains("写入档位：7 天内有写入")
         }
         check("CleanPaths.expand ~ 展开") {
             CleanPaths.expand("~/Library/Caches") == NSHomeDirectory() + "/Library/Caches" &&

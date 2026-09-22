@@ -12,7 +12,8 @@
 >   与另算的「使用频率」互不调和，必然产出「安全 + 频繁使用中」这种自相矛盾的标注。
 >   现改为 **本质（`ItemNature`：删了会怎样）× 占用状态（`UseState`：此刻是否在用）
 >   → 唯一结论（`Recommendation`）**。同时把原 B4 拆成 B4（下载缓存）/ B5（按需下载的功能组件），
->   修掉"把 WidevineCdm 这类 DRM 组件标成安全"的误判。**当前共 6 大类 52 条规则。**
+>   修掉"把 WidevineCdm 这类 DRM 组件标成安全"的误判。**当前共 6 大类 53 条规则**
+>   （v1.72.9 起；此前 52 条，D19 拆成 D19/D24）。
 > - **v1.44.0（2026-09-19）**：新增 L7（CrashReporter 历史崩溃诊断）、A4（Saved Application State 窗口恢复状态）、A5（ByHost 硬件绑定偏好碎片）。
 
 ---
@@ -24,7 +25,7 @@
 | G1 | 只扫用户可写目录 | 不扫描/不清理 `/System`、`/Library`、`/var` 中需要 root 的区域；遇权限不足跳过并提示 |
 | G2 | 手动勾选 + 确认 | 扫描结果默认全不勾选；点「清理」前二次确认 |
 | G3 | 默认移入废纸篓 | 清理默认 `trash`（可恢复），用户可选「彻底删除」 |
-| G4 | **唯一结论（v1.2 重写）** | 每项只带**一个**结论：`可清理` / `使用中` / `需确认` / `勿删`。由 `ItemNature × UseState` 推导，并附一句「为什么」。**不变量：`可清理` 蕴含所属应用未在运行** —— 界面上永远不会再同时出现「可清理」与「频繁使用中」 |
+| G4 | **唯一结论（v1.2 重写）** | 每项只带**一个**结论：`可清理` / `使用中` / `需确认` / `勿删`。由 `ItemNature × UseState` 推导，并附一句「为什么」。**不变量：`可清理` 蕴含所属应用未在运行** —— 界面上永远不会再同时出现「可清理」与"刚刚还在写"这类互相打架的组合。v1.72.9 起，档位标签也只显示量到的事（`7 天内有写入`），不再用单个 mtime 宣称"频繁使用" |
 | G5 | **在用检测（v1.2 加强）** | 三重证据取并集：① 所属 App 正在运行；② 目录在 10 分钟内被写过；③ 规则本身标记为需确认。① 的匹配集合覆盖 bundle id、本地化名、**CFBundleName**、可执行名与 `.app` 目录名——只比对本地化名会漏掉"目录名英文、App 显示中文"这一大类（实测 Tabbit Browser） |
 | G6 | 白名单排除 | 永远不删：`~/Library/Mail`、`~/Library/Keychains`、`~/Library/Accounts`、`~/Library/Messages`、`~/Library/Safari`（书签）、`.ssh`、`.gnupg`；**v1.1 新增**：`~/Library/Group Containers`（应用共享数据）、`~/Library/Mobile Documents`（iCloud）、`~/Library/CloudStorage`（云盘） |
 | G7 | 空目录兜底 | 删目录前先确认大小>0 或文件数>0；保留 `.DS_Store` 之外的系统占位 |
@@ -48,7 +49,7 @@
 | C1 | `~/Library/Caches/*` | 所有子目录，跳过 G6 白名单与运行中应用 | 可重建缓存 | trash/删除 |
 | C2 | `~/Library/Caches/com.apple.dt.Xcode` | Xcode 未运行时 | 可重建缓存 | trash |
 | C3 | `~/Library/Caches/pip` / `~/.cache/pip` | 存在 | 可重建缓存 | trash |
-| C4 | `~/Library/Caches/Homebrew` | 存在 | 可重建缓存 | trash |
+| C4 | `~/Library/Caches/Homebrew` | 只收 mtime >120 天的**已完成**下载（对齐 `HOMEBREW_CLEANUP_MAX_AGE_DAYS`）；跳过 `.part/.lock/.downloading`、软链与 `api/` | 可重建缓存 | trash |
 | C5 | 浏览器缓存 | `~/Library/Caches/com.apple.Safari`、`com.google.Chrome`、`com.microsoft.Edge`、`com.brave.Browser`、`com.operasoftware.Opera`、`com.vivaldi.Vivaldi` | 可重建缓存 | trash |
 | C6 | 沙盒容器缓存 | `~/Library/Containers/*/Data/Library/Caches/*`（跳过运行中应用） | 可重建缓存 | trash |
 | **C7** | **应用内旧安装包** | `~/Library/Application Support/*/updates/*.{dmg,pkg,iso}`（**仅列安装包文件本身，不动同目录其余内容**） | 历史产物 | trash |
@@ -62,8 +63,8 @@
 |------|----------|------|------|----------|
 | L1 | `~/Library/Logs/*` | 顶层项 | 可重建缓存 | trash |
 | L2 | `~/Library/Logs/DiagnosticReports/*` | 崩溃/诊断报告 | 可重建缓存 | trash |
-| L3 | `/private/tmp/*`、`/private/var/tmp/*` | 仅当当前用户可写；跳过正在使用的 socket/锁文件 | 推断未用 | trash |
-| L4 | `~/Library/TemporaryItems/*` | 存在 | 可重建缓存 | trash |
+| L3 | `/private/tmp/*`、`/private/var/tmp/*` | 逐子项：**属主==当前用户** 且 mtime 超过 Apple 的 3 天阈值；跳过软链与 socket/FIFO | 历史产物 | trash |
+| L4 | `~/Library/TemporaryItems/*` | 逐子项，同 L3；**名字看得出属于某个 App 的一律不列**（自动恢复草稿） | 可重建缓存 | trash |
 | L5 | 旋转旧日志 | `~/Library/Logs` 内递归深度 ≤3，`*.log.N` / `*.N.log` / `*.gz` 且 >30 天 | 历史产物 | trash |
 | **L6** | **应用更新残留（ShipIt）** | `$TMPDIR/<bundle-id>.ShipIt.<字母数字后缀>`（**仅顶层直接子项**） | 历史产物 | trash |
 | **L7** | **CrashReporter 历史崩溃诊断与排查记录** | `~/Library/Application Support/CrashReporter/*` | 超过 30 天的历史崩溃记录 | 历史产物 | trash |
@@ -74,6 +75,16 @@
 > **⚠️ 与 L3 的关键区别**：`$TMPDIR`（`/private/var/folders/xx/xxx/T`）与 `/private/tmp` **不是一回事**。
 > 实测 `/private/tmp` 中的 3.1 GiB 全部是**当日活跃的构建/agent 工作流产物**（并非垃圾），
 > 而 `$TMPDIR` 中的 ShipIt 残留才是真残留。因此 L6 **只认 ShipIt 命名模式**，绝不整体清理 `$TMPDIR`。
+>
+> **v1.72.9 的呼应**：上面那句"3.1 GiB 全是当日活跃产物、并非垃圾"当时只是观察，没有变成判据——
+> L3 依旧把整个 `/private/tmp` 逐子项列成"可清理/需确认"。现在它变成了判据：
+> **属主==当前用户**（`sticky(7)`：粘滞目录里删除权来自文件属主，"目录可写"不是）
+> **且 mtime 超过 3 天**（Apple 自己清临时目录用的阈值，`confstr(3)` + `dirhelper.plist` 本机已复核）。
+> 时间字段只用 mtime：本机实测**读取不更新 atime**，而且判据字段必须是自家扫描不会改动的字段——
+> `size(at:)` 要 opendir，在会更新 atime 的卷上，每轮扫描都会把候选项刷成"还在用"，那些项就永远清不掉。
+> 实测效果：本机「日志与临时文件」从 **339 项 / 357.6 MB** 降到 **11 项 / 36.1 MB**，
+> 剩下的 11 项里 `/private/var/tmp/xcrun_db`、`swift-generated-sources` 这类 3 天没动的项
+> 第一次拿到「确定是垃圾」，而 1 小时前刚写的 `mimo-asar`（169.9 MB）不再出现。
 
 ## 3. 开发残留（构建产物 / 包管理器缓存 / 工具链）
 
@@ -97,11 +108,12 @@
 | **D16** | **CocoaPods 缓存与规格库** | `~/Library/Caches/CocoaPods` 与 `~/.cocoapods/repos` | 可重建缓存 | trash |
 | **D17** | **Docker 构建缓存与日志** | `~/.docker/buildx/cache` 与容器守护运行日志 | 可重建缓存 | trash |
 | **D18** | **Cargo Git 源码检出库** | `~/.cargo/git/checkouts` 与 `~/.cargo/git/db` | 可重建缓存 | trash |
-| **D19** | **Gradle 守护日志与旧 Wrapper** | `~/.gradle/daemon/*/*.log` 与 `~/.gradle/wrapper/dists` | 历史产物 | trash |
+| **D19** | **Gradle 守护进程历史日志** | `~/.gradle/daemon/<版本>/*.log`、`*.out`，且 3 天内没有再写入 | 历史产物 | trash |
 | **D20** | **JetBrains 历史版本日志与索引缓存** | `~/Library/Caches/JetBrains/*` 与 `~/Library/Logs/JetBrains/*` | 对应 IDE 未运行 | 可重建缓存 | trash |
 | **D21** | **Xcode DeviceSupport 过时设备调试符号** | `~/Library/Developer/Xcode/* DeviceSupport/*` | 超过 60 天未修改且 Xcode 未运行 | 历史产物 | trash |
 | **D22** | **Xcode SwiftUI Previews 画布与模拟器缓存** | `~/Library/Developer/Xcode/UserData/Previews/*` | Xcode 未运行 | 需重新生成 | trash |
 | **D23** | **Docker 桌面虚拟机磁盘镜像与未用卷** | `~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw` | Docker 虚拟磁盘（包含本地容器与镜像） | 推断未用 | trash（需确认） |
+| **D24** | **Gradle Wrapper 发行包** | `~/.gradle/wrapper/dists/*`；**跳过仍有活跃守护进程的版本**（同版本号 3 天内写过 = 正在用） | 需重新下载 | trash（需确认） |
 
 > **D13/D14 实测依据（v1.1）**：Clang 模块缓存 1.2 GB、Node 编译缓存 103 MB，均为自动重建的编译中间产物。
 >
@@ -392,6 +404,37 @@
   - 自检 537 → 542：新增升级/降级矩阵、运行时压制、分组真的渲染出标题与副标题、
     以及一条**如实记录缺口**的断言——T0 名单里 `L3/D8/D12/A4` 四条的 `nature` 还停在
     "推断/孤儿"，今天不会出现在「确定是垃圾」组，必须显式承认而不是改 nature 让名单"看起来"生效。
+- **v1.72.9（2026-09-22）**：规则 v2 **步骤 5——把判据从"猜"换成"量"**，同时修掉三个只读探查的失真。
+  用户诉求是「丰富探查准确度」，落下来是三处判定加一处接线：
+  - **L3/L4 判据改写**（T0 从此名副其实）：`/private/tmp`、`/var/tmp`、`TemporaryItems` 改为逐子项要求
+    「属主==当前用户 **且** mtime 超过 Apple 的 3 天阈值」；`TemporaryItems` 另外要求
+    "名字看不出属于哪个 App"（自动恢复草稿在里面，3 天没写不等于可丢，与 `ClipboardPurger`
+    对同一目录的"认不出就保留"口径合并）。本机「日志与临时文件」**339 项/357.6 MB → 11 项/36.1 MB**。
+  - **C4 对齐 brew 自己的契约**：从"目录存在就整目录进废纸篓"改成只收 mtime >120 天
+    （`HOMEBREW_CLEANUP_MAX_AGE_DAYS`）的**已完成**下载，跳过 `.part/.lock/.downloading`、软链与 `api/`。
+  - **D19 拆分**：守护进程日志（T0）与 `wrapper/dists` 发行包（新增 **D24**，T2）。
+    顺带发现 D19 的日志分支**从未生效过**——它把 `FileSystem.children(of:)`（返回全路径）
+    的结果再 `appendingPathComponent` 拼一遍，得到 `.../8.10.2/Users/…/daemon-x.log` 这种永不存在的
+    路径，`size` 恒为 0，本机 49 MB 日志一条都没列出来过；列表里少一项不像 bug，只像"这里没东西"。
+    拆开后 `gradle-8.10.2-bin` 也不再被称作"过时 Wrapper"：该版本 3 天内还在写 = 正在用 → 不列。
+  - **聚合项的占用状态改按自己要删的路径量**（`FileSystem.usage(ofPaths:)`）：原先一律量主路径
+    （= 父目录），而 `~/Library/Logs`、`~/.gradle/daemon` 这种位置随时有人在写，于是
+    "16 个 3 天没动的日志"被标成「几秒前还有写入 → 使用中」。那不是保守，是假。
+  - **档位标签只说量到的事**：`频繁使用中/偶尔使用` → `7 天内有写入/30–90 天内有写入`…；
+    单个 mtime 推不出"频率"，而"使用:5 天前 · 频繁使用中"和"确定是垃圾"并排出现时，
+    用户唯一理性的反应是两个都不信（这正是最初那条抱怨的下半段）。
+  - 判据字段的选型依据是实测：本机**读取不更新 atime**（POSIX read、`/bin/cat`、以及一个 atime 已落后
+    9.5 天的既有文件 + 20 s 等待，三次都没动），所以 atime 不参与门槛，只用 mtime——
+    顺带保证"自家扫描不会改动自己所依据的字段"。`docs/research/cleanup-rules-industry.md` 里
+    原先"实测读取后 atime 确实更新"那句是**错的**，已按本次测量改写。
+  - 顺带暴露并修掉一处布局回归：v1.72.6 给治理面板区套的 `ScrollView + .frame(maxHeight: 340)` 是
+    **贪心**的，里面只剩一排胶囊时也会占满 340 pt。以前每类几百项看不出来，列表一短
+    （日志类 11 项）就在列表上方多出一条近 300 pt 的空带。现在限高滚动只在真有面板展开时套上，
+    真机复验：收起时列表紧贴胶囊条，三块面板全开时页头/页脚仍在。
+  - 自检 542 → 548：`idleVerdict` 四维各挡一次、3 天硬边界两侧各测、探查一次后判定不得翻转、
+    C4 只收 120 天外已完成下载（含闸门外路径一项不收的反证）、聚合项不得被父目录牵连、
+    以及 `children(of:)` 双 join 的死路径反证。规则 52 → 53 条，T0/T1/T2/T3 = 12/16/17/8。
+    步骤 5 完成后**步骤 4（T0 默认勾选）的阻塞条件解除**。
 - **v1.72.6（2026-09-21）**：修「浏览器与系统数据」这一页**点开后没法用**，规则一条没改。
   成因是布局而不是判定：全站每个分类的治理面板都是"点胶囊才展开"，只有这一块
   `SystemDeepStorageView()`（473 行 UI，内部无滚动、无高度上限）是**无条件挂载**在清理列表上方的。

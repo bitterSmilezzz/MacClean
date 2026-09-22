@@ -337,7 +337,7 @@ struct AskListItem: Equatable {
     ///
     /// 模型需要"为什么是这个结论"才能复核，只给标签等于让它自己再猜一遍。
     var verdictReason: String = ""
-    /// 最近使用描述（如"3 天前 · 频繁使用中"；未知为空）
+    /// 最近写入描述（如"3 天前 · 7 天内有写入"；未知为空）
     var usageDesc: String = ""
 }
 
@@ -355,7 +355,7 @@ struct AskContext: Equatable {
     var inUseBy: [String] = []   // 本地检测到的占用进程
     /// 最近使用时间（用户诉求：判断值不值得删）
     var lastUsed: Date?
-    /// 使用频率（用户诉求）
+    /// 写入档位（用户诉求）
     var usage: UsageLevel = .unknown
 
     // 列表模式：非空时按"整表判断"提问（Q2: Top 50 截断 / Q6: 每类 Top 20）
@@ -482,9 +482,9 @@ enum AIService {
     private static let reviewPrompt = """
     你是 MacClean 的清理专家。用户会给你一张"已扫描清理候选"表格，每行包含：编号 | 名称 | 路径 | 大小 | 处置结论 | 最近使用。
     「处置结论」是 MacClean 依据本地规则给出的结论（可清理 / 使用中 / 需确认 / 勿删），括号内是它的判断依据。请结合该依据逐项复核是否值得删除，判断依据：
-    - 缓存/日志类即使最近在用也可删（可重建），但注明"频繁使用，删除后需重建"；
+    - 缓存/日志类即使 7 天内还有写入也可删（可重建），但要注明"删除后需重建"；
     - App 数据/个人文件/配置类不建议删（即使大）；
-    - 长期未用（>90 天）且可重建的优先建议删；
+    - 90 天以上无写入且可重建的优先建议删；
     - 不确定就写"无法判断"。
     输出格式：严格只输出一个 JSON 数组，每个元素形如 {"name": "编号", "verdict": "可删|谨慎|不建议删|无法判断", "reason": "一句话理由"}。
     不要输出 JSON 以外的任何文字（不要 markdown 代码块标记）。
@@ -707,12 +707,12 @@ enum AIService {
         if !context.verdictReason.isEmpty { lines.append("- 结论依据：\(context.verdictReason)") }
         if !context.kind.isEmpty { lines.append("- 文件类别：\(context.kind)") }
         if !context.note.isEmpty { lines.append("- 扫描备注：\(context.note)") }
-        // 最近使用时间 + 使用频率（用户诉求：判断值不值得删）
+        // 最近使用时间 + 写入档位（用户诉求：判断值不值得删）
         if let lastUsed = context.lastUsed {
-            lines.append("- 最近使用：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
-            lines.append("- 使用频率：\(context.usage.label)")
+            lines.append("- 最近写入：\(Date.usageFormatter.string(from: lastUsed))（\(lastUsed.relativeUsage)）")
+            lines.append("- 写入档位：\(context.usage.label)")
         } else if context.usage != .unknown {
-            lines.append("- 使用频率：\(context.usage.label)")
+            lines.append("- 写入档位：\(context.usage.label)")
         }
         if context.inUseBy.isEmpty {
             lines.append("- 占用进程：无（本地 lsof 检测）")
