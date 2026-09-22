@@ -629,15 +629,28 @@ final class AppState: ObservableObject {
     ///     只是把"工具替你自动动手"的范围再收窄一档。与 `DiskMonitor` 的无人值守清理保持一致。
     ///
     /// 用户仍可手动勾选并清理近期写过的缓存——那是有意识的决定，不是一键代劳。
+    /// 菜单栏「快速安全清理」的勾选判据。**对每一项重算**，而不是只把合格的补勾上。
+    ///
+    /// 为什么必须是"重算"：v1.72.10 起扫描会把「确定是垃圾」预勾，而
+    /// `cleanSelectedAcrossCategories` 清的是"当前所有已选"。若这里只补勾，
+    /// 那些预勾项就会被顺带删掉——可它们里面有的过不了本函数自己的第二道门槛（近期写过）。
+    /// 自动动手的范围只能由自动动手的那段逻辑自己划定，不能被上游的默认值撑大。
+    static func applyQuickCleanSelection(_ items: [CleanItem],
+                                         isWhitelisted: (String) -> Bool) -> [CleanItem] {
+        items.map { item in
+            var copy = item
+            copy.isSelected = copy.recommendation.isSafe
+                && !copy.usage.isRecentlyUsed
+                && !isWhitelisted(copy.path)
+            return copy
+        }
+    }
+
     func quickCleanSafeItems() {
         guard !isCleaning else { return }
         for st in categories {
-            for i in 0..<st.items.count {
-                let item = st.items[i]
-                if item.recommendation.isSafe && !item.usage.isRecentlyUsed
-                    && !whitelist.isWhitelisted(path: item.path) {
-                    st.items[i].isSelected = true
-                }
+            st.items = Self.applyQuickCleanSelection(st.items) { [weak self] path in
+                self?.whitelist.isWhitelisted(path: path) ?? true
             }
         }
         cleanSelectedAcrossCategories(permanently: false)

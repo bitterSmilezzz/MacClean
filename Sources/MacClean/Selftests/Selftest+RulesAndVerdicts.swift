@@ -648,6 +648,96 @@ extension Selftest {
             }
         }
 
+        check("步骤4：默认勾选只给「确定是垃圾」，其余四档一律不勾（G2 的唯一例外）") {
+            func item(_ rule: String, _ nature: ItemNature, running: Bool = false,
+                      level: UsageLevel = .dormant) -> CleanItem {
+                CleanItem(name: rule, path: "/private/tmp/s5-\(rule)", size: 1024,
+                          nature: nature, category: .userCaches,
+                          use: UseState(ownerIsRunning: running, ownerName: running ? "X" : nil,
+                                        lastUsed: nil, level: level),
+                          rule: rule)
+            }
+            let garbage = item("D13", .losslessCache)                       // T0 → 确定是垃圾
+            let safe = item("C1", .losslessCache)                           // T1 → 可清理
+            let inUse = item("D13", .losslessCache, running: true, level: .active)
+            let review = item("D7", .losslessCache)                         // T2 → 需确认
+            let keep = item("D23", .inferredUnused)                         // T3 → 勿删
+            let kinds = [garbage, safe, inUse, review, keep].map(\.recommendation.kind)
+            guard kinds == [.garbage, .safe, .inUse, .review, .keep] else {
+                print("      构造用例本身没落到预期的五档：\(kinds)")
+                return false
+            }
+            let out = Scanner.applyDefaultSelection([garbage, safe, inUse, review, keep])
+            var bad: [String] = []
+            for (idx, expected) in [true, false, false, false, false].enumerated() {
+                if out[idx].isSelected != expected {
+                    bad.append("第 \(idx) 项（\(kinds[idx].rawValue)）默认勾选 = \(!expected)")
+                }
+            }
+            // 反方向的反证：T0 规则但宿主在跑 → 已掉回「使用中」，绝不能被预勾
+            if out[2].isSelected { bad.append("宿主在跑的 T0 项被预勾——运行时事实必须压过档位") }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("步骤4：预勾集合恰好等于「确定是垃圾」集合，且仍是可批量勾选的档") {
+            func item(_ rule: String, running: Bool = false) -> CleanItem {
+                CleanItem(name: rule, path: "/private/tmp/s5-\(rule)", size: 10,
+                          nature: .losslessCache, category: .userCaches,
+                          use: UseState(ownerIsRunning: running, ownerName: running ? "X" : nil,
+                                        lastUsed: nil, level: running ? .active : .dormant),
+                          rule: rule)
+            }
+            let out = Scanner.applyDefaultSelection([item("D13"), item("C1"), item("D7"),
+                                                     item("L6", running: true)])
+            let selected = out.filter(\.isSelected)
+            var bad: [String] = []
+            if selected.count != 1 || selected.first?.rule != "D13" {
+                bad.append("预勾集合 = \(selected.compactMap(\.rule))，应只有 D13（T0 且没在用）")
+            }
+            if selected.contains(where: { $0.recommendation.blocksBulkSelection }) {
+                bad.append("预勾了不可批量勾选的档")
+            }
+            // 与 UI 的"已选"口径一致：CategoryState.selectedCount 读的就是这个集合
+            let st = CategoryState(category: .userCaches)
+            st.items = out
+            if st.selectedCount != selected.count {
+                bad.append("界面已选数 \(st.selectedCount) ≠ 预勾数 \(selected.count)")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("步骤4 反证：菜单「快速安全清理」不得把预勾项顺带删掉") {
+            // 预勾的 garbage 项如果近期还有写入，过不了 quickClean 自己的第二道门槛；
+            // 只要那段逻辑是"补勾"而不是"重算"，它就会顺着"清理所有已选"被删掉。
+            func item(_ rule: String, level: UsageLevel) -> CleanItem {
+                var made = CleanItem(name: rule, path: "/private/tmp/s4-\(rule)", size: 10,
+                                     nature: .losslessCache, category: .userCaches,
+                                     use: UseState(ownerIsRunning: false, ownerName: nil,
+                                                   lastUsed: nil, level: level),
+                                     rule: rule)
+                made.isSelected = true   // 模拟扫描收尾时的预勾
+                return made
+            }
+            let recentGarbage = item("D13", level: .active)     // 预勾了，但近期还有写入
+            let staleGarbage = item("D14", level: .dormant)     // 该被自动清
+            let out = AppState.applyQuickCleanSelection([recentGarbage, staleGarbage],
+                                                        isWhitelisted: { _ in false })
+            var bad: [String] = []
+            if out[0].isSelected {
+                bad.append("近期还有写入的预勾项留在自动清理集合里——预勾把无人值守的范围撑大了")
+            }
+            if !out[1].isSelected {
+                bad.append("合格的垃圾项被顺手取消勾选（第二道门槛不该误伤）")
+            }
+            // 白名单必须仍然一票否决
+            let w = AppState.applyQuickCleanSelection([staleGarbage], isWhitelisted: { _ in true })
+            if w[0].isSelected { bad.append("白名单项被自动勾选") }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("规则 v2：反证——数据契约或高重建代价伪装 T0 必须被拒") {
             func fake(id: String, contract: CleanupRules.Contract,
                       restore: CleanupRules.RestoreCost,

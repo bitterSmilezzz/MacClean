@@ -164,8 +164,23 @@ final class Scanner {
             if item.paths.contains(where: { whitelist.isExtensionWhitelisted(path: $0) }) { return false }
             return true
         }
-        outcome.items = filtered.map { annotateUsage($0) }
+        outcome.items = applyDefaultSelection(filtered.map { annotateUsage($0) })
         return outcome
+    }
+
+    /// G2 的**唯一**例外（规则 v2 步骤 4，owner 决策 D-1）：只有「确定是垃圾」默认勾选。
+    ///
+    /// 为什么这一档可以代用户决定：它的依据是 OS 目录契约、工具自己的 prune 语义或
+    /// 文件系统结构标记，换一台机器、换一个人依然成立；而且它已经过了运行时那一关
+    /// （宿主在跑或刚被写过就掉回「使用中」，见 `deriveRecommendation`）。
+    /// 反过来说，`safe`（可清理）**不勾**——它的依据只是"这类东西通常能重建"，
+    /// 那是一般规律而不是关于这个项的事实。二次确认（G2 的后半）一律保留。
+    static func applyDefaultSelection(_ items: [CleanItem]) -> [CleanItem] {
+        items.map { item in
+            var copy = item
+            copy.isSelected = (copy.recommendation.kind == .garbage)
+            return copy
+        }
     }
 
     /// 各分类的扫描根目录（用于开工前的可读性体检）。
@@ -313,7 +328,7 @@ final class Scanner {
             return true
         }
         // 使用频率标注（用户诉求）：逐项检测"最近使用时间 + 使用频率"，供 UI 判断值不值得删
-        return filtered.map { annotateUsage($0) }
+        return applyDefaultSelection(filtered.map { annotateUsage($0) })
     }
 
     /// 标注占用状态（最近写入时间 + 所属 App 是否正在运行）。
