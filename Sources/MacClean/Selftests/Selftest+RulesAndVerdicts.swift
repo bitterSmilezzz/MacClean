@@ -286,7 +286,124 @@ extension Selftest {
             return !OrphanScanner.isInstalledOrProtected(identifier: "com.gone.awayapp", db: db)
         }
 
+        // ── 规则 v2 步骤 3：档位接进结论引擎 ──
+
+        check("规则 v2 步骤3：档位既升级也降级（只升级的话，新档位就是装饰品）") {
+            func item(_ rule: String, _ nature: ItemNature,
+                      running: Bool = false) -> CleanItem {
+                CleanItem(name: "x", path: "/tmp/x", size: 10, nature: nature,
+                          category: .userCaches,
+                          use: UseState(ownerIsRunning: running, ownerName: nil,
+                                        lastUsed: nil, level: .dormant),
+                          rule: rule)
+            }
+            var bad: [String] = []
+            // ① T0 + 未在写 → 从「可清理」升级为「确定是垃圾」
+            let up = item("L4", .losslessCache).recommendation
+            if up.kind != .garbage { bad.append("L4 未升级：\(up.kind.rawValue)") }
+            if !up.reason.contains("确定是垃圾的依据") {
+                bad.append("升级后没说明依据：\(up.reason)")
+            }
+            // ② T2 → 降级为需确认，且必须写明缺哪一维
+            let down = item("D7", .losslessCache).recommendation
+            if down.kind != .review { bad.append("D7 未降级：\(down.kind.rawValue)") }
+            if !down.reason.contains("降级依据") { bad.append("D7 降级没写依据：\(down.reason)") }
+            // ③ T3 → 勿删
+            if item("D23", .inferredUnused).recommendation.kind != .keep {
+                bad.append("D23 未进勿删")
+            }
+            // ④ T1 不升级：可清理就是可清理，不能什么都能混进「确定是垃圾」
+            if item("C1", .losslessCache).recommendation.kind != .safe {
+                bad.append("C1（T1）被误升级")
+            }
+            // ⑤ 没有规则编号的项（治理模块产出）一律不得进最高档
+            let noRule = CleanItem(name: "x", path: "/tmp/x", size: 10, nature: .losslessCache,
+                                   category: .userCaches,
+                                   use: UseState(ownerIsRunning: false, ownerName: nil,
+                                                 lastUsed: nil, level: .dormant))
+            if noRule.recommendation.kind != .safe { bad.append("无规则编号被误判") }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("规则 v2 步骤3：运行时事实压过档位——T0 的项在宿主运行中仍是使用中") {
+            // 这是升级路径上最危险的一种坏法：把"依据很硬"误当成"现在就能删"。
+            let running = CleanItem(name: "x", path: "/tmp/x", size: 10, nature: .losslessCache,
+                                    category: .userCaches,
+                                    use: UseState(ownerIsRunning: true, ownerName: "Finder",
+                                                  lastUsed: nil, level: .active),
+                                    rule: "L4")
+            guard running.recommendation.kind == .inUse else {
+                print("      T0 规则在宿主运行中仍被判为 \(running.recommendation.kind.rawValue)")
+                return false
+            }
+            return true
+        }
+
+        check("规则 v2 步骤3：「确定是垃圾」仍属安全结论，可批量勾选（但默认仍不勾，见步骤 4）") {
+            let g = Recommendation(kind: .garbage, reason: "x")
+            return g.isSafe && !g.blocksBulkSelection && g.label == "确定是垃圾"
+        }
+
+        check("规则 v2 步骤3：T0 名单里有 4 条依据尚未落地，不得假装已生效") {
+            // 结论引擎只在 nature 能产出 safe 时才升级。T0 名单里有 4 条的 nature 还是
+            // 「推断/孤儿」，今天仍然落在需确认——这是**如实的缺口**，不是 bug：
+            // L3 要等步骤 5 换成「属主==euid 且 >3 天」的结构判据，D8/D12 要等实现侧
+            // 补上工具契约证据，A4 要等 nature 从 orphanedResidue 改为 staleArtifact。
+            // 把它们写成断言，是为了防止下一轮有人直接改 nature 让名单"看起来"全部生效。
+            let promotable: Set<ItemNature> = [.losslessCache, .rebuildable, .staleArtifact]
+            let t0 = CleanupRules.all.filter { $0.tier == .t0 }
+            let live = Set(t0.filter { promotable.contains($0.nature) }.map(\.id))
+            let pending = Set(t0.filter { !promotable.contains($0.nature) }.map(\.id))
+            guard live == ["C7", "L4", "L5", "L6", "D11", "D13", "D14"] as Set<String> else {
+                print("      今天真能进「确定是垃圾」的规则变了：\(live.sorted())")
+                return false
+            }
+            guard pending == ["L3", "D8", "D12", "A4"] as Set<String> else {
+                print("      T0 里待补证据的规则变了：\(pending.sorted())")
+                return false
+            }
+            return true
+        }
+
+        check("规则 v2 步骤3：「确定是垃圾」分组真的渲染出来（不只是算对了）") {
+            // 分组标题、颜色、是否给批量勾选，都是 VerdictGroup 里的数据；
+            // 只测 deriveRecommendation 测不到"界面上真有一组"。这里直接把视图渲染出来查。
+            let app = AppState()
+            let st = app.state(for: .logsAndTemp)
+            st.isScanned = true
+            st.items = [
+                CleanItem(name: "ModuleCache", path: "/private/tmp/ModuleCache", size: 900_000_000,
+                          nature: .losslessCache, category: .logsAndTemp,
+                          use: UseState(ownerIsRunning: false, ownerName: nil,
+                                        lastUsed: nil, level: .dormant),
+                          rule: "D13"),
+                CleanItem(name: "some.app.data", path: "/private/tmp/some.app.data", size: 4_000,
+                          nature: .orphanedResidue, category: .logsAndTemp,
+                          use: UseState(ownerIsRunning: false, ownerName: nil,
+                                        lastUsed: nil, level: .dormant),
+                          rule: "A1"),
+            ]
+            let view = CategoryDetailView(category: .logsAndTemp).environmentObject(app)
+            guard let root = try? view.inspect() else { return false }
+            let texts = root.findAll(ViewType.Text.self).compactMap { try? $0.string() }
+            var bad: [String] = []
+            if !texts.contains(where: { $0.contains("确定是垃圾") }) {
+                bad.append("没有「确定是垃圾」分组标题")
+            }
+            if !texts.contains(where: { $0.contains("OS 契约或结构标记背书") }) {
+                bad.append("分组副标题缺失（用户看不到这一组凭什么更硬）")
+            }
+            if !texts.contains(where: { $0.contains("需确认") }) {
+                bad.append("A1（T2）没有落在需确认组")
+            }
+            // 反证：两组必须同时存在，否则"升级"是把项从旧组搬丢而不是搬过去
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("规则 v2：每条规则的档位都与它自己的四维登记自洽") {
+
 
             var bad: [String] = []
             for rule in CleanupRules.all {

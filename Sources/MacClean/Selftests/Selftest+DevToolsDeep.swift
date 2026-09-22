@@ -115,7 +115,10 @@ extension Selftest {
                 category: .devResidue,
                 use: UseState(ownerIsRunning: false, ownerName: "Xcode", level: .dormant)
             )
-            guard d22Idle.recommendation.kind == .safe else { return false }
+            // v2 步骤 3 起 D22 是 T2：路径就在 Xcode/UserData 下，名字写着是数据，
+            // 所以未运行也不再报「可清理」而是「需确认」——方向是变严，不是变松。
+            guard d22Idle.recommendation.kind == .review else { return false }
+            guard d22Idle.recommendation.reason.contains("降级依据") else { return false }
 
             // 4. D23 (Docker.raw): 运行中 -> inUse，非运行 -> review（绝不自动 safe）
             let d23Running = CleanItem(
@@ -136,7 +139,9 @@ extension Selftest {
                 category: .devResidue,
                 use: UseState(ownerIsRunning: false, ownerName: "Docker", level: .dormant)
             )
-            guard d23Idle.recommendation.kind == .review else { return false }
+            // v2 步骤 3 起 D23（Docker.raw）是 T3 只报告：它是卷的后备存储，
+            // 按 Docker 自己的口径属于「永不自动 prune」，比原来的需确认再严一档。
+            guard d23Idle.recommendation.kind == .keep else { return false }
 
             return true
         }

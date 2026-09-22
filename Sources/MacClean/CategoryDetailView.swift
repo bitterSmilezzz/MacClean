@@ -1005,10 +1005,11 @@ struct CategoryDetailView: View {
     /// 结论分组。四档，与 `Recommendation.Kind` 一一对应——**不再有独立的"使用频率"分组**，
     /// 因为"在用"是结论的输入而不是并列的第二结论。
     private enum VerdictGroup: CaseIterable {
-        case safe, inUse, review, keep
+        case garbage, safe, inUse, review, keep
 
         var kind: Recommendation.Kind {
             switch self {
+            case .garbage: return .garbage
             case .safe: return .safe
             case .inUse: return .inUse
             case .review: return .review
@@ -1018,6 +1019,7 @@ struct CategoryDetailView: View {
 
         var title: String {
             switch self {
+            case .garbage: return "确定是垃圾"
             case .safe: return "可清理"
             case .inUse: return "使用中，建议稍后"
             case .review: return "需确认"
@@ -1027,6 +1029,7 @@ struct CategoryDetailView: View {
 
         var subtitle: String {
             switch self {
+            case .garbage: return "OS 契约或结构标记背书，换台机器也成立"
             case .safe: return "删除后无损失"
             case .inUse: return "相关应用正在运行或近期用过"
             case .review: return "删前请看一眼说明"

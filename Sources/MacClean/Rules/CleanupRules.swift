@@ -128,6 +128,23 @@ enum CleanupRules {
         }
     }
 
+    /// 规则编号 → 档位。找不到编号时返回 nil（不是 T0）：
+    /// 治理模块产出的项很多没有规则编号，它们必须走"证据不足"的老路，
+    /// 不能因为查不到就落到最高档。
+    private static let tierByRuleID: [String: Tier] = Dictionary(
+        CleanupRules.all.map { ($0.id, $0.tier) }, uniquingKeysWith: { first, _ in first })
+
+    static func tier(forRule id: String?) -> Tier? {
+        guard let id, !id.isEmpty else { return nil }
+        return tierByRuleID[id]
+    }
+
+    /// 按编号取整条规则（降级时要读它的 `restore`/`contract` 来说明"缺哪一维"）。
+    static func rule(id: String?) -> Rule? {
+        guard let id, !id.isEmpty else { return nil }
+        return all.first { $0.id == id }
+    }
+
     // MARK: - 档位自洽校验（v2 步骤 1）
 
     /// 一条规则的档位与它自己的四维登记是否自相矛盾。返回 nil = 一致，否则给人话说明。

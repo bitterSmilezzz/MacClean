@@ -172,6 +172,12 @@ struct UseState: Equatable {
 /// 「可清理」和「频繁使用中」同时打在一个项目上的情况。
 struct Recommendation: Equatable {
     enum Kind: String, Codable {
+        /// 有 OS 契约或结构标记背书的确定垃圾（规则 v2 的 T0 档）。
+        /// 与 `safe` 的区别不是"更安全"——两者都可放心删——而是**依据的来源不同**：
+        /// `garbage` 的依据是 Apple 目录契约 / 工具自身 prune 语义 / 文件系统结构标记，
+        /// 换一台机器、换一个人依然成立；`safe` 只是"这类东西通常能重建"。
+        /// 只有这一档将来允许默认勾选（v2 步骤 4）。
+        case garbage
         /// 放心删：删了没有任何损失，且当前没在用
         case safe
         /// 能删，但现在别删：正在被使用，删了会立刻重建 / 需要重新下载
@@ -188,6 +194,7 @@ struct Recommendation: Equatable {
 
     var label: String {
         switch kind {
+        case .garbage: return "确定是垃圾"
         case .safe: return "可清理"
         case .inUse: return "使用中"
         case .review: return "需确认"
@@ -195,9 +202,10 @@ struct Recommendation: Equatable {
         }
     }
 
-    var isSafe: Bool { kind == .safe }
+    /// `garbage` 当然是安全的：它是 `safe` 里"依据最硬"的那一子集。
+    var isSafe: Bool { kind == .safe || kind == .garbage }
     /// 是否应当阻止"一键全选"勾中它
-    var blocksBulkSelection: Bool { kind != .safe }
+    var blocksBulkSelection: Bool { !isSafe }
 }
 
 // MARK: - 清理项
@@ -256,33 +264,92 @@ struct CleanItem: Identifiable, Equatable {
     /// 任何地方想知道"这个能不能删"，都必须走这里，不许自己拿 nature 或 usage 拼结论——
     /// 那正是历史上两条轴打架的成因。
     var recommendation: Recommendation {
-        Self.deriveRecommendation(nature: nature, use: use, consequence: consequence)
+        Self.deriveRecommendation(nature: nature, use: use, consequence: consequence, rule: rule)
     }
 
     /// - Parameters:
     ///   - nature: 删了会怎样（规则自带）
     ///   - use: 此刻的占用事实（扫描观测）
     ///   - consequence: 该规则自己的后果描述，用于向用户解释"删了会怎样"
+    ///   - rule: 触发的规则编号；命中规则 v2 的 T0 档时，`safe` 会升级为 `garbage`
     static func deriveRecommendation(nature: ItemNature,
                                      use: UseState,
-                                     consequence: String) -> Recommendation {
+                                     consequence: String,
+                                     rule: String? = nil) -> Recommendation {
         let owner = use.ownerName ?? "所属应用"
         let running = use.ownerIsRunning
 
+        /// 运行时事实永远压过档位：宿主在跑、正在被写的项，绝不会被算成"确定是垃圾"。
+        /// T0 只是"这类东西的依据够硬"，不是"现在就能删"。
+        ///
+        /// 档位同时负责**降级**——这才是用户真正抱怨的方向：`.gradle/caches`（D7）
+        /// 在 v2 规格里是"需你裁决"，因为它要重下 GB 级依赖，而本机不做联网探测就无法
+        /// 保证重建得了；可它 `nature` 是 `losslessCache`，旧引擎照样报"可清理"。
+        /// 只升级不降级，等于新登记的档位是装饰品。
+        func verdict(_ kind: Recommendation.Kind, _ why: String) -> Recommendation {
+            var k = kind
+            switch CleanupRules.tier(forRule: rule) {
+            case .t0:
+                if k == .safe {
+                    k = .garbage
+                    return Recommendation(kind: k, reason: why + promotionNote(rule))
+                }
+            case .t1, .none:
+                break                       // 契约成立但重建有代价：维持"可清理"
+            case .t2:
+                if k == .safe || k == .garbage {
+                    k = .review
+                    return Recommendation(kind: k, reason: why + demotionNote(rule))
+                }
+            case .t3:
+                if k != .inUse {
+                    k = .keep
+                    return Recommendation(kind: k, reason: why + demotionNote(rule))
+                }
+            }
+            return Recommendation(kind: k, reason: why)
+        }
+
+        /// 升级同样要说清依据来自哪一条契约——「确定是垃圾」是界面上唯一将来会被
+        /// 默认勾选的档，用户必须能一眼看到它凭什么这么硬。
+        func promotionNote(_ id: String?) -> String {
+            guard let rule = CleanupRules.rule(id: id) else { return "" }
+            let basis: String
+            switch rule.contract {
+            case .appleCaches:   basis = "Apple 声明此位置由应用自行重建"
+            case .userCacheDir:  basis = "Apple 明说系统不会自动清理此目录"
+            case .tempDir:       basis = "超过 Apple 自己的 3 天临时文件阈值"
+            case .toolPrune:     basis = "该工具自身的 prune 语义认定未被引用"
+            case .namedPattern:  basis = "文件/目录名本身就是用途已完成的结构标记"
+            case .userData:      basis = ""   // 不会到这：userData 进不了 T0（自检已锁）
+            }
+            return basis.isEmpty ? "" : "（确定是垃圾的依据：\(basis)）"
+        }
+
+        /// 降级必须说清"缺哪一维"，否则用户只看到结论变严，不知道依据变了什么。
+        func demotionNote(_ id: String?) -> String {
+            guard let rule = CleanupRules.rule(id: id) else { return "（依据不足，需你判断）" }
+            let why: String
+            switch rule.restore {
+            case .autoExpensive: why = "重建要重下 GB 级内容，而本工具不探测网络可达性"
+            case .stateLoss: why = "能重建但会丢状态（登录态、注册信息等）"
+            case .impossible: why = "删了不可重建"
+            case .none, .autoCheap:
+                why = rule.contract == .userData ? "该位置语义上是用户数据" : "归属或宿主证据不足"
+            }
+            return "（降级依据：\(why)）"
+        }
+
         switch nature {
         case .systemCritical:
-            return Recommendation(kind: .keep, reason: consequence)
+            return verdict(.keep, consequence)
 
         case .userData, .orphanedResidue:
-            return Recommendation(kind: .review, reason: consequence)
+            return verdict(.review, consequence)
 
         case .redownloadable:
             // 删掉不是"重建缓存"，而是"功能暂时不可用，直到重新下载完"
-            return Recommendation(
-                kind: .review,
-                reason: running
-                    ? "\(owner) 正在运行。\(consequence)"
-                    : consequence)
+            return verdict(.review, running ? "\(owner) 正在运行。\(consequence)" : consequence)
 
         case .staleArtifact:
             if running || use.isBeingWrittenNow {
@@ -292,14 +359,14 @@ struct CleanItem: Identifiable, Equatable {
                         ? "\(owner) 正在运行；现在删除可能影响它，建议退出后再清理。\(consequence)"
                         : "\(use.liveEvidenceText)，说明仍在被使用。\(consequence)")
             }
-            return Recommendation(kind: .safe, reason: consequence)
+            return verdict(.safe, consequence)
 
         case .inferredUnused:
             // "看起来没用了"是推断而非事实，所以永远不自动给安全结论
             if running {
                 return Recommendation(kind: .inUse, reason: "\(owner) 正在运行。\(consequence)")
             }
-            return Recommendation(kind: .review, reason: consequence)
+            return verdict(.review, consequence)
 
         case .losslessCache:
             if running {
@@ -312,8 +379,7 @@ struct CleanItem: Identifiable, Equatable {
                     kind: .inUse,
                     reason: "\(use.liveEvidenceText)——有进程正在使用它；现在删除会立刻重建，建议稍后再清理")
             }
-            return Recommendation(kind: .safe,
-                                  reason: "\(consequence)（\(writeAgeText(use.level))）")
+            return verdict(.safe, "\(consequence)（\(writeAgeText(use.level))）")
 
         case .rebuildable:
             // 重建有代价（重编译 / 重新生成），所以"最近还在动"也一并提示
@@ -332,7 +398,7 @@ struct CleanItem: Identifiable, Equatable {
                     kind: .inUse,
                     reason: "最近 7 天内还有写入，可能正在被使用。\(consequence)")
             }
-            return Recommendation(kind: .safe, reason: "\(consequence)（\(writeAgeText(use.level))）")
+            return verdict(.safe, "\(consequence)（\(writeAgeText(use.level))）")
         }
     }
 

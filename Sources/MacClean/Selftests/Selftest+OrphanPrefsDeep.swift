@@ -121,7 +121,9 @@ extension Selftest {
                 category: .logsAndTemp,
                 use: UseState(ownerIsRunning: false, ownerName: nil, lastUsed: nil, level: .unknown)
             )
-            guard l7Old.recommendation.kind == .safe else { return false }
+            // v2 步骤 3 起 L7 是 T2：崩溃报告是用户向 Apple/开发者取证的唯一凭据，
+            // 属不可重建的历史事实，不再报「可清理」。
+            guard l7Old.recommendation.kind == .review else { return false }
 
             return true
         }

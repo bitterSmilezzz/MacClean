@@ -76,6 +76,7 @@ enum Signal {
     /// 不再有第二条独立的等级轴可以与之打架。
     static func tint(for kind: Recommendation.Kind) -> Color {
         switch kind {
+        case .garbage: return positive
         case .safe: return Ink.secondary
         case .inUse: return Accent.tint
         case .review: return caution
