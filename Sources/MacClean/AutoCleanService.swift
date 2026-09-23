@@ -104,7 +104,6 @@ enum AutoCleanService {
 
         // 7. 持久化记录（历史记录与撤销快照）
         if result.succeeded > 0 {
-            var history = HistoryStore.load()
             let categoryLabel = triggerHeal ? "系统定时自愈清理" : "系统定时维护"
             let record = CleanRecord(
                 categoryName: categoryLabel,
@@ -113,9 +112,7 @@ enum AutoCleanService {
                 mode: "废纸篓",
                 failures: result.failures.count
             )
-            history.insert(record, at: 0)
-            if history.count > 200 { history = Array(history.prefix(200)) }
-            HistoryStore.save(history)
+            _ = HistoryStore.append(record)
 
             // 写入撤销快照，方便用户后续随时在主界面放回原位
             if !result.trashedSnapshots.isEmpty {

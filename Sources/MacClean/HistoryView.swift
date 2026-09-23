@@ -94,6 +94,7 @@ struct HistoryView: View {
             footer
         }
         .background(Surface.window)
+        .onAppear { app.reloadHistory() }
         .toast(isPresented: $showHud, text: hudMessage)
         .confirmationDialog("清空历史记录？", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("清空", role: .destructive) {

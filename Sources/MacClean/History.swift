@@ -55,10 +55,64 @@ enum HistoryStore {
         return (try? JSONDecoder().decode([CleanRecord].self, from: data)).map { Array($0.prefix(recordLimit)) } ?? []
     }
 
-    static func save(_ records: [CleanRecord]) {
+    /// 落盘。返回**是否真的写进去了**——`options: .atomic` 是"同目录建临时文件再 rename"，
+    /// 所以它只看**状态目录**的写权限（实测：目录 0555 时失败并抛 NSCocoaError 513，
+    /// 而单把文件改成只读仍然写得动）。
+    @discardableResult
+    private static func save(_ records: [CleanRecord]) -> Bool {
         let bounded = Array(records.prefix(recordLimit))
-        guard let data = try? JSONEncoder().encode(bounded) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        guard let data = try? JSONEncoder().encode(bounded) else { return false }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// `load → 改 → save` 是读改写，必须整段串行。
+    /// 注意 `load`/`save` 自己**一把锁都没有**，单次写与整段读改写全靠这一把
+    /// `transactionLock`——这也是 `save` 不对外开的原因。
+    private static let transactionLock = NSLock()
+
+    /// **变更历史的唯一入口**：原子的"读盘—改—落盘"，返回合并后的完整清单与写入是否成功。
+    /// 生产代码不许再直接 `save`（`save` 已是 `private`，编译期就挡死；
+    /// 一条源码不变量自检作为兜底）。
+    @discardableResult
+    private static func mutate(_ body: (inout [CleanRecord]) -> Void) -> (records: [CleanRecord], written: Bool) {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
+        var records = load()
+        body(&records)
+        let bounded = Array(records.prefix(recordLimit))
+        return (bounded, save(bounded))
+    }
+
+    /// 追加一条历史，返回合并后的完整清单（调用方用它刷新内存缓存，
+    /// 而不是往自己的缓存里插一条再整片写回）。
+    ///
+    /// **故意不回读磁盘**：写失败时返回值仍然含着刚记的那条与别的模块刚写的那些，
+    /// 界面上那一行因此留着——用户看得见"清过了"。若改成回读，写失败时那一行会
+    /// 从界面上凭空消失，等于把"没记账成功"报成"什么都没发生过"。
+    @discardableResult
+    static func append(_ record: CleanRecord) -> [CleanRecord] {
+        mutate { $0.insert(record, at: 0) }.records
+    }
+
+    /// 清空历史，返回**盘上真的写掉了**没有。
+    ///
+    /// 为什么要返回值：`save` 过去是 `try? data.write`，失败无人知晓（真实成因见
+    /// `save` 的注释：状态目录被 root 建过）。静默失败时若照样把内存列表清空，
+    /// 界面显示"共 0 次清理"而盘上一条没少，下一次任何 `append` 又把整片旧历史
+    /// 读回来"复活"——那是把"没做成"报成"已清空"。
+    @discardableResult
+    static func clear() -> Bool {
+        mutate { $0 = [] }.written
+    }
+
+    /// 自检专用：整体替换（走同一把事务锁）。生产代码不许调用。
+    static func replaceAllForSelftest(_ records: [CleanRecord]) {
+        _ = mutate { $0 = records }
     }
 
     /// 统计最近 7 天的每日清理释放量（用于菜单栏迷你回收趋势）

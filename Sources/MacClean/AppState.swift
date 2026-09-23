@@ -111,6 +111,15 @@ final class AppState: ObservableObject {
             diskAvailable = v.available
             diskMonitor.checkDiskSpaceAlert(availableBytes: v.available)
         }
+        // 顺手把历史从盘上重读：删除网关、下载/截图归档、硬链接去重、定时自愈都是
+        // 直接 `HistoryStore.append`，不经过这里的话 `history` 就停在启动时那份——
+        // 记录明明落盘了，历史页与侧栏计数却看不见，用户照样走不到「放回原位」。
+        reloadHistory()
+    }
+
+    /// 从磁盘重读清理历史（唯一让内存缓存追上盘上内容的入口）。
+    func reloadHistory() {
+        history = HistoryStore.load()
     }
 
     func state(for cat: CleanCategory) -> CategoryState {
@@ -688,9 +697,10 @@ final class AppState: ObservableObject {
                      mode: String, failures: Int) -> CleanRecord {
         let record = CleanRecord(categoryName: categoryName, itemCount: itemCount,
                                  bytes: bytes, mode: mode, failures: failures)
-        history.insert(record, at: 0)
-        if history.count > 200 { history = Array(history.prefix(200)) }
-        HistoryStore.save(history)
+        // 走唯一写入口：它自己读盘合并，返回落盘后的完整清单再刷内存缓存。
+        // 旧写法是 `history.insert(...); HistoryStore.save(history)`——`history` 只在启动时
+        // 读过一次，于是启动期间由删除网关/归档/去重/定时自愈记下的记录会被这份陈旧缓存整片抹掉。
+        history = HistoryStore.append(record)
         return record
     }
 
@@ -709,8 +719,9 @@ final class AppState: ObservableObject {
     }
 
     func clearHistory() {
-        history = []
-        HistoryStore.save(history)
+        // 只有盘上真的空了才清内存缓存。写失败时（例如 history.json 属主是 root）
+        // 保留列表，用户看得见"没清掉"，比显示 0 条而下次又被读回来"复活"诚实。
+        if HistoryStore.clear() { history = [] }
     }
 
     // MARK: - 运行态实时校验（M3：扫描后新启动的浏览器不删其数据）

@@ -393,8 +393,8 @@ extension Selftest {
             }
 
             // 收尾：把这次测试记录摘掉，别留下"自检也清了 1 KB"的假账
-            HistoryStore.save(historyBefore)
-            UndoManagerStore.save(undoBefore)
+            HistoryStore.replaceAllForSelftest(historyBefore)
+            UndoManagerStore.replaceAllForSelftest(undoBefore)
             return true
         }
 
@@ -406,8 +406,8 @@ extension Selftest {
             let historySnap = HistoryStore.load()
             let undoSnap = UndoManagerStore.load()
             defer {
-                HistoryStore.save(historySnap)
-                UndoManagerStore.save(undoSnap)
+                HistoryStore.replaceAllForSelftest(historySnap)
+                UndoManagerStore.replaceAllForSelftest(undoSnap)
             }
 
             let rounds = 8
@@ -486,7 +486,7 @@ extension Selftest {
         // 其余路径全部绕过 → 磁盘上的 history.json 只增不减。
         check("HistoryStore：save 自身截断到上限，且保留的是最新记录") {
             let saved = HistoryStore.load()
-            defer { HistoryStore.save(saved) }
+            defer { HistoryStore.replaceAllForSelftest(saved) }
 
             let flood = (0..<(HistoryStore.recordLimit + 50)).map {
                 CleanRecord(id: UUID(), date: Date().addingTimeInterval(Double($0)),
@@ -494,7 +494,7 @@ extension Selftest {
                             mode: "废纸篓", failures: 0)
             }
             // 调用方按"新的在前"传入（全仓所有写入点都是 insert(at: 0)）
-            HistoryStore.save(flood)
+            HistoryStore.replaceAllForSelftest(flood)
             let reloaded = HistoryStore.load()
             guard reloaded.count == HistoryStore.recordLimit else {
                 print("      未截断：\(reloaded.count) 条")

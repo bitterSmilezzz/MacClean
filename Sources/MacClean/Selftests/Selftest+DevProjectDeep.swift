@@ -254,8 +254,8 @@ extension Selftest {
 
             // 收尾：别在用户废纸篓与历史里留下自测残留
             for snapshot in loud.trashedSnapshots { try? fm.removeItem(atPath: snapshot.trashPath) }
-            HistoryStore.save(historyBefore)
-            UndoManagerStore.save(undoBefore)
+            HistoryStore.replaceAllForSelftest(historyBefore)
+            UndoManagerStore.replaceAllForSelftest(undoBefore)
             return true
         }
 

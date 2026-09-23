@@ -225,8 +225,8 @@ extension Selftest {
                   (session?.entries.first?.trashPath.isEmpty ?? true) == false else { return false }
 
             for snapshot in outcome.trashedSnapshots { try? fm.removeItem(atPath: snapshot.trashPath) }
-            HistoryStore.save(HistoryStore.load().filter { $0.id != record?.id })
-            UndoManagerStore.save(UndoManagerStore.load().filter { $0.recordID != record?.id })
+            HistoryStore.replaceAllForSelftest(HistoryStore.load().filter { $0.id != record?.id })
+            UndoManagerStore.replaceAllForSelftest(UndoManagerStore.load().filter { $0.recordID != record?.id })
             return true
         }
 

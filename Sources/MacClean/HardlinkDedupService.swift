@@ -412,11 +412,9 @@ enum HardlinkDedupService {
 
     /// 写历史：硬链接替换不进废纸篓、无法撤销，**必须**留下可追溯记录。
     static func record(categoryName: String, freedBytes: Int64, path: String) {
-        var records = HistoryStore.load()
-        records.insert(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
-                                   itemCount: 1, bytes: freedBytes,
-                                   mode: "APFS 硬链接（原位，不可撤销）", failures: 0), at: 0)
-        HistoryStore.save(records)
+        HistoryStore.append(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
+                                        itemCount: 1, bytes: freedBytes,
+                                        mode: "APFS 硬链接（原位，不可撤销）", failures: 0))
     }
 
     static let historyCategory = "APFS 硬链接无损去重"
@@ -468,12 +466,10 @@ enum HardlinkDedupService {
 
         // 整批只写**一条**历史记录：不可撤销的操作必须留痕，且失败/跳过如实带在 failures 里
         if case .module(let categoryName) = journal, result.succeededCount > 0 {
-            var records = HistoryStore.load()
-            records.insert(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
-                                       itemCount: result.succeededCount, bytes: result.freedBytes,
-                                       mode: "APFS 硬链接（原位，不可撤销）",
-                                       failures: result.notDoneCount), at: 0)
-            HistoryStore.save(records)
+            HistoryStore.append(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
+                                             itemCount: result.succeededCount, bytes: result.freedBytes,
+                                             mode: "APFS 硬链接（原位，不可撤销）",
+                                             failures: result.notDoneCount))
         }
         return result
     }

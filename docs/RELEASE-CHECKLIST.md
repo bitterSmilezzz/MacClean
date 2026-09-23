@@ -103,6 +103,11 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       swift build --sanitize=thread && swift run --sanitize=thread MacClean --selftest
       ```
       （`scanAll` 会把 6 个分类并发丢进全局队列，共享缓存必须加锁或改快照）
+      **TSan 轮里有一条已知的稳定假红**：`护栏热路径：一次判定的开销相对单次软链解析的倍数`
+      在插桩下必然超阈值（实测普通构建 2.1×，TSan 下更高），**它不是竞争**。
+      TSan 轮的判据是 `WARNING: ThreadSanitizer` 命中数为 0，不是"全绿"。
+      不要为了让它变绿去调阈值——那是拿放宽护栏换安静；正解是让性能类断言在插桩构建下
+      不参与判定（待议，见 `docs/code-review/` 的待议小节）。
 - [ ] **新增治理面板（卡片）时**：① 必须**默认收起**，靠细分过滤条上的胶囊展开——不许再出现
       `SystemDeepStorageView()` 那种无条件挂载的写法（v1.72.6 之前它把浏览器分类的页头、
       页脚和列表一起挤出窗口）；② 面板区整体被 `ScrollView + .frame(maxHeight: 340)` 封顶，
@@ -153,6 +158,23 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       本身就是一种承诺，而"很大"不构成"可以删"（决策 D-3 / v1.72.12）。
       分流只收在 `Scanner.scanDetailed` 一处；动它就要同步 `CleanCategory.ruleRef`
       （只算清理页真的会列出的规则）与那条"清理页拿不到只报告项"的自检。
+- [ ] **任何"读—改—写"都要有唯一原子入口**（v1.73.2）：`load() → 改 → save()` 三步之间没有
+      整段锁，两个写者就 last-writer-wins。更隐蔽的一种是**把整份列表缓存在内存里再写回**——
+      `AppState.history` 就是：启动时读一次盘，之后每次 `recordClean` 都拿那份陈旧数组
+      `HistoryStore.save(history)`，于是启动期间别的模块追加的记录被整片抹掉。
+      **这条不需要并发就能触发**，所以它不是"竞态"而是确定性丢数据。
+      判据：① 持久化列表的写入只允许一个函数（`HistoryStore.append` / `clear`），
+      其余地方一律不许直接 `save`；② 内存缓存只能由该入口的返回值刷新；
+      ③ 自检里要有一条"外部先写一条、缓存方再写一条、断言盘上有两条"的反证，
+      并且**把缓存方改回旧写法时它必须变红**。
+      **临界区不许包住真实 I/O**：`UndoManagerStore.restore` 旧写法是开头 `load()` 拿一份数组、
+      中间逐项 `moveItem` 把文件从废纸篓搬回原位（秒级）、结尾整片 `save()`——窗口比
+      `record` 的微秒级大几个数量级，期间任何一次 `record` 都被覆盖，症状是
+      **"历史记录还在、撤销快照没了"**，用户点那行得到"未找到对应的清理撤销快照"。
+      正确形状：先在只读快照上做搬运并攒结果，最后用一次 `mutate` 重新读盘落账。
+- [ ] **两把锁不要混用**：`UndoManagerStore.record` 里事务锁包住整段、内部 `load/save` 各自
+      再取 I/O 锁——这要求它们是**两把不同的 `NSLock`**。`NSLock` 不可重入，同一把锁套两次
+      是自死锁且**零输出**（进程只是不返回，看不到任何报错）。
 - [ ] **改动了常驻轮询（菜单栏 / 定时器）时**：确认后台档位真的比前台慢，
       且"没有动态内容可显示"的模式（如仅图标）**不轮询**
 - [ ] **改动了长时间运行的任务时**：确认可取消，且取消不破坏已有结果
@@ -213,13 +235,19 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       （`let mgr = FileManager.default; mgr.removeItem(...)`）就扫不到，所以它替代不了
       模块自己的源码接线断言（目前只有 5 个模块有：开发工程产物、偏好碎片、ColorSync、
       打印机驱动、音频 HAL）。
-- [ ] **网关的记账是"读—改—写"，必须整段串行**：`ResidueDeletionGate.record` 里
-      `HistoryStore.load() → insert → save()` 三步之间没有锁保护就等于没有——并发清理时
-      后写者把前一个的记录整份覆盖，用户刚清掉的一项既进不了历史也没有撤销快照，
-      而界面上 `cleanedCount` 完全正常。`UndoManagerStore` 内部的锁只包住单次 load/save，
-      包不住中间那步 insert，所以串行化要放在调用方这一层（`journalLock`）。
-      其余 4 个非网关写入口（AppState、AutoCleanService、下载/截图归档、硬链接去重）
-      **仍是各自的读改写**，尚未收口。
+- [ ] **网关的记账不再自带锁，也别把 `journalLock` 加回来**（v1.73.2 变更）：
+      `ResidueDeletionGate.record` 里的 `HistoryStore.load() → insert → save()` 已换成
+      `HistoryStore.append(record)` + `UndoManagerStore.record(session:)`，串行化下沉到两个存储
+      各自的 `transactionLock`。v1.73.0 那把它叫 `journalLock` 放在调用方一层，是因为当时
+      存储层还没有原子入口——现在有了，调用方再套一层只会把"唯一入口"的论证重新污染成"两层锁"。
+      **已知残余**（不要再当作已修）：① 一条记录与它的快照不在同一个临界区，中途进程被终止会
+      留下"有历史行、无快照"的记录，界面按"无快照就不给放回按钮"降级；② 见下一条的跨进程限制。
+- [ ] **进程内锁不等于跨进程互斥**：`LaunchAgentManager` 装的 plist 里 `ProgramArguments` 是
+      `[<binary>, "--autoclean"]` 且**没有** `EnvironmentVariables`，所以 launchd 拉起的无头进程
+      与 GUI 用的是**同一份** `history.json` / `undo_sessions.json`。两把 `NSLock` 互不相干，
+      `try? data.write(options: .atomic)` 的语义就是 last-writer-wins → **跨进程仍会丢记录**。
+      本轮（v1.73.2）消除的是"陈旧内存缓存整片覆盖"这个确定性丢数据，跨进程只收窄成窄窗口。
+      要真做成互斥得上 `flock`/`NSFileCoordinator`，或明确记为已知残余风险——二选一，别默认没事。
 - [ ] **改动任何"默认值"（默认勾选 / 默认档位 / 默认策略）时**：先查清有哪些地方
       **读这个值来决定要不要动手**。v1.72.10 给 T0 加预勾后，菜单栏「快速安全清理」的
       "把合格的补勾上 → 清理所有已选"就顺带把预勾项全删了——包括它自己门槛要排除的

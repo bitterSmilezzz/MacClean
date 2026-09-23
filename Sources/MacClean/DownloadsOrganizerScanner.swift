@@ -300,9 +300,7 @@ public final class DownloadsOrganizerScanner {
 
     /// 归档移动写历史：bytes 记 0（同宗卷移动不释放空间），只留"挪了多少项"的痕迹。
     static func recordArchiveMove(categoryName: String, count: Int, failures: Int) {
-        var records = HistoryStore.load()
-        records.insert(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
-                                   itemCount: count, bytes: 0, mode: "归档移动", failures: failures), at: 0)
-        HistoryStore.save(records)
+        HistoryStore.append(CleanRecord(id: UUID(), date: Date(), categoryName: categoryName,
+                                        itemCount: count, bytes: 0, mode: "归档移动", failures: failures))
     }
 }

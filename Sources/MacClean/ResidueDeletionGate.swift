@@ -212,22 +212,17 @@ enum ResidueDeletionGate {
 
     /// 写历史记录与撤销快照（G3：默认移入废纸篓时才可回退）。
     ///
-    /// 整段套锁是因为 `load → insert → save` 是**读改写**：并发两次清理各自都算对了，
-    /// 后写的那个却把前一个的记录整份覆盖掉——用户刚清掉的一项既进不了历史、也没有
-    /// 撤销快照，而界面上 `cleanedCount` 看着完全正常。`UndoManagerStore` 内部的锁只
-    /// 包住单次 load/save，包不住中间那步 insert，所以串行化必须放在调用方这一层。
-    private static let journalLock = NSLock()
-
+    /// 串行化不在这里做：`HistoryStore.append` 与 `UndoManagerStore.record` 各自是原子的
+    /// 读改写，两次并发清理不会互相覆盖**同一份列表**。
+    /// **已知残余**：一条记录与它的快照仍不在同一个临界区，中间进程被终止（`--autoclean`
+    /// 被 launchd 杀掉、用户强退）会留下"有历史行、无快照"的记录。界面按
+    /// "快照不存在就不给放回按钮"降级（`HistoryRow`），不再为此补一把跨存储的锁。
     private static func record(categoryName: String, outcome: Outcome, permanently: Bool) {
-        journalLock.lock()
-        defer { journalLock.unlock() }
         let record = CleanRecord(
             id: UUID(), date: Date(), categoryName: categoryName,
             itemCount: outcome.cleanedCount, bytes: outcome.freedBytes,
             mode: permanently ? "彻底删除" : "废纸篓", failures: outcome.errorCount)
-        var records = HistoryStore.load()
-        records.insert(record, at: 0)
-        HistoryStore.save(records)
+        HistoryStore.append(record)
 
         if !permanently && !outcome.trashedSnapshots.isEmpty {
             UndoManagerStore.record(session: CleanUndoSession(recordID: record.id,

@@ -72,6 +72,10 @@ enum UndoManagerStore {
 
     private static let lock = NSLock()
 
+    /// 包住 `load → insert → save` 整段。与上面那把 `lock` **必须是两把不同的锁**：
+    /// `NSLock` 不可重入，同一把锁在 `load()` 里再 lock 一次就是自死锁且零输出。
+    private static let transactionLock = NSLock()
+
     static func load() -> [CleanUndoSession] {
         lock.lock()
         defer { lock.unlock() }
@@ -79,22 +83,43 @@ enum UndoManagerStore {
         return (try? JSONDecoder().decode([CleanUndoSession].self, from: data)) ?? []
     }
 
-    static func save(_ sessions: [CleanUndoSession]) {
+    private static func save(_ sessions: [CleanUndoSession]) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let data = try? JSONEncoder().encode(sessions) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        guard let data = try? JSONEncoder().encode(sessions) else { return false }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// **变更撤销快照的唯一入口**：原子的"读—改—写"，返回是否真的落盘。
+    /// 除本文件内部与自检的状态还原外，任何地方都不许直接 `save(...)`。
+    /// 容量策略不在这里做——`restore` 只是回写自己那一行，不该顺手获得
+    /// "淘汰最老快照"的权力。
+    @discardableResult
+    private static func mutate(_ body: (inout [CleanUndoSession]) -> Void) -> Bool {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
+        var sessions = load()
+        body(&sessions)
+        return save(sessions)
     }
 
     /// 记录新撤销会话
     static func record(session: CleanUndoSession) {
-        var sessions = load()
-        sessions.insert(session, at: 0)
-        // 仅保留最近 100 次清理会话，防无限制增长
-        if sessions.count > 100 {
-            sessions = Array(sessions.prefix(100))
+        mutate { sessions in
+            sessions.insert(session, at: 0)
+            // 仅保留最近 100 次清理会话，防无限制增长
+            if sessions.count > 100 { sessions = Array(sessions.prefix(100)) }
         }
-        save(sessions)
+    }
+
+    /// 自检专用：整体替换（走同一把事务锁）。生产代码不许调用。
+    static func replaceAllForSelftest(_ sessions: [CleanUndoSession]) {
+        _ = mutate { $0 = sessions }
     }
 
     /// 根据历史记录 ID 查询关联的撤销会话
@@ -107,15 +132,19 @@ enum UndoManagerStore {
         load().first { $0.id == sessionID }
     }
 
-    /// 执行一键放回原位
+    /// 执行一键放回原位。
+    ///
+    /// 搬文件这段**不能**关在临界区里（一次放回可能要移动上百个文件、耗时秒级，
+    /// 那会把所有后台清理的记账一起阻塞住）；但也不能像旧写法那样"开头 `load()` 一份数组、
+    /// 结尾整片 `save()`"——那中间的秒级窗口里任何一次 `record` 都会被这份陈旧数组覆盖掉，
+    /// 于是**历史记录还在、撤销快照没了**，用户点那一行只会得到"未找到对应的清理撤销快照"。
+    /// 现在改成：先在只读快照上做实际搬运，攒下结果，最后用一次原子的读改写落账。
     static func restore(sessionID: UUID) -> RestoreResult {
-        var sessions = load()
-        guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else {
+        guard var session = session(by: sessionID) else {
             return RestoreResult(errors: ["未找到对应的清理撤销快照"])
         }
-
-        var session = sessions[idx]
         var result = RestoreResult()
+        var restored: [(index: Int, path: String)] = []
         let fm = FileManager.default
 
         for i in 0..<session.entries.count {
@@ -158,6 +187,7 @@ enum UndoManagerStore {
                 result.succeeded += 1
                 result.restoredBytes += entry.size
                 result.restoredPaths.append(destPath)
+                restored.append((i, destPath))
                 // 联动使测量与增量缓存失效
                 FileSystem.invalidateMeasurements(for: [destPath])
             } catch {
@@ -166,8 +196,23 @@ enum UndoManagerStore {
             }
         }
 
-        sessions[idx] = session
-        save(sessions)
+        guard !restored.isEmpty else { return result }
+        var accounted = false
+        let wrote = mutate { sessions in
+            guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+            for r in restored {
+                guard r.index < sessions[idx].entries.count else { continue }
+                sessions[idx].entries[r.index].isRestored = true
+                sessions[idx].entries[r.index].restoredPath = r.path
+            }
+            accounted = true
+        }
+        // 文件已经真的搬回原位了，账却没落成——必须说出来。
+        // 否则这一行既不显示"放回"（废纸篓里已没有文件）也不显示"已放回"（isRestored 仍为假），
+        // 用户再点一次只会得到"废纸篓中文件已被清空或移除"，把已经做成的事报成失败且永不收敛。
+        if !accounted || !wrote {
+            result.errors.append("文件已放回原位，但撤销快照未能记账（状态文件写入失败或该会话已被淘汰）")
+        }
         return result
     }
 }
