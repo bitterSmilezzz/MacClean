@@ -10,7 +10,30 @@
 
 ## 命名
 
-`v<版本号>-review.md`，例如 `v1.72.14-review.md`。一轮一份，不追加进旧文件。
+`v<版本号>-<审查者>.md`，例如 `v1.72.14-dsh.md`、`v1.72.15-qoder-subagent.md`。一轮一份，不追加进旧文件。
+
+## 审查者是谁：运行时探活，不许凭记忆假定可用
+
+按顺序取**第一个实测可用**的，并在文件名与结论里写清用的是哪个：
+
+1. `dsh headless "<任务>"` —— Google 之外的独立 harness，真"另一个软件"。
+2. `agy --print "<任务>"` —— Antigravity CLI。
+3. **退化**：Qoder 的 Agent 工具派 `general-purpose` 子代理（全新上下文，仍不是写代码那个会话）。
+   走这条必须在报告里明写「本轮为退化路径，外部 CLI 不可用 + 原因」。
+
+**探活方式**：正式派审之前，先跑一条最小任务（`dsh headless "回复 OK"`，外层套 60–90 s 看门狗）。
+失败就判定不可用、直接下一个，**不要重试**——审查者挂掉只是少一路视角，不该拖住整轮。
+
+### 2026-09-23 实测状态（复验前按此假设，别重复踩）
+
+| 审查者 | 状态 | 症状 |
+|---|---|---|
+| `dsh headless` | ✖ 不可用 | `dsh: NO_ADAPTER: no adapter registered for provider "dimagent-oauth"`，连续 3 次稳定复现；配置在 `~/.dsh/dimagent-oauth.json` 与 `~/.dsh/llm-deepseek`。偶有一次成功过，不足以当作可用 |
+| `agy --print` | ✖ 不可用 | 卡在 `Fetching available models...`；`generativelanguage.googleapis.com` / `accounts.google.com` 从本机连接超时（HTTP 000）。OAuth 凭证在，端点不通 |
+| `claude` / `codex` / `opencode` / `gemini` | ✖ 未安装 | `command -v` 全部为空 |
+
+**看门狗要注意**：`perl -e 'alarm N; exec @ARGV'` **不能**当超时用——`alarm` 不跨 `execve` 保留，
+定时器会被抹掉，进程能挂到天荒地老。用 `fork` 后在父进程里 `alarm`，或 `( cmd & p=$!; ( sleep N; kill -9 $p ) & wait )`。
 
 ## 每份 review 的固定结构
 
@@ -19,6 +42,8 @@
    严重度四档——`P0` 可致误删或越权、`P1` 结论失真或假绿、`P2` 性能与体验、`P3` 措辞与文档。
 3. **无发现也要写**：明确写"未发现 P0/P1"，并列出实际检查过哪几处。空文件等于没审。
 4. **处置**：每条 P0/P1 标注「已修（提交 sha）/ 不修（理由）/ 转下一轮」。
+5. **外部审查未完成时**：写"未完成 + 原因"，本轮代码照常测试与发版——一次工具故障不该被当成代码问题。
+
 
 ## 这个项目的重点检查项
 
