@@ -115,7 +115,33 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       v1.72.6 给面板区封顶时没注意这条，v1.72.9 的 L3 判据把「日志与临时文件」从 339 项
       压到 11 项才把它暴露出来——现在限高滚动只在真有面板展开时套上（`anyGovernancePanelOpen`）。
 - [ ] **改动了子进程调用时**：确认读管道**先于** `waitUntilExit`。
-      macOS 管道缓冲区只有约 64 KB，先 wait 后读会双向死锁
+      macOS 管道缓冲区只有约 64 KB，先 wait 后读会双向死锁。
+      **尤其注意"只在失败分支才读管道"这种写法**（v1.73.1 修掉的 `SpaceArchiveService` 就是它）：
+      它看着像是"成功了就不用管输出"，实际子进程在**还在跑**的时候就把 stderr 写满，
+      于是父进程等退出、子进程等写，谁也不动——而且调用方在 `DispatchQueue.global` 上，
+      界面表现为"正在归档…"永不复位，还长期占住一个并发池工作线程。
+- [ ] **把裸 `Process` 迁到 `SafeProcess` 时**：**必须按这条命令的真实耗时显式设 `timeout`**，
+      别拿默认值凑。默认 10 秒是给 `mdutil`/`launchctl` 这类瞬时命令的；`ditto` 打包/复制
+      是按体积跑的（几十 GB 要几分钟到几十分钟），沿用默认值只是把"永远卡住"换成"永远失败"，
+      同样是缺陷。判据：自检要断言**传进去的 timeout 数值**，而不是只断言"走了 SafeProcess"。
+      而且**断言阈值要贴着线上值**：v1.73.1 第一版写的是 `timeout >= 600`，线上是 3600——
+      有人把常量缩到 15 分钟照样绿。改成 `== SpaceArchiveService.dittoTimeout` 再加一条
+      `dittoTimeout >= 30 * 60` 的绝对值断言，两头都锁住。
+- [ ] **注入桩不许让多个判据同时为假**：v1.73.1 第一条超时用例给的是
+      `Result(exitCode: -1, output: "", timedOut: true)`，于是把 guard 里的 `!ditto.timedOut`
+      整个删掉仍然绿——`exitCode` 那一半替它挡了。被测条件必须**单独**可证伪：
+      超时用例应给 `exitCode: 0, timedOut: true`（被 SIGTERM 后自己干净收尾是真实存在的形状）。
+- [ ] **断言外部工具的参数组合时，至少跑一次真命令**：`ditto --sequesterRsrc <src> <dst>`
+      看着完全合理，实际 ditto 只在该 flag 配 `-c -k`（PKZip）时接受，纯复制形态下它在
+      **解析参数阶段**就退出。这条缺陷让"迁移到外接盘"从来没成功过一次，而一条只断言
+      "参数长什么样"的自检把它当成契约钉死了（`m.1.contains("--sequesterRsrc")` 恒绿）。
+      判据：涉及外部二进制时，至少一条自检要**真的执行它并断言落位结果**。
+- [ ] **写"遍历全仓源码"型 lint 时**：`contentsOfDirectory` **不递归**——v1.73.1 第一版漏掉
+      `Sources/MacClean/Rules/` 与 `Selftests/` 共 57 个文件，实测往 `Rules/` 放一个真
+      `Process()` 照样全绿。要用 `subpathsOfDirectory`，并且：① 排除 `Selftests/` 子树
+      （自检代码里就写着被匹配的字面量，且它们不进发布产物）；② **逐行跳过 `//`/`///` 注释**
+      （本仓库爱在注释里写"此前是裸 Process()"，整文件子串匹配会被自己的注释撞红）；
+      ③ 文件数要设一个下界断言，否则"扫到 0 个文件"会伪装成"零违规"。
 - [ ] **改动了重复文件扫描时**：确认硬链接仍被排除在"可节省空间"之外
       （两条硬链接指向同一 inode 时删一条释放 0 字节）
 - [ ] **改动了持久化结构时**：确认新增字段不会让老数据解码失败

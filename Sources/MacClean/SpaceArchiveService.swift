@@ -53,6 +53,12 @@ final class SpaceArchiveService {
 
     private init() {}
 
+    /// ditto 打包/复制是**按体积**跑的，不能套 `SafeProcess` 那个 10 秒默认值——那是给
+    /// `mdutil`/`launchctl` 这类瞬时命令用的，用在这里会把正常的大目录判成超时。
+    /// 60 分钟够跑完上百 GB（内盘归档）到慢速 USB 卷复制；重点是**有界**：
+    /// 旧写法完全没有界，ditto 把 stderr 写满约 64 KB 就父子互等，`isArchiving` 永不复位。
+    static let dittoTimeout: TimeInterval = 60 * 60
+
     // MARK: - 外接存储设备探测
 
     /// 检测本机当前挂载的可用外接驱动器 / 卷宗
@@ -144,26 +150,23 @@ final class SpaceArchiveService {
         let destZipPath = generateUniqueZipPath(for: expanded)
 
         // 调用原生 ditto 打包（--sequesterRsrc 保留 resource forks 与扩展属性，--keepParent 维持顶层文件夹根名）
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", expanded, destZipPath]
-
-        let pipe = Pipe()
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return ArchiveResult(success: false, archivePath: "", originalSize: originalSize, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "启动 ditto 失败: \(error.localizedDescription)")
-        }
-
-        guard process.terminationStatus == 0, fm.fileExists(atPath: destZipPath) else {
-            let errData = pipe.fileHandleForReading.readDataToEndOfFile()
-            let errStr = String(data: errData, encoding: .utf8) ?? "ditto 执行异常"
-            // 清理可能产生的半截压缩包
+        let ditto = SafeProcess.run("/usr/bin/ditto",
+                                    ["-c", "-k", "--sequesterRsrc", "--keepParent", expanded, destZipPath],
+                                    timeout: Self.dittoTimeout)
+            ?? SafeProcess.Result(exitCode: -1, output: "ditto 未能启动")
+        guard ditto.exitCode == 0, !ditto.timedOut, fm.fileExists(atPath: destZipPath) else {
+            // 半截压缩包一律清掉，原件**绝不**移动
             try? fm.removeItem(atPath: destZipPath)
-            return ArchiveResult(success: false, archivePath: "", originalSize: originalSize, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: errStr)
+            let message: String
+            if ditto.timedOut {
+                message = "ditto 超过 \(Int(Self.dittoTimeout / 60)) 分钟仍未完成，已强制终止（原件未移动，半截压缩包已删除）"
+            } else {
+                let err = ditto.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                message = err.isEmpty ? "ditto 执行异常（退出码 \(ditto.exitCode)）" : err
+            }
+            return ArchiveResult(success: false, archivePath: "", originalSize: originalSize,
+                                 archiveSize: 0, savedBytes: 0, deletedOriginal: false,
+                                 errorMessage: message)
         }
 
         let archiveSize = FileSystem.size(at: destZipPath)
@@ -223,7 +226,9 @@ final class SpaceArchiveService {
 
         let sourceSize = FileSystem.size(at: expanded)
         let fileName = (expanded as NSString).lastPathComponent
-        let destPath = (targetVolumePath as NSString).appendingPathComponent(fileName)
+        // 落点必须**未被占用**：目标卷上叫这个名字的很可能是用户自己的旧副本，
+        // 而下面的失败分支会删掉这个路径。旧实现直接拼死路径，等于"迁移一失败就删用户既有目录"。
+        let destPath = Self.uniqueDestination(in: targetVolumePath, named: fileName)
 
         // 检查外接卷剩余容量
         let volAttrs = try? fm.attributesOfFileSystem(forPath: targetVolumePath)
@@ -231,26 +236,25 @@ final class SpaceArchiveService {
             return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "外接卷剩余空间不足（需要 \(sourceSize.byteStringCN)，仅剩 \(freeSize.byteStringCN)）")
         }
 
-        // 使用 ditto 保真复制
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
-        process.arguments = ["--sequesterRsrc", expanded, destPath]
-
-        let pipe = Pipe()
-        process.standardError = pipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "执行复制失败: \(error.localizedDescription)")
-        }
-
-        guard process.terminationStatus == 0, fm.fileExists(atPath: destPath) else {
-            let errData = pipe.fileHandleForReading.readDataToEndOfFile()
-            let errStr = String(data: errData, encoding: .utf8) ?? "ditto 复制未成功"
+        // 使用 ditto 保真复制。注意**不能带 `--sequesterRsrc`**：该 flag 只在 PKZip
+        // （`-c -k`）形态下合法，复制形态下 ditto 在解析参数阶段就直接退出
+        // （`ditto: --sequesterRsrc is only for PKZip archives`），迁移一个字节都不会复制。
+        // ditto 的复制形态本身就保留 resource fork / ACL / xattr，不需要这个 flag。
+        let ditto = SafeProcess.run("/usr/bin/ditto", [expanded, destPath],
+                                    timeout: Self.dittoTimeout)
+            ?? SafeProcess.Result(exitCode: -1, output: "ditto 未能启动")
+        guard ditto.exitCode == 0, !ditto.timedOut, fm.fileExists(atPath: destPath) else {
+            // 只可能删到我们刚建的那个落点（见上）
             try? fm.removeItem(atPath: destPath)
-            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: errStr)
+            let message: String
+            if ditto.timedOut {
+                message = "ditto 超过 \(Int(Self.dittoTimeout / 60)) 分钟仍未完成，已强制终止（原件未移动，残缺副本已删除）"
+            } else {
+                let err = ditto.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                message = err.isEmpty ? "ditto 复制未成功（退出码 \(ditto.exitCode)）" : err
+            }
+            return MigrationResult(success: false, destinationPath: "", migratedBytes: 0,
+                                   deletedOriginal: false, errorMessage: message)
         }
 
         var didDelete = false
@@ -385,5 +389,17 @@ final class SpaceArchiveService {
         }
 
         return "\(sourcePath) (\(UUID().uuidString.prefix(6))).zip"
+    }
+
+    /// 目标卷下**未被占用**的落点（与 `generateUniqueZipPath` 同形）。
+    /// 迁移的失败分支会删掉这个路径，所以它必须是"刚新建的"，不能是用户已有的同名目录。
+    static func uniqueDestination(in volume: String, named fileName: String) -> String {
+        let fm = FileManager.default
+        let base = (volume as NSString).appendingPathComponent(fileName)
+        guard fm.fileExists(atPath: base) else { return base }
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let candidate = (volume as NSString).appendingPathComponent("\(fileName) (Migrated \(stamp))")
+        guard fm.fileExists(atPath: candidate) else { return candidate }
+        return candidate + "-\(UUID().uuidString.prefix(6))"
     }
 }

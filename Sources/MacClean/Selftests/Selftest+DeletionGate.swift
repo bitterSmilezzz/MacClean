@@ -442,6 +442,44 @@ extension Selftest {
             return true
         }
 
+        // G15 不变量：产品源码里 `Process()` 只允许出现在 SafeProcess.swift 自己那一处。
+        // 与动效 lint 同形：绝对路径定位源码目录（相对路径 + `try? … else continue`
+        // 会在工作目录不是仓库根时**零违规地空转**），读不到目录直接判失败，跳过注释行。
+        //
+        // 必须用 `subpathsOfDirectory` 而不是 `contentsOfDirectory`：后者**不递归**，
+        // 会把 `Sources/MacClean/Rules/` 整个漏掉——实测往 `Rules/CleanupRules.swift`
+        // 放一个真 `Process()`，不递归的版本照样全绿。
+        // `Selftests/` 整棵子树排除：自检代码里就有 `"Process()"` 这个字面量（判据本身），
+        // 且它们在发布产物里被 `MACCLEAN_NO_SELFTEST=1` 剔掉。
+        check("G15 不变量：产品源码（含子目录）除 SafeProcess 外不得再出现裸 Process 构造") {
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter {
+                $0.hasSuffix(".swift")
+                    && !$0.hasPrefix("Selftests/")
+                    && $0 != "SafeProcess.swift"
+            }.sorted()
+            guard files.count > 100 else {
+                print("      源码文件数异常（读到 \(files.count) 个），扫描范围没铺开")
+                return false
+            }
+            var offenders: [String] = []
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<不可读>")
+                    continue
+                }
+                for (idx, line) in src.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    if t.hasPrefix("//") || t.hasPrefix("///") { continue }
+                    if t.contains("Process()") { offenders.append("\(rel):\(idx + 1)") }
+                }
+            }
+            if !offenders.isEmpty { print("      裸 Process 构造: \(offenders.prefix(5))") }
+            return offenders.isEmpty
+        }
+
         // 18. 历史上限必须长在**唯一写入口**上。
         // v1.72 之后写历史的入口有 5 个（AppState、AutoCleanService、统一网关、
         // 下载归档、截图归档、硬链接去重），原先 200 条上限只写在 AppState 里，
