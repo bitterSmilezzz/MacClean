@@ -158,42 +158,157 @@ extension Selftest {
             return true
         }
 
-        check("构建产物安全清理防线与非产物保护 (cleanArtifact)") {
-            let tempDir = "/tmp/MacCleanTest_Safety_" + UUID().uuidString
-            try? FileManager.default.createDirectory(atPath: tempDir, withIntermediateDirectories: true)
-            defer { try? FileManager.default.removeItem(atPath: tempDir) }
+        // MARK: 删除必须经统一网关（v1.73 安全收敛）
 
-            let scanner = DevProjectScanner.shared
+        func devFixture(_ tag: String) -> String {
+            let dir = "/private/tmp/macclean_dev_\(tag)_\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            return dir
+        }
+        func devArtifact(_ name: String, _ path: String, _ kind: DevArtifactKind = .rustTarget) -> DevProjectArtifact {
+            DevProjectArtifact(name: name, path: path, size: 0, kind: kind)
+        }
 
-            // 1. 企图清理源码文件应被拒绝
-            let sourceFile = tempDir + "/main.swift"
+        check("构建产物清理：非产物/同名文件/伪 DerivedData 一律拦下，合法产物按实测计") {
+            let fm = FileManager.default
+            let root = devFixture("policy")
+            defer { try? fm.removeItem(atPath: root) }
+
+            // 1. 源码文件应被拒绝
+            let sourceFile = root + "/main.swift"
             try? "print(\"hello\")".write(toFile: sourceFile, atomically: true, encoding: .utf8)
-            let badArtifact = DevProjectArtifact(
-                name: "main.swift",
-                path: sourceFile,
-                size: 100,
-                kind: .rustTarget
-            )
-            let badRes = scanner.cleanArtifact(badArtifact, permanently: true)
-            guard badRes.success == false else { return false }
-            guard FileManager.default.fileExists(atPath: sourceFile) == true else { return false }
+            // 2. 与产物同名但其实是**文件**（`build`、`dist` 都可能是脚本文件名）
+            let fileNamedBuild = root + "/build"
+            try? "#!/bin/sh".write(toFile: fileNamedBuild, atomically: true, encoding: .utf8)
+            // 3. 工程里一个恰好在 `DerivedData/` 下的目录：旧实现只看
+            //    `path.contains("/DerivedData/")`，这种也放行了
+            try? fm.createDirectory(atPath: root + "/DerivedData/junk", withIntermediateDirectories: true)
+            try? "keepme".write(toFile: root + "/DerivedData/junk/notes.txt", atomically: true, encoding: .utf8)
+            // 4. 合法产物目录
+            let validTarget = root + "/target"
+            try? fm.createDirectory(atPath: validTarget, withIntermediateDirectories: true)
+            try? Data(repeating: 0x41, count: 6000).write(to: URL(fileURLWithPath: validTarget + "/a.o"))
+            let expectedSize = FileSystem.size(at: validTarget)
 
-            // 2. 清理合法的 target 目录应被允许
-            let validTarget = tempDir + "/target"
-            try? FileManager.default.createDirectory(atPath: validTarget, withIntermediateDirectories: true)
-            try? "dummy".write(toFile: validTarget + "/dummy.txt", atomically: true, encoding: .utf8)
+            let res = DevProjectScanner.shared.cleanOutcome([
+                devArtifact("main.swift", sourceFile),
+                devArtifact("build", fileNamedBuild, .generalBuild),
+                devArtifact("junk", root + "/DerivedData/junk", .derivedData),
+                devArtifact("target", validTarget),
+            ], permanently: true, journal: .none)
 
-            let goodArtifact = DevProjectArtifact(
-                name: "target",
-                path: validTarget,
-                size: 100,
-                kind: .rustTarget
-            )
-            let goodRes = scanner.cleanArtifact(goodArtifact, permanently: true)
-            guard goodRes.success == true else { return false }
-            guard FileManager.default.fileExists(atPath: validTarget) == false else { return false }
+            guard res.cleanedCount == 1, res.failed.isEmpty else { return false }
+            guard fm.fileExists(atPath: sourceFile), fm.fileExists(atPath: fileNamedBuild),
+                  fm.fileExists(atPath: root + "/DerivedData/junk/notes.txt") else { return false }
+            guard !fm.fileExists(atPath: validTarget) else { return false }
+            // 记账诚实：只有被删那一项的实测体积进账
+            guard res.freedBytes == expectedSize, expectedSize > 0 else { return false }
+            // 三项拦截都必须带上可展示的原因，不能静默吞掉
+            guard res.rejected.count == 3, res.rejected.allSatisfy({ !$0.message.isEmpty }) else { return false }
+            return res.rejected.contains { $0.path == fileNamedBuild }
+                && res.rejected.contains { $0.path == root + "/DerivedData/junk" }
+        }
 
+        check("构建产物清理：写历史与撤销快照，journal .none 时不留任何痕迹") {
+            guard MacCleanState.isIsolated else {
+                print("      MACCLEAN_STATE_DIR 未生效，跳过写入断言")
+                return false
+            }
+            let fm = FileManager.default
+            // 只比对新记录的**身份**，不比绝对条数：历史与撤销会话各有截断上限，
+            // 攒满之后新增一条并不会让 count 变大，条数断言会在跑得久的机器上假红。
+            let historyBefore = HistoryStore.load()
+            let undoBefore = UndoManagerStore.load()
+            let headBefore = historyBefore.first?.id
+
+            let root = devFixture("journal")
+            defer { try? fm.removeItem(atPath: root) }
+            try? fm.createDirectory(atPath: root + "/silent/target", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/loud/target", withIntermediateDirectories: true)
+            try? Data(repeating: 0x42, count: 2048).write(to: URL(fileURLWithPath: root + "/loud/target/b.o"))
+            let loudSize = FileSystem.size(at: root + "/loud/target")
+
+            // 静默模式：删得掉，但绝不往历史里记
+            let silent = DevProjectScanner.shared.cleanOutcome(
+                [devArtifact("target", root + "/silent/target")], permanently: true, journal: .none)
+            guard silent.cleanedCount == 1,
+                  HistoryStore.load().first?.id == headBefore,
+                  UndoManagerStore.load().count == undoBefore.count else { return false }
+
+            // 废纸篓模式：不传 journal，锁住**生产默认值**——界面走的就是这条路径，
+            // 默认值被改成 .none 时用户清完几十 GB 依然无痕可查。
+            let loud = DevProjectScanner.shared.cleanOutcome(
+                [devArtifact("target", root + "/loud/target")])
+            guard loud.cleanedCount == 1 else { return false }
+            let historyAfter = HistoryStore.load()
+            let newRecord = historyAfter.first
+            guard newRecord?.categoryName == "开发工程产物",
+                  newRecord?.itemCount == 1, newRecord?.mode == "废纸篓",
+                  newRecord?.bytes == loudSize, newRecord?.id != headBefore,
+                  headBefore == nil || historyAfter.contains(where: { $0.id == headBefore }) else { return false }
+            let session = UndoManagerStore.load().first { $0.recordID == newRecord?.id }
+            guard let entries = session?.entries, entries.count == 1,
+                  entries.first?.originalPath.hasSuffix("/loud/target") == true,
+                  entries.first?.size == loudSize, loudSize > 0,
+                  entries.first?.trashPath.isEmpty == false else { return false }
+
+            // 收尾：别在用户废纸篓与历史里留下自测残留
+            for snapshot in loud.trashedSnapshots { try? fm.removeItem(atPath: snapshot.trashPath) }
+            HistoryStore.save(historyBefore)
+            UndoManagerStore.save(undoBefore)
             return true
+        }
+
+        check("构建产物清理：源码接线——无裸删除、界面走网关且保留记账") {
+            guard let scannerSrc = SelftestSource.read("DevProjectScanner") else { return false }
+            guard scannerSrc.contains("ResidueDeletionGate.execute") else { return false }
+            // 只认调用形态的字面量，注释里提旧实现不算复活
+            guard !scannerSrc.contains("FileManager.default.removeItem"),
+                  !scannerSrc.contains("FileManager.default.trashItem") else { return false }
+            guard !scannerSrc.contains(".hasPrefix(home)") else { return false }
+            // 「永不授权删域根本身」：这里只能做形态断言——拿真实的 DerivedData 根当候选去
+            // 跑行为断言，一旦判错就是把用户整棵 DerivedData 删掉，不能这么测。
+            guard !scannerSrc.contains("real == derivedDataRoot") else { return false }
+
+            guard let viewSrc = SelftestSource.read("DevProjectInspectorView") else { return false }
+            guard viewSrc.contains("cleanOutcome("), viewSrc.contains("pruneCleanedArtifacts(") else { return false }
+            // 界面侧绝不能传 .none：那等于把刚接上的历史与撤销又关掉
+            guard !viewSrc.contains("journal: .none") else { return false }
+            // 确认框同时提供彻底删除时，不能再承诺"随时找回"
+            guard !viewSrc.contains("可在废纸篓中随时找回") else { return false }
+            return true
+        }
+
+        check("构建产物清理：列表按网关返回的真实路径剪枝，未删项保留") {
+            let fm = FileManager.default
+            let root = devFixture("prune")
+            defer { try? fm.removeItem(atPath: root) }
+            try? fm.createDirectory(atPath: root + "/gone/target", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/kept/target", withIntermediateDirectories: true)
+            let gonePath = root + "/gone/target"
+            let keptPath = root + "/kept/target"
+
+            let saved = DevProjectScanner.shared.projects
+            defer { DevProjectScanner.shared.projects = saved }
+            DevProjectScanner.shared.projects = [
+                DevProject(name: "Gone", path: root + "/gone", types: [.rust],
+                           lastModified: nil, isOrphan: false,
+                           artifacts: [devArtifact("target", gonePath)]),
+                DevProject(name: "Kept", path: root + "/kept", types: [.rust],
+                           lastModified: nil, isOrphan: false,
+                           artifacts: [devArtifact("target", keptPath)]),
+            ]
+
+            let res = DevProjectScanner.shared.cleanOutcome(
+                [devArtifact("target", gonePath)], permanently: true, journal: .none)
+            DevProjectScanner.shared.pruneCleanedArtifacts(res.cleanedPaths)
+
+            guard res.cleanedCount == 1 else { return false }
+            let names = DevProjectScanner.shared.projects.map(\.name)
+            // 旧实现拿字面路径比对，网关回的是解析后的真实路径 → 一条都剪不掉
+            guard names == ["Kept"] else { return false }
+            guard DevProjectScanner.shared.projects.first?.artifacts.map(\.path) == [keptPath] else { return false }
+            return fm.fileExists(atPath: keptPath)
         }
 
         check("开发残留分类二级细分匹配逻辑 (DevResidueFilterKind)") {

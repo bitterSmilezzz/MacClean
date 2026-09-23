@@ -145,6 +145,17 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       它把 `FileSystem.children(of:)`（**返回全路径**）的结果再 `appendingPathComponent` 拼一遍，
       路径永不存在 → `size` 恒 0 → 规则在册、文档在列、自检全绿，而本机 49 MB 从未出现在界面上。
       列表里少一项不像 bug，只像"这里没东西"。
+- [ ] **断言记账/历史写入时，别比绝对条数**：`HistoryStore` 有 200 条上限、`UndoManagerStore`
+      有 100 条上限，且 `load()` 读的时候就裁。自检的隔离状态目录在 `$TMPDIR` 里跨多次运行累积，
+      攒满之后"清一项 → 条数 +1"这种断言必然假红（实测就是这么红的）。改成比对**新记录的身份**
+      （`first?.id` 变了、`categoryName`/`mode`/`bytes` 对得上、旧表头仍在新表里）。
+- [ ] **源码接线式断言（`SelftestSource.read`）只匹配调用形态的字面量**：写
+      `!src.contains("trashItem")` 会被自己那段"旧实现裸调 `trashItem`"的注释撞红。
+      用 `FileManager.default.trashItem` 这种带接收者的完整调用形，并在注释里避开它。
+- [ ] **变异验证必须挑生产真正走的那条参数路径**：v1.73.0 那条"写历史与撤销快照"的断言，
+      第一版显式传了 `journal: .module(...)`，于是把实现的**默认值**改成 `.none` 后自检照旧全绿——
+      测试锁住的是一个自己喂进去的实参，而界面调用方吃的是默认值。把测试改成不传参、
+      依赖默认值，变异才变红。凡是"默认值即安全策略"的参数，自检一律不要显式传。
 - [ ] **改动聚合项（`paths` 多条、主路径是父目录）时**：占用状态按**它自己要删的那批路径**量
       （`FileSystem.usage(ofPaths:)`），不要量父目录——`~/Library/Logs`、`~/.gradle/daemon`
       随时有人在写，量父目录会把"16 个 3 天没动的日志"标成「使用中」，那是**假**的占用证据。
@@ -164,6 +175,25 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 
 ## 3. 安全护栏
 - [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G17）
+- [ ] **治理模块内不得出现裸删除调用**（G14）：`grep -rn 'FileManager\.default\.\(removeItem\|trashItem\)\|fm\.\(removeItem\|trashItem\)' Sources/MacClean --exclude-dir=Selftests`
+      命中只允许在：① `ResidueDeletionGate` 自己；② `Cleaner`（分类主链路，自带 `isSafeToClean` 与历史/撤销记账）；
+      ③ `SpaceArchiveService`（归档后校验完整性才移走原件）；④ `LaunchAgentManager`（只删本 App 自己写的那一个 plist）；
+      ⑤ 应用自身状态文件（`AIService` 旧密钥文件、`FileFingerprintCache` 缓存）。
+      **任何"扫出候选项再删"的模块出现在名单外，就是又有人绕开了门**——v1.73.0 补掉的两个
+      （`DevProjectScanner`、`PreferenceResidueInspector`）正是 v1.72.0 那轮漏的，后者当时连
+      `isSafeToClean` 都没调，白名单与 G6/G8 对它完全失效。
+      同一条判据还看**调用方有没有偷偷传 `journal: .none`**：那等于把刚接上的历史与撤销又关掉。
+      **这条 grep 不是穷举**：`fm\.` 只匹配名为 `fm` 的局部变量，换个名字
+      （`let mgr = FileManager.default; mgr.removeItem(...)`）就扫不到，所以它替代不了
+      模块自己的源码接线断言（目前只有 5 个模块有：开发工程产物、偏好碎片、ColorSync、
+      打印机驱动、音频 HAL）。
+- [ ] **网关的记账是"读—改—写"，必须整段串行**：`ResidueDeletionGate.record` 里
+      `HistoryStore.load() → insert → save()` 三步之间没有锁保护就等于没有——并发清理时
+      后写者把前一个的记录整份覆盖，用户刚清掉的一项既进不了历史也没有撤销快照，
+      而界面上 `cleanedCount` 完全正常。`UndoManagerStore` 内部的锁只包住单次 load/save，
+      包不住中间那步 insert，所以串行化要放在调用方这一层（`journalLock`）。
+      其余 4 个非网关写入口（AppState、AutoCleanService、下载/截图归档、硬链接去重）
+      **仍是各自的读改写**，尚未收口。
 - [ ] **改动任何"默认值"（默认勾选 / 默认档位 / 默认策略）时**：先查清有哪些地方
       **读这个值来决定要不要动手**。v1.72.10 给 T0 加预勾后，菜单栏「快速安全清理」的
       "把合格的补勾上 → 清理所有已选"就顺带把预勾项全删了——包括它自己门槛要排除的

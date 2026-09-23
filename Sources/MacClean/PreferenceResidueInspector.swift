@@ -224,39 +224,56 @@ final class PreferenceResidueInspector {
 
     // MARK: - 清理与释放
 
-    /// 清理指定的偏好设置碎片
+    /// 本模块唯一可删的三类位置，与 `scanOrphanPreferences` 的扫描根同集合。
+    /// 暴露出来是为了让"能扫到"与"能删掉"两处口径不可能各写一份。
+    static func preferenceRoots(home: String = NSHomeDirectory()) -> [String] {
+        ["Library/Preferences", "Library/Preferences/ByHost", "Library/SyncedPreferences"]
+            .map { FileSystem.normalizePath(FileSystem.realPath(home + "/" + $0)) }
+    }
+
+    /// 清理指定的偏好设置碎片。
+    ///
+    /// 旧实现是全仓**唯一一处连基础护栏都没有**的删除：只 `fileExists` 就动手，
+    /// 既不过 `isSafeToClean` 也不过网关 → G8 系统硬保护、G6 用户数据硬排除、
+    /// 你在设置里加的白名单对这条路径**完全失效**；`freed` 累加的是扫描时缓存的
+    /// `item.size`（读到 0 也照计成功）；删完不写历史与撤销快照。
+    /// 而它的调用方是 App 卸载器——用户点"卸载"时顺带清掉的正是偏好文件本身。
+    func cleanOutcome(items: [OrphanPreferenceItem], toTrash: Bool = true,
+                      home: String = NSHomeDirectory(),
+                      journal: ResidueDeletionGate.Journal = .module(categoryName: "偏好残留"))
+        -> ResidueDeletionGate.Outcome {
+        let roots = Self.preferenceRoots(home: home)
+        return ResidueDeletionGate.execute(
+            items.map { ResidueDeletionGate.Candidate($0.fileName, path: $0.path) },
+            toTrash: toTrash,
+            journal: journal,
+            policy: { candidate in
+                // 本模块只清 plist 碎片：目录、其它扩展名一律不碰
+                guard (candidate.path as NSString).pathExtension.lowercased() == "plist" else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "不是 .plist 偏好文件，本模块不清理")
+                }
+                let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: real, isDirectory: &isDir), !isDir.boolValue else {
+                    return .make(candidate, reason: .notDeletable, message: "不是偏好文件本体（目录不递归删），未删除")
+                }
+                guard roots.contains(where: { real.hasPrefix($0 + "/") }) else {
+                    return .make(candidate, reason: .outsideDomain,
+                                 message: "解析后的真实位置不在已登记的三类偏好根内，未删除")
+                }
+                return nil
+            })
+    }
+
     func cleanPreferences(
         items: [OrphanPreferenceItem],
-        toTrash: Bool = true
+        toTrash: Bool = true,
+        home: String = NSHomeDirectory(),
+        journal: ResidueDeletionGate.Journal = .module(categoryName: "偏好残留")
     ) -> (successCount: Int, failCount: Int, freedBytes: Int64) {
-        var success = 0
-        var fail = 0
-        var freed: Int64 = 0
-
-        for item in items {
-            guard FileManager.default.fileExists(atPath: item.path) else { continue }
-            let fileSize = item.size
-
-            if toTrash {
-                do {
-                    var resultingURL: NSURL?
-                    try FileManager.default.trashItem(at: URL(fileURLWithPath: item.path), resultingItemURL: &resultingURL)
-                    success += 1
-                    freed += fileSize
-                } catch {
-                    fail += 1
-                }
-            } else {
-                do {
-                    try FileManager.default.removeItem(atPath: item.path)
-                    success += 1
-                    freed += fileSize
-                } catch {
-                    fail += 1
-                }
-            }
-        }
-
-        return (success, fail, freed)
+        let outcome = cleanOutcome(items: items, toTrash: toTrash, home: home, journal: journal)
+        // `failCount` 现在含"被护栏拦下"的项：只报成功数会让用户以为剩下的也处理了
+        return (outcome.cleanedCount, outcome.errorCount, outcome.freedBytes)
     }
 }

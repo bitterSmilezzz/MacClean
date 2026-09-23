@@ -127,50 +127,106 @@ extension Selftest {
             return true
         }
 
-        check("偏好碎片安全清理：永久删除与结果计数核验") {
+        check("偏好碎片清理：源码接线——无裸删除、卸载器保留记账") {
+            guard let src = SelftestSource.read("PreferenceResidueInspector") else { return false }
+            guard src.contains("ResidueDeletionGate.execute") else { return false }
+            // 只认带接收者的完整调用形，注释里提旧实现不算复活（RELEASE-CHECKLIST 那条）
+            guard !src.contains("FileManager.default.removeItem"),
+                  !src.contains("FileManager.default.trashItem") else { return false }
+            // 调用方（App 卸载器）不许把刚接上的记账又关掉
+            guard let caller = SelftestSource.read("Uninstaller") else { return false }
+            guard caller.contains("cleanPreferences(items:"),
+                  !caller.contains("journal: .none") else { return false }
+            return true
+        }
+
+        check("偏好碎片清理：走统一网关（登记根/白名单/目录伪装/实测记账）") {
+            guard MacCleanState.isIsolated else {
+                print("      MACCLEAN_STATE_DIR 未生效，跳过白名单写入断言")
+                return false
+            }
             let fm = FileManager.default
-            let tmpDir = NSTemporaryDirectory() + "MacClean_PrefCleanTest_\(UUID().uuidString)"
-            try? fm.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
-            defer {
-                try? fm.removeItem(atPath: tmpDir)
+            let home = "/private/tmp/macclean_pref_\(UUID().uuidString)"
+            defer { try? fm.removeItem(atPath: home) }
+            let prefDir = home + "/Library/Preferences"
+            let byHostDir = prefDir + "/ByHost"
+            try? fm.createDirectory(atPath: byHostDir, withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: home + "/Library/SyncedPreferences", withIntermediateDirectories: true)
+            func put(_ path: String, _ bytes: Int) -> String {
+                try? Data(repeating: 0x50, count: bytes).write(to: URL(fileURLWithPath: path))
+                return path
             }
 
-            let file1 = "\(tmpDir)/test1.plist"
-            let file2 = "\(tmpDir)/test2.plist"
-            try? "data1".write(toFile: file1, atomically: true, encoding: .utf8)
-            try? "data2".write(toFile: file2, atomically: true, encoding: .utf8)
+            let gone1 = put(prefDir + "/com.gone.one.plist", 3000)
+            let gone2 = put(byHostDir + "/com.gone.two.plist", 5000)
+            let size1 = FileSystem.size(at: gone1)
+            let size2 = FileSystem.size(at: gone2)
+            // 旧实现连白名单都不查，这条是它最要命的一处
+            let protected = put(prefDir + "/com.keep.three.plist", 400)
+            let notPlist = put(prefDir + "/notes.txt", 40)
+            let dirMasquerading = prefDir + "/com.dir.plist"
+            try? fm.createDirectory(atPath: dirMasquerading, withIntermediateDirectories: true)
+            let outsideRoot = put(home + "/com.outside.plist", 40)
 
-            let size1 = FileSystem.size(at: file1)
-            let size2 = FileSystem.size(at: file2)
+            let wm = WhitelistManager.shared
+            wm.removeAllRules()
+            wm.addPathRule(protected, comment: "偏好碎片白名单自检")
+            defer { wm.removeAllRules() }
 
-            let items = [
-                OrphanPreferenceItem(
-                    appName: "App1",
-                    bundleID: "com.app1",
-                    fileName: "test1.plist",
-                    path: file1,
-                    size: size1,
-                    lastModified: nil,
-                    ageDays: 10,
-                    location: .standard
-                ),
-                OrphanPreferenceItem(
-                    appName: "App2",
-                    bundleID: "com.app2",
-                    fileName: "test2.plist",
-                    path: file2,
-                    size: size2,
-                    lastModified: nil,
-                    ageDays: 12,
-                    location: .byHost
-                )
-            ]
+            // 每一项的 size 都故意填 1：记账若沿用扫描缓存，freedBytes 就是 6 而不是实测和
+            func item(_ file: String, _ path: String) -> OrphanPreferenceItem {
+                OrphanPreferenceItem(appName: "Ghost", bundleID: "com.ghost", fileName: file,
+                                     path: path, size: 1, lastModified: nil, ageDays: 90,
+                                     location: .standard)
+            }
+            let res = PreferenceResidueInspector.shared.cleanPreferences(items: [
+                item("com.gone.one.plist", gone1),
+                item("com.gone.two.plist", gone2),
+                item("com.keep.three.plist", protected),
+                item("notes.txt", notPlist),
+                item("com.dir.plist", dirMasquerading),
+                item("com.outside.plist", outsideRoot),
+            ], toTrash: false, home: home, journal: .none)
 
-            let res = PreferenceResidueInspector.shared.cleanPreferences(items: items, toTrash: false)
-            guard res.successCount == 2 && res.failCount == 0 else { return false }
-            guard res.freedBytes == (size1 + size2) else { return false }
-            guard !fm.fileExists(atPath: file1) && !fm.fileExists(atPath: file2) else { return false }
+            guard res.successCount == 2, res.failCount == 4 else { return false }
+            guard res.freedBytes == size1 + size2, size1 >= 3000, size2 >= 5000 else { return false }
+            guard !fm.fileExists(atPath: gone1), !fm.fileExists(atPath: gone2) else { return false }
+            return fm.fileExists(atPath: protected) && fm.fileExists(atPath: notPlist)
+                && fm.fileExists(atPath: dirMasquerading) && fm.fileExists(atPath: outsideRoot)
+        }
 
+        check("偏好碎片清理：默认记账写历史与撤销快照（旧实现一条都不留）") {
+            guard MacCleanState.isIsolated else { return false }
+            let fm = FileManager.default
+            let home = "/private/tmp/macclean_pref_journal_\(UUID().uuidString)"
+            defer { try? fm.removeItem(atPath: home) }
+            let prefDir = home + "/Library/Preferences"
+            try? fm.createDirectory(atPath: prefDir, withIntermediateDirectories: true)
+            let target = prefDir + "/com.gone.journal.plist"
+            try? Data(repeating: 0x5A, count: 1024).write(to: URL(fileURLWithPath: target))
+            let measured = FileSystem.size(at: target)
+
+            let headBefore = HistoryStore.load().first?.id
+            // 不传 journal：锁住生产默认值，卸载器吃的就是它
+            let outcome = PreferenceResidueInspector.shared.cleanOutcome(
+                items: [OrphanPreferenceItem(appName: "Ghost", bundleID: "com.ghost",
+                                             fileName: "com.gone.journal.plist", path: target,
+                                             size: 0, lastModified: nil, ageDays: 90,
+                                             location: .standard)],
+                toTrash: true, home: home)
+            guard outcome.cleanedCount == 1 else { return false }
+
+            let record = HistoryStore.load().first
+            guard record?.categoryName == "偏好残留", record?.itemCount == 1,
+                  record?.mode == "废纸篓", record?.bytes == measured,
+                  record?.id != headBefore else { return false }
+            let session = UndoManagerStore.load().first { $0.recordID == record?.id }
+            guard session?.entries.first?.originalPath.hasSuffix("/com.gone.journal.plist") == true,
+                  (session?.entries.first?.trashPath.isEmpty ?? true) == false else { return false }
+
+            for snapshot in outcome.trashedSnapshots { try? fm.removeItem(atPath: snapshot.trashPath) }
+            HistoryStore.save(HistoryStore.load().filter { $0.id != record?.id })
+            UndoManagerStore.save(UndoManagerStore.load().filter { $0.recordID != record?.id })
             return true
         }
 

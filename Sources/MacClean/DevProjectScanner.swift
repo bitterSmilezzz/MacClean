@@ -359,73 +359,52 @@ public final class DevProjectScanner: ObservableObject {
 
     // MARK: - 安全清理
 
-    /// 清理单个构建产物目录
-    public func cleanArtifact(_ artifact: DevProjectArtifact, permanently: Bool = false) -> (success: Bool, freedBytes: Int64) {
-        let path = artifact.path
-        let dirName = (path as NSString).lastPathComponent
+    /// 清理一批勾选的构建产物。
+    ///
+    /// 旧实现在这里绕开网关自己动删除调用：删完既不写历史也不留撤销快照（DerivedData
+    /// 动辄几十 GB，用户清完整个人没有回退路径），废纸篓落点也传了 `nil` 丢掉；
+    /// 护栏是三条自写的字符串检查，其中主目录那条只比了前缀、没带路径分隔符，
+    /// `/Users/testa/...` 会被当成"在自家目录内"。
+    /// 现在统一交给 `ResidueDeletionGate`：软链解析后的真实位置判定、G8/G6/用户白名单、
+    /// 删除前实测体积、逐项拒绝原因与可撤销记录一次到位。
+    func cleanOutcome(_ artifacts: [DevProjectArtifact], permanently: Bool = false,
+                      journal: ResidueDeletionGate.Journal = .module(categoryName: "开发工程产物"))
+        -> ResidueDeletionGate.Outcome {
+        // DerivedData 根解析一次：旧版用 `path.contains("/DerivedData/")` 判，
+        // 任何工程里一个叫 DerivedData 的目录都能蒙过放行；这里只认 Xcode 那个真身。
+        let derivedDataRoot = FileSystem.normalizePath(
+            FileSystem.realPath(CleanPaths.expand(CleanPaths.derivedData)))
 
-        // 安全防线 1：必须符合产物白名单或位于 DerivedData 目录下
-        guard DevArtifactKind.allowedDirNames.contains(dirName) || path.contains("/DerivedData/") else {
-            return (false, 0)
-        }
-
-        // 安全防线 2：绝对不可是根路径或用户 Home
-        let home = NSHomeDirectory()
-        guard path != home, path != "/", path.hasPrefix(home) || path.hasPrefix("/Users/") || path.hasPrefix("/tmp") || path.hasPrefix("/private/tmp") else {
-            return (false, 0)
-        }
-
-        // 安全防线 3：通用安全护栏
-        guard FileSystem.isSafeToClean(path) else {
-            return (false, 0)
-        }
-
-        let size = FileSystem.size(at: path)
-        var ok = false
-
-        if permanently {
-            do {
-                try FileManager.default.removeItem(atPath: path)
-                ok = true
-            } catch {
-                ok = false
-            }
-        } else {
-            do {
-                try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
-                ok = true
-            } catch {
-                ok = false
-            }
-        }
-
-        if ok {
-            // 从内存列表中移除已清理产物
-            DispatchQueue.main.async {
-                for i in 0..<self.projects.count {
-                    self.projects[i].artifacts.removeAll(where: { $0.path == path })
+        return ResidueDeletionGate.execute(
+            artifacts.map { ResidueDeletionGate.Candidate($0.name, path: $0.path) },
+            toTrash: !permanently,
+            journal: journal,
+            policy: { candidate in
+                // ① 只认登记的产物目录名，或确实位于 Xcode DerivedData **之下**
+                //    （不含等号：域根本身永不授权删，与偏好碎片模块同口径）
+                let dirName = (candidate.path as NSString).lastPathComponent
+                let real = FileSystem.normalizePath(FileSystem.realPath(candidate.path))
+                let underDerivedData = real.hasPrefix(derivedDataRoot + "/")
+                guard DevArtifactKind.allowedDirNames.contains(dirName) || underDerivedData else {
+                    return .make(candidate, reason: .notDeletable,
+                                 message: "「\(dirName)」不是登记的构建产物目录，可能含源码，未删除")
                 }
-                self.projects.removeAll(where: { $0.artifacts.isEmpty })
-            }
-            return (true, size)
-        }
-        return (false, 0)
+                // ② 产物必须是目录：同名的源码文件（`dist`、`build`）一律不删
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: real, isDirectory: &isDir), isDir.boolValue else {
+                    return .make(candidate, reason: .notDeletable, message: "不是产物目录本体，未删除")
+                }
+                return nil
+            })
     }
 
-    /// 批量清理某个工程下的所有选中产物
-    public func cleanProject(_ project: DevProject, permanently: Bool = false) -> (success: Bool, freedBytes: Int64) {
-        var totalFreed: Int64 = 0
-        var allOk = true
-
-        let selected = project.artifacts.filter(\.isSelected)
-        for art in selected {
-            let res = cleanArtifact(art, permanently: permanently)
-            if res.success {
-                totalFreed += res.freedBytes
-            } else {
-                allOk = false
-            }
+    /// 按网关实测删除结果同步内存列表。**必须在主线程调用**——旧实现把它包在
+    /// `DispatchQueue.main.async` 里、却同时在后台遍历 `projects`，两处线程交错。
+    func pruneCleanedArtifacts(_ cleanedRealPaths: [String]) {
+        let cleaned = Set(cleanedRealPaths)
+        for idx in projects.indices {
+            projects[idx].artifacts.removeAll { cleaned.contains(FileSystem.normalizePath(FileSystem.realPath($0.path))) }
         }
-        return (allOk, totalFreed)
+        projects.removeAll { $0.artifacts.isEmpty }
     }
 }

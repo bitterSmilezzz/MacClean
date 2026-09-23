@@ -210,8 +210,17 @@ enum ResidueDeletionGate {
         }
     }
 
-    /// 写历史记录与撤销快照（G3：默认移入废纸篓时才可回退）
+    /// 写历史记录与撤销快照（G3：默认移入废纸篓时才可回退）。
+    ///
+    /// 整段套锁是因为 `load → insert → save` 是**读改写**：并发两次清理各自都算对了，
+    /// 后写的那个却把前一个的记录整份覆盖掉——用户刚清掉的一项既进不了历史、也没有
+    /// 撤销快照，而界面上 `cleanedCount` 看着完全正常。`UndoManagerStore` 内部的锁只
+    /// 包住单次 load/save，包不住中间那步 insert，所以串行化必须放在调用方这一层。
+    private static let journalLock = NSLock()
+
     private static func record(categoryName: String, outcome: Outcome, permanently: Bool) {
+        journalLock.lock()
+        defer { journalLock.unlock() }
         let record = CleanRecord(
             id: UUID(), date: Date(), categoryName: categoryName,
             itemCount: outcome.cleanedCount, bytes: outcome.freedBytes,

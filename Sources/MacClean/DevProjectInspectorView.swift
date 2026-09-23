@@ -33,7 +33,11 @@ public struct DevProjectInspectorCard: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        // 过滤结果与勾选合计各算**一次**再向下传：两者此前分别被 body 里的 3 处与 4 处引用，
+        // 每次引用都重扫一遍全表（见 docs/RELEASE-CHECKLIST.md「过滤/分组在 body 里算一次」）
+        let visible = filteredProjects
+        let totals = selectedTotals
+        return VStack(alignment: .leading, spacing: 10) {
             headerRow
 
             if let feedback = bannerFeedback {
@@ -64,13 +68,13 @@ public struct DevProjectInspectorCard: View {
                     Spacer()
                 }
                 .frame(height: 120)
-            } else if filteredProjects.isEmpty {
+            } else if visible.isEmpty {
                 emptyStateView
             } else {
-                projectListView
+                projectListView(visible)
             }
 
-            bottomActionBar
+            bottomActionBar(totals)
         }
         .padding(12)
         .background(Surface.group)
@@ -89,7 +93,10 @@ public struct DevProjectInspectorCard: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将清理选中的 \(totalSelectedSize.byteStringCN) 构建产物（纯 target/.build/DerivedData/node_modules 目录，绝对不影响工程源码）。可在废纸篓中随时找回。")
+            Text("将清理选中的 \(totals.bytes.byteStringCN) 构建产物，共 \(totals.count) 项。"
+                 + "只删登记的产物目录名（target/.build/node_modules/…）与 Xcode DerivedData 之下的工程目录；"
+                 + "源码、被白名单保住的目录、无权限删除的项都会原样留下，并在结果里分列各类数量。"
+                 + "「移入废纸篓」可撤销且会写入清理历史；「彻底删除」不可恢复。")
         }
     }
 
@@ -132,8 +139,13 @@ public struct DevProjectInspectorCard: View {
         scanner.projects.filter(\.isStale).reduce(0) { $0 + $1.totalArtifactSize }
     }
 
-    private var totalSelectedSize: Int64 {
-        scanner.projects.reduce(0) { $0 + $1.selectedArtifactSize }
+    /// 勾选项的体积与条数，**每次 body 求值只算一遍**，再向下传给确认框与页脚
+    private var selectedTotals: (bytes: Int64, count: Int) {
+        scanner.projects.reduce(into: (Int64(0), 0)) { acc, project in
+            let summary = project.selectedSummary
+            acc.0 += summary.bytes
+            acc.1 += summary.count
+        }
     }
 
     // MARK: - 顶栏
@@ -276,13 +288,14 @@ public struct DevProjectInspectorCard: View {
 
     // MARK: - 工程列表视图
 
-    private var projectListView: some View {
+    private func projectListView(_ projects: [DevProject]) -> some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                ForEach(filteredProjects) { project in
+                ForEach(projects) { project in
                     DevProjectRow(
                         project: project,
                         isExpanded: expandedProjectIds.contains(project.id),
+                        isCleaning: isCleaning,
                         onToggleExpand: {
                             if expandedProjectIds.contains(project.id) {
                                 expandedProjectIds.remove(project.id)
@@ -314,7 +327,7 @@ public struct DevProjectInspectorCard: View {
 
     // MARK: - 底部批量操作栏
 
-    private var bottomActionBar: some View {
+    private func bottomActionBar(_ totals: (bytes: Int64, count: Int)) -> some View {
         HStack(spacing: 10) {
             Button {
                 smartSelectStaleAndOrphan()
@@ -331,11 +344,12 @@ public struct DevProjectInspectorCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .buttonStyle(.plain)
+            .disabled(isCleaning)
             .accessibilityIdentifier("smartSelectStaleDevProjectsButton")
 
             Spacer()
 
-            Text("已勾选 \(totalSelectedSize.byteStringCN)")
+            Text("已勾选 \(totals.count) 项 · \(totals.bytes.byteStringCN)")
                 .font(Typo.caption)
                 .foregroundStyle(Ink.secondary)
 
@@ -356,11 +370,11 @@ public struct DevProjectInspectorCard: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(totalSelectedSize > 0 ? Accent.tint : Color.gray.opacity(0.5))
+                .background(totals.bytes > 0 ? Accent.tint : Color.gray.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(totalSelectedSize == 0 || isCleaning)
+            .disabled(totals.bytes == 0 || isCleaning)
             .accessibilityIdentifier("cleanAllSelectedDevArtifactsButton")
         }
         .padding(.top, 4)
@@ -409,33 +423,41 @@ public struct DevProjectInspectorCard: View {
     }
 
     private func cleanSingleProject(_ project: DevProject) {
+        guard !isCleaning else { return }
+        let artifacts = project.artifacts.filter(\.isSelected)
+        guard !artifacts.isEmpty else {
+            showBanner("「\(project.name)」没有勾选的构建产物")
+            return
+        }
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let res = scanner.cleanProject(project, permanently: false)
+            let outcome = scanner.cleanOutcome(artifacts)
             DispatchQueue.main.async {
                 self.isCleaning = false
-                if res.success {
-                    self.showBanner("成功释放 \(project.name) 构建产物（\(res.freedBytes.byteStringCN)）")
-                    self.onTriggerClean?()
-                } else {
-                    self.showBanner("清理遇到部分受限文件，已跳过")
-                }
+                scanner.pruneCleanedArtifacts(outcome.cleanedPaths)
+                self.showBanner(outcome.summary)
+                if outcome.cleanedCount > 0 { self.onTriggerClean?() }
             }
         }
     }
 
     private func performBatchClean(permanently: Bool) {
+        guard !isCleaning else { return }
+        // 快照必须在主线程取：旧版把 `for proj in scanner.projects` 整个放到了后台，
+        // 而删除成功的项同时在主线程从 `projects` 里移除——读写两个线程。
+        let artifacts = scanner.projects.flatMap { $0.artifacts.filter(\.isSelected) }
+        guard !artifacts.isEmpty else {
+            showBanner("没有勾选的构建产物")
+            return
+        }
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async {
-            var totalFreed: Int64 = 0
-            for proj in scanner.projects {
-                let res = scanner.cleanProject(proj, permanently: permanently)
-                totalFreed += res.freedBytes
-            }
+            let outcome = self.scanner.cleanOutcome(artifacts, permanently: permanently)
             DispatchQueue.main.async {
                 self.isCleaning = false
-                self.showBanner("批量释放完成！共夺回 \(totalFreed.byteStringCN) 存储空间")
-                self.onTriggerClean?()
+                self.scanner.pruneCleanedArtifacts(outcome.cleanedPaths)
+                self.showBanner(outcome.summary)
+                if outcome.cleanedCount > 0 { self.onTriggerClean?() }
             }
         }
     }
@@ -457,6 +479,9 @@ public struct DevProjectInspectorCard: View {
 struct DevProjectRow: View {
     let project: DevProject
     let isExpanded: Bool
+    /// 清理进行中要连行内按钮一起挡住：`isCleaning` 此前只挡底栏那颗批量按钮，
+    /// 连点几行「释放产物」就会并发投递多个删除任务，把网关的记账挤成读改写竞争。
+    let isCleaning: Bool
     let onToggleExpand: () -> Void
     let onToggleSelect: () -> Void
     let onToggleArtifact: (DevProjectArtifact) -> Void
@@ -534,7 +559,7 @@ struct DevProjectRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!hasArtifacts)
+        .disabled(!hasArtifacts || isCleaning)
     }
 
     private var metaAndActionRow: some View {

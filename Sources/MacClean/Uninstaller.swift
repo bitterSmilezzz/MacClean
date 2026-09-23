@@ -482,7 +482,10 @@ final class UninstallerState: ObservableObject {
                 guard let self else { return }
                 self.isCleaningPreferences = false
                 let action = toTrash ? "移入废纸篓" : "彻底清除"
-                self.lastPreferenceSummary = "已安全\(action) \(res.successCount) 个已卸载偏好碎片，释放 \(res.freedBytes.byteStringCN)"
+                var summary = "已\(action) \(res.successCount) 个已卸载偏好碎片，释放 \(res.freedBytes.byteStringCN)"
+                // 被护栏拦下与删除失败的都要播报，否则用户以为剩下的也处理了
+                if res.failCount > 0 { summary += "；\(res.failCount) 项未处理（护栏拦下或删除失败）" }
+                self.lastPreferenceSummary = summary
                 self.loadPreferences()
             }
         }

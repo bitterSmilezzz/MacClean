@@ -152,10 +152,18 @@ public struct DevProject: Identifiable, Equatable {
         artifacts.reduce(0) { $0 + $1.size }
     }
 
-    /// 选中的构建产物占用大小
-    public var selectedArtifactSize: Int64 {
-        artifacts.filter(\.isSelected).reduce(0) { $0 + $1.size }
+    /// 勾选项的体积与条数，**一趟**算完。
+    /// 页脚、确认框、行内按钮都要读它，分成两个 `filter().reduce()` 就是每帧多趟全表扫描。
+    public var selectedSummary: (bytes: Int64, count: Int) {
+        artifacts.reduce(into: (Int64(0), 0)) { acc, art in
+            guard art.isSelected else { return }
+            acc.0 += art.size
+            acc.1 += 1
+        }
     }
+
+    /// 选中的构建产物占用大小
+    public var selectedArtifactSize: Int64 { selectedSummary.bytes }
 
     /// 是否全部选中
     public var isAllSelected: Bool {
@@ -164,7 +172,7 @@ public struct DevProject: Identifiable, Equatable {
 
     /// 是否部分选中
     public var isPartiallySelected: Bool {
-        let count = artifacts.filter(\.isSelected).count
+        let count = selectedSummary.count
         return count > 0 && count < artifacts.count
     }
 

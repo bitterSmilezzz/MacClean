@@ -398,6 +398,50 @@ extension Selftest {
             return true
         }
 
+        // 11b. `load → insert → save` 是读改写：并发清理必须整段串行，
+        // 否则后写的那个把前一个的记录整份覆盖，用户刚清掉的一项既进不了历史也没有撤销快照，
+        // 而界面上 cleanedCount 看着完全正常。
+        check("删除网关：并发清理各自的历史与撤销记录都不丢失") {
+            guard MacCleanState.isIsolated else { return false }
+            let historySnap = HistoryStore.load()
+            let undoSnap = UndoManagerStore.load()
+            defer {
+                HistoryStore.save(historySnap)
+                UndoManagerStore.save(undoSnap)
+            }
+
+            let rounds = 8
+            let root = makeFixture("concurrent")
+            defer { try? fm.removeItem(atPath: root) }
+            for i in 0..<rounds { makeFile(root + "/c\(i).dat", 1024) }
+
+            let group = DispatchGroup()
+            let start = DispatchSemaphore(value: 0)
+            for i in 0..<rounds {
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { group.leave() }
+                    start.wait()
+                    _ = ResidueDeletionGate.execute(
+                        [ResidueDeletionGate.Candidate("c\(i)", path: root + "/c\(i).dat")],
+                        toTrash: true, journal: .module(categoryName: "自检并发记账"))
+                }
+            }
+            for _ in 0..<rounds { start.signal() }
+            group.wait()
+
+            // 只比"本轮这 8 条在不在"，不比绝对条数：两个存储都有截断上限
+            let mine = HistoryStore.load().filter { $0.categoryName == "自检并发记账" }
+            guard mine.count == rounds, Set(mine.map(\.id)).count == rounds else { return false }
+            let ids = Set(mine.map(\.id))
+            let sessions = UndoManagerStore.load().filter { ids.contains($0.recordID) }
+            guard sessions.count == rounds else { return false }
+            for session in sessions {
+                for entry in session.entries { try? fm.removeItem(atPath: entry.trashPath) }
+            }
+            return true
+        }
+
         // 18. 历史上限必须长在**唯一写入口**上。
         // v1.72 之后写历史的入口有 5 个（AppState、AutoCleanService、统一网关、
         // 下载归档、截图归档、硬链接去重），原先 200 条上限只写在 AppState 里，
