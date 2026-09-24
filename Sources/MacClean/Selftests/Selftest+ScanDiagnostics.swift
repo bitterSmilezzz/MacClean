@@ -612,9 +612,168 @@ extension Selftest {
             return true
         }
 
+        check("产品源码里每个 enumerator(at:) 都必须带 errorHandler") {
+            // 这是本轮立的不变量，也是防回归的那道闸：`errorHandler` 缺省时
+            // Foundation 的语义是"第一个错误就停止遍历且不报告"，于是被权限挡掉的
+            // 子树会让一份统计安静地变小，调用方还拿着"完整、可读"的结论往下走。
+            // 上两轮修掉的是一份重复实现；这条钉住的是同一族写法不再长回来。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
+            let mustBeThere: Set<String> = ["FileSystem.swift", "AudioHALScanner.swift",
+                                            "PrinterDriverScanner.swift", "ColorSyncScanner.swift"]
+            let missingTargets = mustBeThere.subtracting(Set(files)).sorted()
+            guard missingTargets.isEmpty else {
+                print("      扫描范围缺了必然存在的文件：\(missingTargets)")
+                return false
+            }
+            guard files.count >= 50 else {
+                print("      只扫到 \(files.count) 个产品源码文件，这条没有覆盖面")
+                return false
+            }
+            var offenders: [String] = []
+            var matchedCalls = 0
+            var matchedByFile: [String: Int] = [:]
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<不可读>")
+                    continue
+                }
+                let raw = src.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                // 保留物理行号（`idx`），但注释行在后面的每一步都被排除：文档注释里出现
+                // `recordDeniedAccess` / `errorHandler:` 不该让一次漏网遍历被误判合格。
+                let lines = raw.enumerated().map { (idx: $0.offset, text: $0.element) }
+                // 调用是**多行**的：`fm.enumerator(` 在一行、`at: URL(...)` 在下一行。
+                // 第一版按单行找 `.enumerator(at:`，一条都没匹配上——lint 在空集上恒真通过，
+                // 是 M31 那轮变异把它判红的。所以这里按 `.enumerator(` 起头、再往下取参数段。
+                for (i, entry) in lines.enumerated() {
+                    let t = entry.text.trimmingCharacters(in: .whitespaces)
+                    if t.hasPrefix("//") || t.hasPrefix("///") { continue }
+                    if !t.contains(".enumerator(") { continue }
+                    // `enumerator(atPath:)` 这个重载没有 errorHandler 参数，只能靠 nil 分支
+                    // 上报——按**同一行**判定，别拿窗口去豁免（窗口里邻居的 atPath:
+                    // 会把真正的违规免检）。它缺的是另一样东西，见 v1.73.6 待议。
+                    if t.contains("atPath:") { continue }
+                    matchedCalls += 1
+                    matchedByFile[rel, default: 0] += 1
+                    // 窗口切**下一处 `.enumerator(` 之前**——否则同函数里邻居 handler 里的
+                    // `recordDeniedAccess` 会把本行漏网免检（review P2-2）。
+                    var stop = lines.count
+                    for j in (i + 1)..<lines.count {
+                        let u = lines[j].text.trimmingCharacters(in: .whitespaces)
+                        if u.hasPrefix("//") || u.hasPrefix("///") { continue }
+                        if u.contains(".enumerator(") { stop = j; break }
+                    }
+                    let window = lines[i..<stop].map { $0.text }
+                        .filter {
+                            let u = $0.trimmingCharacters(in: .whitespaces)
+                            return !u.hasPrefix("//") && !u.hasPrefix("///")
+                        }
+                        .joined(separator: "\n")
+                    let squeezed = window.filter { !$0.isWhitespace }
+                    // 光有 errorHandler 不算：`{ _, _ in true }` 让遍历继续但什么都不记，
+                    // 结果照样是"被挡掉的子树静默消失"。判据必须是**真的留了痕**。
+                    if !squeezed.contains("errorHandler:") {
+                        offenders.append("\(rel):\(entry.idx + 1)<缺 errorHandler>")
+                    }
+                    if !squeezed.contains("recordDeniedAccess") {
+                        offenders.append("\(rel):\(entry.idx + 1)")
+                    }
+                    if squeezed.contains("errorHandler:{_,_intrue}")
+                        || squeezed.contains("errorHandler:{_,_infalse}") {
+                        offenders.append("\(rel):\(entry.idx + 1)<空 handler>")
+                    }
+                }
+            }
+            // 只钉"扫到多少文件"是不够的：匹配逻辑若退化到 0 处调用，offenders 依然为空、
+            // 灯照样绿。这一族假绿已经在 v1.73.6 第一版踩过一次——加"命中数下界"和
+            // "每条必存在的文件各自至少命中 1 处"两道活性证据，把"整片没扫到"和
+            // "扫到了但都合规"这两种状态分开。当前产品源码 11 处非 atPath 的 `.enumerator(`。
+            if matchedCalls < 8 {
+                print("      lint 只匹配到 \(matchedCalls) 处非 atPath 的 `.enumerator(` 调用——"
+                      + "匹配逻辑可能已退化，绿灯不可信")
+                return false
+            }
+            for must in mustBeThere {
+                if (matchedByFile[must] ?? 0) < 1 {
+                    print("      \(must) 里一处非 atPath 的 `.enumerator(` 都没匹配到——"
+                          + "该文件的 lint 覆盖已失效")
+                    return false
+                }
+            }
+            if !offenders.isEmpty { print("      缺 errorHandler 的遍历：\(offenders)") }
+            return offenders.isEmpty
+        }
+
+        check("遍历被权限掐断时必须留痕，且不完整的结果不许报成 readable") {
+            // mode 000 在 root（或部分 MDM/override 账号）下不拦 opendir，那会让这条
+            // 以"代码没问题但自检红"的形态出现。跳过要**打印出来**，别静默 return true
+            // 把一次没跑混进绿灯里。
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            let fm = FileManager.default
+            func makeTree(_ base: String) -> (root: String, locked: String) {
+                let root = "\(base)/tree"
+                let locked = "\(root)/private"
+                try? fm.createDirectory(atPath: locked + "/deep", withIntermediateDirectories: true)
+                try? fm.createDirectory(atPath: root + "/open", withIntermediateDirectories: true)
+                fm.createFile(atPath: root + "/open/a.bin", contents: Data(repeating: 1, count: 8192))
+                fm.createFile(atPath: locked + "/deep/b.bin", contents: Data(repeating: 2, count: 8192))
+                return (root, locked)
+            }
+            // ① CLI 缓存统计：被挡住的子树要进盲区清单
+            let b1 = "/private/tmp/macclean-cli-den-\(UUID().uuidString)"
+            let t1 = makeTree(b1)
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: t1.locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: t1.locked)
+                try? fm.removeItem(atPath: b1)
+            }
+            FileSystem.resetDeniedAccess()
+            let cli = CLICacheScanner.calculateDirectoryStats(at: t1.root)
+            var bad: [String] = []
+            if cli.size <= 0 { bad.append("可读部分也没算进来了：size=\(cli.size)") }
+            if !FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(t1.locked)) {
+                bad.append("被掐断的子树没留痕（盲区 \(FileSystem.deniedAccessSnapshot().count) 处）")
+            }
+            // ② AudioHAL 统计：同一棵树必须把 readable 翻成 false
+            let b2 = "/private/tmp/macclean-hal-den-\(UUID().uuidString)"
+            let t2 = makeTree(b2)
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: t2.locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: t2.locked)
+                try? fm.removeItem(atPath: b2)
+            }
+            FileSystem.resetDeniedAccess()
+            if AudioHALScanner.calculateDirectoryMetrics(at: t2.root).readable {
+                bad.append("遍历被掐断却仍报 readable=true（消费方会拿偏小的数判归属）")
+            }
+            // ③ 反证：完整可读的树必须仍是 readable=true
+            let b3 = "/private/tmp/macclean-hal-ok-\(UUID().uuidString)"
+            let t3 = makeTree(b3)
+            defer { try? fm.removeItem(atPath: b3) }
+            FileSystem.resetDeniedAccess()
+            let clean = AudioHALScanner.calculateDirectoryMetrics(at: t3.root)
+            if !clean.readable { bad.append("完整可读的树被判成不可读（会把正常项整片跳过）") }
+            if clean.size <= 0 || clean.fileCount != 2 {
+                bad.append("完整树的统计不对：size=\(clean.size) count=\(clean.fileCount)")
+            }
+            if !FileSystem.deniedAccessSnapshot().isEmpty {
+                bad.append("正常遍历被记了盲区")
+            }
+            // 收尾复位：本条会往全局盲区清单里留条目，不清就会带进后续用例里
+            // 那些"快照必须为空"的断言（顺序依赖的假红）。
+            FileSystem.resetDeniedAccess()
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("出厂 deadline 必须是有限且够干活的小值") {
             // 钉的是常量 `defaultGatedReadDeadline`，**不是**运行时那个可变的当前值：
-            // 同文件前两条自检会把它临时改成 0.3 再还原，断当前值等于断别人设的值。
+            // 同文件里几条卡死模拟自检会把它临时改成 0.3 再还原，断当前值等于断别人设的值。
             // 设成 .infinity / 3600 就等于没有截止，卡死原样回来；设成 0 则把可读目录
             // 一口全报成盲区——两头都要钉住。
             let d = FileSystem.defaultGatedReadDeadline

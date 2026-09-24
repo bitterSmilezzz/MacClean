@@ -93,7 +93,11 @@ public enum AppLocalizationScanner {
             guard let enumerator = fm.enumerator(
                 at: URL(fileURLWithPath: baseDir),
                 includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsPackageDescendants, .skipsHiddenFiles]
+                options: [.skipsPackageDescendants, .skipsHiddenFiles],
+                errorHandler: { url, error in
+                    FileSystem.recordDeniedAccess(url, error: error)
+                    return true
+                }
             ) else {
                 issues.append(GovernanceEvidenceIssue(
                     kind: .unreadable, subject: baseDir,

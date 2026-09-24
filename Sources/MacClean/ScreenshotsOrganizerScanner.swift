@@ -83,7 +83,11 @@ public final class ScreenshotsOrganizerScanner {
             guard let enumerator = fm.enumerator(
                 at: URL(fileURLWithPath: dirPath),
                 includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey, .totalFileAllocatedSizeKey],
-                options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]
+                options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles],
+                errorHandler: { url, error in
+                    FileSystem.recordDeniedAccess(url, error: error)
+                    return true
+                }
             ) else {
                 unreadable.append(FileSystem.normalizePath(dirPath))
                 continue

@@ -136,14 +136,16 @@ extension Selftest {
         check("PrinterDriver: 证据不足降级为需确认（不判孤儿/不默选）") {
             let unreadable = PrinterEvidence.unreadable
             let hp = PrinterDriverScanner.evaluateDriverEntry(
-                name: "hp", path: "/Library/Printers/hp", size: 5_000_000, evidence: unreadable)
+                name: "hp", path: "/Library/Printers/hp", size: 5_000_000, evidence: unreadable,
+                metricsReadable: true)
             guard hp.status == .needsConfirmation else { return false }
             guard hp.status.isOrphanOrCorrupted == false else { return false }
             guard let note = hp.note, note.contains("无法读取 CUPS") else { return false }
 
             // 系统位置与"量不出来"都不该被判成可清理
             let sys = PrinterDriverScanner.evaluateDriverEntry(
-                name: "Fax", path: "/System/Library/Printers/Fax", size: 5_000_000, evidence: unreadable)
+                name: "Fax", path: "/System/Library/Printers/Fax", size: 5_000_000, evidence: unreadable,
+                metricsReadable: true)
             guard sys.status == .systemProtected else { return false }
             let blind = PrinterDriverScanner.evaluateDriverEntry(
                 name: "Canon", path: "/Library/Printers/Canon", size: 0,
@@ -154,13 +156,13 @@ extension Selftest {
             // 证据齐了才允许给出在用/孤儿/损坏三种结论
             let ok = PrinterEvidence(keywords: ["canon"], sourcesReadable: true)
             guard PrinterDriverScanner.evaluateDriverEntry(
-                name: "Canon", path: "/Library/Printers/Canon", size: 900, evidence: ok).status == .activeConfigured
+                name: "Canon", path: "/Library/Printers/Canon", size: 900, evidence: ok, metricsReadable: true).status == .activeConfigured
             else { return false }
             guard PrinterDriverScanner.evaluateDriverEntry(
-                name: "Xerox", path: "/Library/Printers/Xerox", size: 900, evidence: ok).status == .orphanUnused
+                name: "Xerox", path: "/Library/Printers/Xerox", size: 900, evidence: ok, metricsReadable: true).status == .orphanUnused
             else { return false }
             guard PrinterDriverScanner.evaluateDriverEntry(
-                name: "Epson", path: "/Library/Printers/Epson", size: 0, evidence: ok).status == .corrupted
+                name: "Epson", path: "/Library/Printers/Epson", size: 0, evidence: ok, metricsReadable: true).status == .corrupted
             else { return false }
 
             return true

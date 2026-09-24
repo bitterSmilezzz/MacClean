@@ -38,7 +38,12 @@ public final class DownloadsOrganizerScanner {
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: downloadsPath),
             includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey, .contentModificationDateKey, .fileSizeKey, .totalFileAllocatedSizeKey],
-            options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]
+            options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles],
+            errorHandler: { url, error in
+                // 顶层列举同样会被权限掐断：不记账就会把"没读到"当成"这里没东西"。
+                FileSystem.recordDeniedAccess(url, error: error)
+                return true
+            }
         ) else {
             return DownloadsSummary(unreadableRoots: [FileSystem.normalizePath(downloadsPath)])
         }

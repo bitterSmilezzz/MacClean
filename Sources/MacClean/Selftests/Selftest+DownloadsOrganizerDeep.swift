@@ -418,6 +418,50 @@ extension Selftest {
             return true
         }
 
+        check("下载面板：可读条目一条不许少，根不许被说成读不到，预勾严格等于规则") {
+            // 钉三件事：① 列出来的条目数对；② 根读到了就不许进 unreadableRoots/deferredRoots
+            // （那是"这个根没看清"的专用通道，误用会让面板弹假警示）；
+            // ③ 默认勾选集合 == 预勾规则的集合，不因为枚举到的条目变多而多勾。
+            //
+            // **注意它没有钉住的东西**：`errorHandler` 返回 true 意味着"被挡之后继续遍历"，
+            // 而本 fixture 里 handler 根本不会被调用——列一个目录时，被挡的**子目录**只是
+            // 一个名字，读名字不报错；`.skipsSubdirectoryDescendants` 又不会下钻。
+            // 实测把 handler 改成 `return false`（提前终止）这条照样全绿（M35）。
+            // 所以"继续遍历"这个语义目前**无断言覆盖**，不要把它当成已钉住。
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-cont-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root + "/blocked", withIntermediateDirectories: true)
+            for (i, name) in ["a.iso", "b.dmg", "c.zip"].enumerated() {
+                let p = "\(root)/\(name)"
+                fm.createFile(atPath: p, contents: Data(repeating: 3, count: 4096 + i))
+                DownloadsOrganizerTestSupport.age(p, days: 200)
+            }
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root + "/blocked")
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root + "/blocked")
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = DownloadsOrganizerScanner.shared.scan(customDirectory: root)
+            var bad: [String] = []
+            if sum.items.count != 3 {
+                bad.append("可读条目被吞掉了：期望 3，实到 \(sum.items.count)")
+            }
+            if !sum.unreadableRoots.isEmpty || !sum.deferredRoots.isEmpty {
+                bad.append("根明明读到了，却被报成读不到/没顾上")
+            }
+            // 预勾集合必须恰好等于"命中预勾规则"的集合
+            let preselected = sum.items.filter(\.isSelected).count
+            let byRule = sum.items.filter(\.isHighlyRecommendedToClean).count
+            if preselected != byRule {
+                bad.append("默认勾选与预勾规则脱钩：isSelected=\(preselected) 规则=\(byRule)")
+            }
+            if preselected == 0 { bad.append("前置条件不成立：这批 200 天的项本该被预勾") }
+            FileSystem.resetDeniedAccess()
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("两个归档扫描器的门禁根用三态探测，不许退回折叠成 Bool 的写法") {
             // `isReadableWithDeadline` 把"读不到"和"本轮没去试"都折成 false。
             // 对扫描器的 `guard … else { continue }` 没问题，但面板拿它生成用户可见的
@@ -658,7 +702,8 @@ extension Selftest {
         check("产品源码不得再出现 errorHandler:nil / {_,_ in false} 这两种字面量") {
             // 只钉这一族**字面量**，封不住整个类别：Foundation 里整个省略
             // `errorHandler:` 参数与传 `nil` 语义完全相同（第一个错误终止遍历且不报告），
-            // 而当前产品源码另有 5 处 `.enumerator(` 就是这么写的（见 v1.73.5 复审待议）。
+            // v1.73.6 已把这些站点补齐；现在这条 lint 实际扫到 0 处违规，
+            // 它的价值是防止再长回来——判据是「真的调了 recordDeniedAccess」，不是「有个 errorHandler」。
             // 所以这条的红/绿只表示「没人再用这两种显式坏写法」，不表示「求体积已收口」。
             let sourceDir = Selftest.sourceDirectoryPath
             let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []

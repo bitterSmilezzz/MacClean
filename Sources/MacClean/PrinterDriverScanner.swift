@@ -234,7 +234,8 @@ public final class PrinterDriverScanner {
                     }
 
                     let evaluated = Self.evaluateDriverEntry(
-                        name: entry, path: entryPath, size: metrics.size, evidence: evidence)
+                        name: entry, path: entryPath, size: metrics.size, evidence: evidence,
+                        metricsReadable: metrics.readable)
 
                     let status = evaluated.status
                     let isOrphan = status.isOrphanOrCorrupted
@@ -385,11 +386,15 @@ public final class PrinterDriverScanner {
                     group.size += metrics.size
                     group.count += metrics.fileCount
                     if metrics.mtime > group.mtime { group.mtime = metrics.mtime }
+                    // 遍历被权限掐断过 → 这个体积是残缺的，必须记进 unreadable，
+                    // 否则下游 `group.size > 0` 会拿一个偏小的数当完整事实（v1.73.6 复审 P1-4）。
+                    if !metrics.readable { group.unreadable = true }
                 } else {
                     for f in collected.paths {
                         let metrics = calculateDirectoryMetrics(at: f)
                         group.size += metrics.size
                         group.count += 1
+                        if !metrics.readable { group.unreadable = true }
                         if metrics.mtime > group.mtime { group.mtime = metrics.mtime }
                         group.members.append(f)
                         group.rawNames.append((f as NSString).lastPathComponent)
@@ -501,7 +506,7 @@ public final class PrinterDriverScanner {
         path: String,
         size: Int64,
         evidence: PrinterEvidence,
-        metricsReadable: Bool = true
+        metricsReadable: Bool
     ) -> (vendor: String, kind: PrinterDriverKind, status: PrinterDriverStatus, note: String?) {
         // 1. 系统受保护核心（与证据无关的硬事实）
         //    判据只有一条：`FileSystem.isSystemProtected`（内部已 normalize 后按
@@ -650,11 +655,21 @@ public final class PrinterDriverScanner {
         var fileCount = 0
         var latestMTime = Date.distantPast
         var readable = true
+        let blocked = FileSystem.WalkBlockFlag()
 
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: path),
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            errorHandler: { url, error in
+                // 被权限挡掉的子目录必须留痕。不写 errorHandler 时 Foundation 的语义是
+                // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」
+                // 给出同一个数。blocked 是**本次遍历自己的**标记：不能用全局盲区清单反查，
+                // 那份账 64 条封顶、会父子合并、每轮被清空（见 FileSystem.WalkBlockFlag）。
+                FileSystem.recordDeniedAccess(url, error: error)
+                blocked.set()
+                return true
+            }
         ) else {
             return (0, 0, latestMTime, false)
         }
@@ -674,6 +689,9 @@ public final class PrinterDriverScanner {
             }
         }
 
+        // 同 AudioHAL：被权限掐断过的遍历不完整，不能再报 readable: true。
+        // 判定依据是本次遍历自带的标记，不是全局盲区清单（见 FileSystem.WalkBlockFlag）。
+        if blocked.value { readable = false }
         return (totalSize, fileCount, latestMTime, readable)
     }
 }

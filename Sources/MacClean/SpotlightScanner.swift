@@ -389,7 +389,14 @@ public final class SpotlightScanner {
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: path),
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            errorHandler: { url, error in
+                // 被权限挡掉的子目录必须留痕。不写 errorHandler 时 Foundation 的语义是
+                // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」给出
+                // 同一个数，而这个偏小的值会被一路当权威体积用。
+                FileSystem.recordDeniedAccess(url, error: error)
+                return true
+            }
         ) else {
             return (0, 0, latestMTime)
         }

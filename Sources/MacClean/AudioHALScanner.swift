@@ -508,7 +508,7 @@ public final class AudioHALScanner {
         path: String,
         defaultKind: AudioPluginKind,
         size: Int64,
-        metricsReadable: Bool = true,
+        metricsReadable: Bool,
         infoPlistReadable: Bool = true,
         bundleID: String? = nil,
         evidence: AudioDeviceEvidence,
@@ -653,10 +653,20 @@ public final class AudioHALScanner {
         var fileCount = 0
         var latestMTime = Date.distantPast
         var readable = true
+        let blocked = FileSystem.WalkBlockFlag()
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: path),
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles],
+            errorHandler: { url, error in
+                // 被权限挡掉的子目录必须留痕。不写 errorHandler 时 Foundation 的语义是
+                // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」
+                // 给出同一个数。blocked 是**本次遍历自己的**标记：不能用全局盲区清单反查，
+                // 那份账 64 条封顶、会父子合并、每轮被清空（见 FileSystem.WalkBlockFlag）。
+                FileSystem.recordDeniedAccess(url, error: error)
+                blocked.set()
+                return true
+            }
         ) else {
             return Metrics(size: 0, fileCount: 0, mtime: latestMTime, readable: false)
         }
@@ -674,6 +684,10 @@ public final class AudioHALScanner {
                 latestMTime = mtime
             }
         }
+        // 遍历被权限掐断过 → 这份统计不完整，readable 必须跟着翻成 false。
+        // 消费方（`guard metrics.readable, metrics.size > 0`）会因此跳过它，而不是拿着
+        // 一个偏小的数去断言这个插件占多少空间。
+        if blocked.value { readable = false }
         return Metrics(size: totalSize, fileCount: fileCount, mtime: latestMTime, readable: readable)
     }
 }

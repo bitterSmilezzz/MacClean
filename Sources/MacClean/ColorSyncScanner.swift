@@ -291,7 +291,12 @@ public final class ColorSyncScanner {
                 at: URL(fileURLWithPath: dirPath),
                 includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
                 options: [.skipsHiddenFiles],
-                errorHandler: { _, _ in true }
+                errorHandler: { url, error in
+                    // 有 handler 但什么都不记，等于让"被权限挡掉的子树"静默消失：
+                    // 遍历会继续（比省下来那次好），但这份列表到底完不完整就没人知道了。
+                    FileSystem.recordDeniedAccess(url, error: error)
+                    return true
+                }
             ) else { continue }
 
             for case let fileURL as URL in enumerator {

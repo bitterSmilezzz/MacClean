@@ -109,6 +109,7 @@ extension Selftest {
                 name: "ParrotAudioPlugin.driver",
                 path: "/Library/Audio/Plug-Ins/HAL/ParrotAudioPlugin.driver",
                 defaultKind: .halDriver, size: 400_000,
+                metricsReadable: true,
                 infoPlistReadable: true, bundleID: "com.apple.audio.ParrotAudioPlugin",
                 evidence: evidence, installedBundleIDs: [], inventoryComplete: true)
             guard parrot.status == .appleOfficial else { return false }
@@ -117,6 +118,7 @@ extension Selftest {
                 name: "AppleTimeSyncAudioClock.driver",
                 path: "/Library/Audio/Plug-Ins/HAL/AppleTimeSyncAudioClock.driver",
                 defaultKind: .halDriver, size: 400_000,
+                metricsReadable: true,
                 infoPlistReadable: true, bundleID: nil,
                 evidence: evidence, installedBundleIDs: [], inventoryComplete: true)
             guard legacy.status == .appleOfficial else { return false }
@@ -124,7 +126,8 @@ extension Selftest {
             // /System 位置：即便 bundle id 读不到也永不触碰
             let sys = AudioHALScanner.evaluateAudioPlugin(
                 name: "Mystery.driver", path: "/System/Library/Audio/Plug-Ins/HAL/Mystery.driver",
-                defaultKind: .halDriver, size: 400_000, infoPlistReadable: false,
+                defaultKind: .halDriver, size: 400_000, metricsReadable: true,
+                infoPlistReadable: false,
                 evidence: .unreadable, installedBundleIDs: [], inventoryComplete: false)
             guard sys.status == .appleOfficial else { return false }
             guard AudioHALScanner.isAppleProtected("/System/Library/Audio/Plug-Ins/HAL/X.driver") else { return false }
@@ -190,6 +193,7 @@ extension Selftest {
             let unknownHost = AudioHALScanner.evaluateAudioPlugin(
                 name: "NoPlist.driver", path: "/Library/Audio/Plug-Ins/HAL/NoPlist.driver",
                 defaultKind: .halDriver, size: 10_000,
+                metricsReadable: true,
                 infoPlistReadable: false, bundleID: nil,
                 evidence: AudioDeviceEvidence(loadedPluginKeys: [], deviceTokens: [],
                                               defaultOutputTokens: [], pluginsReadable: true,
@@ -409,7 +413,8 @@ extension Selftest {
             // 只有设备清单时：匹配到的算在用，匹配不到的一律需确认
             let evaluated = AudioHALScanner.evaluateAudioPlugin(
                 name: "BlackHole2ch.driver", path: "/Library/Audio/Plug-Ins/HAL/BlackHole2ch.driver",
-                defaultKind: .halDriver, size: 40_000, infoPlistReadable: true,
+                defaultKind: .halDriver, size: 40_000, metricsReadable: true,
+                infoPlistReadable: true,
                 bundleID: "audio.existential.BlackHole2ch",
                 evidence: evidence, installedBundleIDs: [], inventoryComplete: true)
             guard evaluated.status == .activeInUse else { return false }

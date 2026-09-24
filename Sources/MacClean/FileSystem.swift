@@ -197,6 +197,24 @@ enum FileSystem {
             .sorted()
     }
 
+    /// **一次遍历自己的**「被权限掐断过」标记。
+    ///
+    /// 为什么不用全局盲区清单（`deniedRoots`）反查：那份账是进程级、**64 条封顶**、
+    /// 会做父子合并、并且每次 `beginMeasurementSession()` 都被整片清空。拿它当
+    /// "这份统计完整吗"的输入，三条途径都能让一次**完全读不到**的遍历得到
+    /// `readable = true`——而 `readable` 在若干治理模块里是**默认勾选删除**的唯一屏障。
+    /// 反过来，邻居模块在同一前缀下撞过一次拒绝，又会让一次干净的遍历被判成不可读、
+    /// 整项从面板上无声消失。两个方向都错，所以判定依据必须由遍历自己带着。
+    ///
+    /// 给 `@Sendable` 的 `errorHandler` 闭包用，因此自带锁。
+    public final class WalkBlockFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var blocked = false
+        public init() {}
+        public func set() { lock.lock(); blocked = true; lock.unlock() }
+        public var value: Bool { lock.lock(); defer { lock.unlock() }; return blocked }
+    }
+
     static func resetDeniedAccess() {
         deniedLock.lock()
         deniedRoots.removeAll()
