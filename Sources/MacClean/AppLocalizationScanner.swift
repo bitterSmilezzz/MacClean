@@ -76,8 +76,10 @@ public enum AppLocalizationScanner {
         var bundles: [AppLocalizationBundle] = []
 
         for baseDir in directories {
-            // 安全防线：绝不扫描系统目录
-            if baseDir.hasPrefix("/System") { continue }
+            // 安全防线：G8 系统硬保护的应用根（`/System/Applications`、`/System/Volumes/Data`
+            // 等）不扫。同 ScreenshotsOrganizerScanner 里那条理由——`hasPrefix("/System")`
+            // 是项目已经给 ColorSync/PrinterDriver 各立 lint 禁止的字符串护栏形态。
+            if FileSystem.isSystemProtected(baseDir) { continue }
 
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: baseDir, isDirectory: &isDir), isDir.boolValue else {
@@ -141,8 +143,10 @@ public enum AppLocalizationScanner {
         let fm = FileManager.default
         guard fm.fileExists(atPath: appPath) else { return nil }
 
-        // 安全检查：严禁触碰 /System
-        if appPath.hasPrefix("/System") { return nil }
+        // 安全检查：严禁触碰 SIP 保护下的应用（`/System/Applications/...`、
+        // `/System/Volumes/...` 等），走 G8 统一判据而不是 `hasPrefix("/System")`
+        // 字符串护栏（同族理由见 :80 那段）。
+        if FileSystem.isSystemProtected(appPath) { return nil }
         guard appPath.hasSuffix(".app") else { return nil }
 
         let resourcesPath = (appPath as NSString).appendingPathComponent("Contents/Resources")

@@ -97,32 +97,32 @@ public final class QuickLookThumbnailPurger {
     /// 扫描 QuickLook 缩略图数据库与生成缓存
     public func scan(customDirectories: [String]? = nil) -> QuickLookThumbnailSummary {
         let fm = FileManager.default
-        var candidatePaths: [(path: String, kind: QuickLookCacheKind, title: String)] = []
+        var candidatePaths: [(path: String, kind: QuickLookCacheKind, title: String, isCustom: Bool)] = []
 
         if let custom = customDirectories {
             for p in custom {
-                candidatePaths.append((p, .thumbnailDatabase, "测试缩略图数据库"))
+                candidatePaths.append((p, .thumbnailDatabase, "测试缩略图数据库", true))
             }
         } else {
             // 系统动态缓存目录
             if let darwinCache = Self.getDarwinUserCacheDir() {
                 let p1 = (darwinCache as NSString).appendingPathComponent("com.apple.QuickLook.thumbnailcache")
-                candidatePaths.append((p1, .thumbnailDatabase, "系统级 QuickLook 缩略图数据库"))
+                candidatePaths.append((p1, .thumbnailDatabase, "系统级 QuickLook 缩略图数据库", false))
 
                 let p2 = (darwinCache as NSString).appendingPathComponent("com.apple.QuickLookUIFramework.QLPreviewGenerationExtension")
-                candidatePaths.append((p2, .previewExtensionCache, "预览生成扩展渲染缓存"))
+                candidatePaths.append((p2, .previewExtensionCache, "预览生成扩展渲染缓存", false))
 
                 let p3 = (darwinCache as NSString).appendingPathComponent("com.apple.quicklook.QuickLookUIService")
-                candidatePaths.append((p3, .uiServiceCache, "QuickLook UI 服务临时缓存"))
+                candidatePaths.append((p3, .uiServiceCache, "QuickLook UI 服务临时缓存", false))
             }
 
             // 用户个人缓存目录
             let userCaches = NSString(string: "~/Library/Caches").expandingTildeInPath
             let u1 = (userCaches as NSString).appendingPathComponent("com.apple.QuickLook.thumbnailcache")
-            candidatePaths.append((u1, .thumbnailDatabase, "用户级 QuickLook 缩略图数据库"))
+            candidatePaths.append((u1, .thumbnailDatabase, "用户级 QuickLook 缩略图数据库", false))
 
             let u2 = (userCaches as NSString).appendingPathComponent("com.apple.quicklook.ui.helper")
-            candidatePaths.append((u2, .userQuickLookCache, "QuickLook UI 辅助组件缓存"))
+            candidatePaths.append((u2, .userQuickLookCache, "QuickLook UI 辅助组件缓存", false))
         }
 
         var items: [QuickLookCacheItem] = []
@@ -132,9 +132,23 @@ public final class QuickLookThumbnailPurger {
         for candidate in candidatePaths {
             let path = candidate.path
 
-            // 安全防线：绝对不扫描系统关键目录
-            if path.hasPrefix("/System") || path == "/Library" || path == NSString(string: "~").expandingTildeInPath {
-                continue
+            // 安全防线：G8 系统硬保护位置不扫（详见 ScreenshotsOrganizerScanner 里
+            // 同族理由——统一走 `normalizePath` + 覆盖全部 `systemProtected` 条目）。
+            // **只对 customDirectories 走这条路**——默认候选是我们自己用
+            // `getDarwinUserCacheDir()` / `~/Library/Caches` 拼出来的，其中 uid 0
+            // 档位下 `getDarwinUserCacheDir()` 返回 `/private/var/folders/zz/…`
+            // （`_windowserver` 等守护进程段），会撞 `isSystemProtected` 的 `zz`
+            // 那条——若一并拦下，`--autoclean` 与 root 档位下面板会显示"这里没东西"，
+            // 而那是把**用户自己的缩略图缓存**误伤成"没缓存可清"（v1.73.7 复审
+            // P2 抓到的这条新引入偏差）。内部拼出来的路径由我们自己负责安全，
+            // 只有用户显式喂进来的自定义根才需要 G8 前置。
+            // `path == "/Library"` 与 `path == NSHomeDirectory()` 是 incidental
+            // 的策略性阻断（不扫整个 `/Library` 或整个 home），与 SIP 无关，保留。
+            if candidate.isCustom {
+                if FileSystem.isSystemProtected(path)
+                    || path == "/Library" || path == NSString(string: "~").expandingTildeInPath {
+                    continue
+                }
             }
 
             guard fm.fileExists(atPath: path) else { continue }

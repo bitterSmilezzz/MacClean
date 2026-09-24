@@ -59,8 +59,17 @@ public final class ScreenshotsOrganizerScanner {
         let now = Date()
 
         for dirPath in searchPaths {
-            // 安全防线：绝对不扫描系统关键目录
-            if dirPath.hasPrefix("/System") || dirPath == "/Library" || dirPath.hasPrefix("/Applications") {
+            // 安全防线：G8 系统硬保护位置根本不扫。
+            // 之前这里是 `dirPath.hasPrefix("/System")` 式字符串护栏——项目早就给
+            // ColorSync/PrinterDriver 各立了一条 lint 明令禁止这种写法，本模块是漏网的第 5 处。
+            // 换成统一的 `FileSystem.isSystemProtected`：① 走 `normalizePath`（`/private/var/db`
+            // 与 `/var/db` 判定一致，`standardizingPath` 那种"看文件系统脸色"的归一化会漂移），
+            // ② 覆盖 `CleanPaths.systemProtected` 全部 6 条（含 sleepimage/uuidtext/receipts），
+            // ③ 命中"精确或子层级"由 `GuardPath.matches` 定义，不再顺手把 `/SystemFoo` 也误伤。
+            // `/Library` 与 `/Applications` 的 incidental 阻断保留——它们不属 G8，
+            // 是"截图扫描根不该在这"的策略性判断，不在本轮收口范围内。
+            if FileSystem.isSystemProtected(dirPath)
+                || dirPath == "/Library" || dirPath.hasPrefix("/Applications") {
                 continue
             }
 

@@ -276,6 +276,35 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       摘掉、lint 依然绿。正解：**用大括号深度追踪把方法体精确截出来**，邻居再合规
       也不背书。同理，v1.73.6 那条 `.enumerator(` 判据的"切下一处 `.enumerator(` 之前"
       也是同一族——按关键字近似截窗，永远可能被邻居的同关键字喂饱。
+- [ ] **"某某护栏一律删除"的收敛声明也要 lint 到全仓**：G14 文档里写着 `path.hasPrefix("/System")`
+      式字符串护栏"一律删除"，实际项目只给 ColorSync 与 PrinterDriver 两个文件各立了一条
+      **单文件** lint——剩下 5 处（Screenshots/Downloads/QuickLook/AppLocalization×2 与
+      FontCache sibling）一直活着到 v1.73.8。这类"看起来收口了其实只收到被审到的那两个"
+      的漏网是**同族问题最容易复发的形态**：写第一条 lint 的时候顺手圈定的范围就是
+      "我改过的那两个"，而不是"这个模式可能出现的全部位置"。正解：**立单文件 lint 的那一轮
+      就问一句"这条模式在仓库里还有几处？"**，如果 >1，直接改成立**全仓 lint** + `mustBeThere`
+      反向哨兵（"必须扫到的文件"、"必须命中的关键字"），否则第二次同族问题一定长回来。
+      v1.73.8 的 G18 全仓 lint 是这条教训的第一次补票。
+- [ ] **"扫描侧的护栏"与"删除侧的护栏"必须是同一个判据**：本轮 v1.73.8 复审逼出来的教训——
+      G8 清单在**删除侧**（`isSafeToClean` / `governanceVerdict`）走 `normalizePath` + `GuardPath.matches`
+      （精确或子层级），**扫描侧**却散着 5 处 `path.hasPrefix("/System")` 字符串比较——两份
+      判据、两个覆盖面、两个语义（漏 SIP 里 3 条非 `/System` 前缀位置、把假想的 `/SystemFoo`
+      过拦）。**同一份 G8 清单被两个判据各读一次**是 `RELEASE-CHECKLIST §"两套标准"` 已经点名的形态。
+      正解：扫描侧也调 `FileSystem.isSystemProtected`（内部就是删除侧那套），
+      **别自己复制清单**、**别自己写字符串比较**。给任何一条"G 系列护栏"新加消费方时，
+      先问一句"这条护栏在扫描侧与删除侧读的是不是同一个函数"。
+- [ ] **端到端断言先查结构、再谈因果**（v1.73.8 复审 P1-1 逼出）：给"扫进 SIP 位置 →
+      经 permissionIssues 长出要求 FDA 的假告警"写端到端自检，跑一遍才想起
+      `FileSystem.deniedAccessSnapshot()` 本身就把 `systemProtected` 位置过滤掉了
+      （`FileSystem.swift:191-198`）——**因果链的第二段**在结构上恒假，快照根本不会
+      包含 SIP 路径，`permissionIssues` 也就永远不会为它喊狼来了。**这条断言"通过"
+      不是因为本轮修复对了，而是因为它测的那条链本来就不成立**。同类还有：本机
+      `stat -f` 实测 SIP 位置 `drwxr-xr-x root:wheel` world-readable，`probeDirectory`
+      返回 `.readable`——端到端 ③ 在 OLD 版本也绿。**动笔写端到端断言前先追一次
+      数据流经过的每一个 filter 与本机 filesystem 实况**，别把"结构上恒真"或
+      "本机不可达"的分支吹成"变异验证过的 teeth"；teeth 在哪一层就明写在哪一层的
+      注释里，其余层降级为回归护栏。参见 `MEMORY: feedback-test-quality-smells`
+      里的"生产不可达分支"与"seam 太低"。
 - [ ] **给 lint 立"命中数下界"时要连"允许为 0 的场景"一起想清楚**：v1.73.7 的两条新 lint 都
       加了 `matched >= 1` / `checkedSites >= 3` 的活性证据，是因为上一轮踩过"匹配 0 处 = 空集
       恒真通过"的坑；但下界设太高会挡掉合理的重构（比如某天把 `DiagnosticReportScanner`
@@ -340,7 +369,7 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 - [ ] AI 面板：设置（baseURL/Key/模型）→ 连通性测试 → ✨ 提问 → 回答
 
 ## 3. 安全护栏
-- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G17）
+- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G18）
 - [ ] **治理模块内不得出现裸删除调用**（G14）：`grep -rn 'FileManager\.default\.\(removeItem\|trashItem\)\|fm\.\(removeItem\|trashItem\)' Sources/MacClean --exclude-dir=Selftests`
       命中只允许在：① `ResidueDeletionGate` 自己；② `Cleaner`（分类主链路，自带 `isSafeToClean` 与历史/撤销记账）；
       ③ `SpaceArchiveService`（归档后校验完整性才移走原件）；④ `LaunchAgentManager`（只删本 App 自己写的那一个 plist）；

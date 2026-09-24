@@ -12,8 +12,10 @@ public final class DownloadsOrganizerScanner {
         let downloadsPath = customDirectory ?? NSString(string: "~/Downloads").expandingTildeInPath
         let fm = FileManager.default
 
-        // 安全防线：绝对不扫描系统目录
-        if downloadsPath.hasPrefix("/System") || downloadsPath == "/Library" {
+        // 安全防线：G8 系统硬保护位置根本不扫（详见 ScreenshotsOrganizerScanner 里
+        // 同族理由——统一走 `normalizePath` + 覆盖全部 6 条 systemProtected，
+        // 不再用 `hasPrefix("/System")` 这种漏 `/private/var/db`、误伤 `/SystemFoo` 的字符串护栏）。
+        if FileSystem.isSystemProtected(downloadsPath) || downloadsPath == "/Library" {
             return DownloadsSummary()
         }
 

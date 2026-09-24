@@ -1031,6 +1031,118 @@ extension Selftest {
             return bad.isEmpty
         }
 
+        check("G18 不变量：产品源码里不得再出现 `hasPrefix(\"/System\")` 式字符串路径护栏") {
+            // 任务书里明写的 P0 形态：`hasPrefix` 式字符串护栏。项目早就给 ColorSync 与
+            // PrinterDriver 各立了一条**单文件** lint（`Selftest+ColorSyncDeep.swift:465`、
+            // `Selftest+PrinterDriverDeep.swift:422`），但覆盖只到那两处——Screenshots/
+            // Downloads/QuickLook/AppLocalization 四处仍是漏网的字符串护栏。本轮把
+            // 这四处换成 `FileSystem.isSystemProtected`，并立这条**全仓** lint 钉死
+            // 同一族写法不再长回来。为什么不能继续用字符串：
+            // ① 漏：`/private/var/db`、`/private/var/vm`、`/System/Volumes`、`/Library/Updates`
+            //    都是 SIP/sunlnk 保护位置，`hasPrefix("/System")` 一条都不认；
+            // ② 误伤：`/SystemFoo`（假想路径）会被顺手拦下；`/System/Volumes/Data/Users/...`
+            //    经 firmlink 指向真实用户数据，也被误当成系统目录；
+            // ③ 归一化漂移：字符串比较对 `~/` 展开、`/private` 别名、`.`/`..` 段、尾斜杠
+            //    全都不敏感，同一份文件在不同上下文（调用方 vs 网关）会得到两种形态。
+            // **活性证据**：命中数必须 ≥ 0，但扫过的**产品文件数**要 ≥ 50，且必须
+            // 至少覆盖到 Screenshots/Downloads/QuickLook/AppLocalization 这 4 个本轮改动文件
+            //（否则 lint 只是在扫自己写的注释）。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
+            guard files.count >= 50 else {
+                print("      只扫到 \(files.count) 个产品源码文件，这条 lint 没有覆盖面")
+                return false
+            }
+            let mustBeThere: Set<String> = [
+                "ScreenshotsOrganizerScanner.swift", "DownloadsOrganizerScanner.swift",
+                "QuickLookThumbnailPurger.swift", "AppLocalizationScanner.swift",
+                // v1.73.8 二次复审 P2 待议 2：FontCache 是本轮第 5 处修复点，也是
+                // 清单里唯一"归一化 sibling"形态（`isOutsideUserFontScope`），把它钉进
+                // mustBeThere 才与 README 声称的"扫描侧统一到 G8"的口径一致。
+                "FontCacheInspector.swift",
+            ]
+            let missing = mustBeThere.subtracting(Set(files)).sorted()
+            guard missing.isEmpty else {
+                print("      扫描范围缺了本轮必然改过的文件：\(missing)")
+                return false
+            }
+            // **同族字符串护栏的四种写法都要钉**（v1.73.8 二次复审 P2 逼出：一次复审
+            // 抓到 `StartupItemInspector:396 path.contains("/System/")` 与
+            // `SpaceArchiveService:85 path == "/System"` 两处也是"G8 判据用原始子串实现"，
+            // 本轮一并修，needles 也一并扩）。挤过空白后以下 4 条字面在**非注释产品代码**
+            // 里都不许再出现：
+            //   · `hasPrefix("/System")` / `hasPrefix("/System/")` — 原形 + 归一化 sibling
+            //   · `contains("/System")` / `contains("/System/")` — StartupItemInspector 那族
+            //   · `=="/System"` — SpaceArchiveService 那族
+            //   · `starts(with:"/System")` — Swift 标准 API，语义等同 hasPrefix，防绕过
+            // `/Applications` 一族本轮**不钉**：`CleanPaths` 里没有对应保护清单，
+            // ScreenshotsOrganizer 里保留的 `hasPrefix("/Applications")` 是 incidental
+            // 策略（截图扫描根不该在这），不是 G8 判据；把它当同族收口需要先在 CleanPaths
+            // 里定义"/Applications 是保护根"，与本轮"扫描侧统一到 G8"的范围不同。
+            let needles = [
+                "hasPrefix(\"/System\")",
+                "hasPrefix(\"/System/\")",
+                "contains(\"/System\")",
+                "contains(\"/System/\")",
+                "==\"/System\"",
+                "starts(with:\"/System\")",
+                "starts(with:\"/System/\")",
+            ]
+            var offenders: [String] = []
+            var nonWsChars = 0
+            // **每文件按比例的活性证据**（v1.73.8 二次复审 P2 逼出：全仓下界对"某个文件
+            // 被 inBlock 吞掉"完全瞎——`Rules/CleanupRules.swift` 被吞时单文件 17,569
+            // → 3,390（丢 80.7%），全仓只 -1.33%，5_000 与 300_000 都挡不住）。
+            // 判据：`剥离注释+去空白` 之后的字符数应当不低于 `原文件去空白` 的 30%——
+            // 真实产品文件里的注释占比不会超过 70%；一旦被 inBlock 拖到 EOF，剩下
+            // 的就是文件开头那几十行，比例会远低于 30%。这条对短小但注释密集的
+            // 工具文件也友好（DiskInfo.swift 467 chars 若原文件 600 chars 则 78%，稳过），
+            // 不像"每文件绝对下界"会误伤合法短文件（上一版 500 阈值刚立就把 DiskInfo 判红）。
+            let minKeepRatio = 0.30
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<源文件不可读>")
+                    continue
+                }
+                let rawNonWs = src.filter { !$0.isWhitespace }.count
+                let code = Selftest.stripSwiftComments(src)
+                let squeezed = code.filter { !$0.isWhitespace }
+                nonWsChars += squeezed.count
+                if rawNonWs >= 1_000 {
+                    let ratio = Double(squeezed.count) / Double(rawNonWs)
+                    if ratio < minKeepRatio {
+                        offenders.append("\(rel)<剥离后只剩 \(squeezed.count)/\(rawNonWs)"
+                                         + "（\(Int(ratio * 100))%，低于 \(Int(minKeepRatio * 100))%"
+                                         + "）——注释剥离器大概率被字符串里的 `/*` 拖进了"
+                                         + " inBlock 到 EOF，本文件的 lint 覆盖已失效>")
+                    }
+                }
+                for needle in needles where squeezed.contains(needle) {
+                    offenders.append("\(rel)<含 \(needle)>")
+                }
+                if mustBeThere.contains(rel) {
+                    if !squeezed.contains("FileSystem.isSystemProtected(") {
+                        offenders.append("\(rel)<没接入 isSystemProtected，护栏可能被整段删掉>")
+                    }
+                }
+            }
+            // 全仓下界（保留但只是兜底）：v1.73.8 二次复审 P2 实测——**全仓量**对"某个
+            // 文件被 inBlock 吞掉"完全瞎：`Rules/CleanupRules.swift` 被吞时单文件从
+            // 17,569 掉到 3,390（-80.7%），全仓只从 108 万降到 106.6 万（-1.33%），
+            // 无论 5_000 还是 300_000 都挡不住。真正的活性证据是**上面每文件 30% 比例**；
+            // 这条全仓阈值只防"119 个文件集体蒸发"这种极端事故。
+            if nonWsChars < 300_000 {
+                print("      lint 只扫到 \(nonWsChars) 个非空白字符的产品代码——阈值 300_000"
+                      + "，整片丢文件的兜底"); return false
+            }
+            if !offenders.isEmpty {
+                print("      仍有 hasPrefix(\"/System\") 式字符串路径护栏：\(offenders)")
+            }
+            return offenders.isEmpty
+        }
+
         check("出厂 deadline 必须是有限且够干活的小值") {
             // 钉的是常量 `defaultGatedReadDeadline`，**不是**运行时那个可变的当前值：
             // 同文件里几条卡死模拟自检会把它临时改成 0.3 再还原，断当前值等于断别人设的值。

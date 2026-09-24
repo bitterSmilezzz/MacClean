@@ -81,8 +81,11 @@ final class SpaceArchiveService {
 
         for url in volumes {
             let path = url.path
-            // 排除根目录与系统内部保护分区
-            if path == "/" || path == "/System" { continue }
+            // 排除根目录与 SIP/系统内部保护分区。v1.73.8 G18 二次复审 P2：旧写法
+            // `path == "/System"` 只精确匹配那一条，`/System/Volumes/Data` 之类经
+            // `mountedVolumeURLs` 枚举出来的兄弟分区不会被拦下；改走 `isSystemProtected`
+            // 与扫描/删除两侧的 G8 判据同源。根卷 `/` 的排除保留（G8 清单不含根）。
+            if path == "/" || FileSystem.isSystemProtected(path) { continue }
 
             let values = try? url.resourceValues(forKeys: Set(keys))
             let name = values?.volumeName ?? (path as NSString).lastPathComponent

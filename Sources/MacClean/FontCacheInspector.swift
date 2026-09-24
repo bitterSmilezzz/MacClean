@@ -208,11 +208,15 @@ public final class FontCacheInspector {
 
     // MARK: - 判定辅助
 
-    /// 用户字体目录之外的扫描范围（`/System/**` 与 `/Library/Fonts`）
+    /// 用户字体目录之外的扫描范围（SIP 保护位置与 `/Library/Fonts` 全局字体目录）。
+    /// `/System` 一族走 `FileSystem.isSystemProtected` 的统一判据，不再手写
+    /// `hasPrefix("/System/")` 字符串护栏——项目早就给 ColorSync/PrinterDriver
+    /// 各立了 lint 禁这条形态，本轮把 Screenshots/Downloads/QuickLook/AppLocalization
+    /// 与这一处（FontCache 的归一化 sibling）一起收进同一条 G18 全仓 lint。
     static func isOutsideUserFontScope(_ dir: String) -> Bool {
         let normalized = FileSystem.normalizePath(dir)
-        return normalized == "/System" || normalized.hasPrefix("/System/")
-            || normalized == GovernanceDomain.fontsGlobal.normalizedRoot
+        if FileSystem.isSystemProtected(normalized) { return true }
+        return normalized == GovernanceDomain.fontsGlobal.normalizedRoot
             || normalized.hasPrefix(GovernanceDomain.fontsGlobal.normalizedRoot + "/")
     }
 

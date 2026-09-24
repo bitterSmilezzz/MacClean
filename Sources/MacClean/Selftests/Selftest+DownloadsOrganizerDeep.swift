@@ -93,6 +93,94 @@ extension Selftest {
         }
 
         // 5. 模拟下载目录扫描与推荐勾选
+        check("归档面板扫描侧与删除侧共用 G8 判据：SIP 内容不再被列成清理候选（v1.73.8 G18）") {
+            // 之前两个归档扫描器用的是 `path.hasPrefix("/System")` 式字符串护栏——项目早就给
+            // ColorSync/PrinterDriver 立了 lint 禁止这条形态，但 Screenshots/Downloads 是漏网的。
+            // 字符串护栏对 SIP 保护下的 `/private/var/db`（uuidtext/receipts/powerlog）与
+            // `/private/var/vm`（sleepimage/swapfile）**视而不见**，扫下去会被 probeDirectory
+            // 判成"读不到"→ 记进 deniedAccessSnapshot → `permissionIssues` 报给用户"这里权限不足"。
+            // 那是**凭空造一条要求 FDA 授权去碰本来就不该碰的位置**的告警。
+            // 分三层钉：① `isSystemProtected` 命中 `CleanPaths.systemProtected` 全部条目
+            // （包括子层级），② 旧的 `hasPrefix("/System")` 字符串护栏**至少漏 3 条**（不然
+            // 这次修复没意义，只是换个写法），③ DownloadsOrganizer 的 scan 拿到 SIP 路径时
+            // **不列条目、不进 unreadableRoots**——G8 位置压根不该被探测。反证用一次性
+            // 可读根，正常路径不能被误伤。
+            // **实测依据**（v1.73.8 二次复审 P1 逼出来的：一次是把因果链吹过头，一次是
+            // 反向把"这条 test 没 teeth"写死——两种都是没做变异验证的想当然）：
+            // ① 把 `DownloadsOrganizerScanner` 换回旧的 `hasPrefix("/System")` 形态跑本条
+            //   check：`/private/var/db 下的东西被当清理项列出了：items=15`（`SystemKey`、
+            //   `ionodecache.json`、`BootCache.data`、`mtrecorder.enable` 等）——**items
+            //   这条断言真有牙齿**，OLD 会红。这就是本轮修复消灭的用户可见 bug：15 个
+            //   SIP 内容会作为"下载清理候选"被列进面板，虽然删除侧 `ResidueDeletionGate`
+            //   兜得住不误删，但面板"这里有 15 项可以清"就是 G8 与 G9 一起反对的形态。
+            // ② `unreadableRoots` 这条在本机 SIP 全 world-readable 的现实下 OLD 也空——
+            //   它是回归护栏（防止有人把 guard 挪到 `probeDirectory` 之后），不是变异能红的
+            //   那条。
+            // ③ `deniedAccessSnapshot().isEmpty` **已从本条 check 删掉**——`FileSystem.swift:191-198`
+            //   的快照 filter 本身把 `systemProtected` 位置剔掉了，那条断言结构上恒真，
+            //   跟本轮修复没有因果关系（v1.73.8 一次复审 P1-1 抓的这条）。
+            var bad: [String] = []
+            for p in CleanPaths.systemProtected {
+                if !FileSystem.isSystemProtected(p) {
+                    bad.append("isSystemProtected 没命中根条目 \(p)")
+                }
+                if !FileSystem.isSystemProtected(p + "/sub/deeper") {
+                    bad.append("isSystemProtected 没命中子层级 \(p)/sub/deeper")
+                }
+            }
+            // ② 关键：证明字符串护栏**真的**在漏。如果哪天 `CleanPaths.systemProtected` 变成
+            // 全部以 `/System` 开头（比如把 `/private/var/db` 挪走），这条 assert 会红，
+            // 提醒作者"字符串护栏又够了，但这条测试的**语义前提**变了"——同族假绿的反向哨兵。
+            // 反向哨兵：清单里非 /System 前缀的条目**必须恰好 4 条**（v1.73.8 二次复审 P2
+            // 逼出：上一版阈值 <3 而实测 4——删任意一条仍等于 3、哨兵不响，扫描侧同时
+            // 失去对该条的保护。用 == 精确钉住清单形状，改窄或改宽都要红）。
+            // 4 条分别是 `/Library/Updates`、`/private/var/vm`、`/private/var/db`、
+            // `/private/var/folders/zz`。清单总长也钉 ≥ 6（防止有人把 SIP 清单整个删空）。
+            let missedByStringGuard = CleanPaths.systemProtected.filter {
+                !$0.hasPrefix("/System")
+            }
+            if missedByStringGuard.count != 4 {
+                bad.append("字符串护栏 `hasPrefix(\"/System\")` 现在漏 \(missedByStringGuard.count) 条"
+                           + "（预期恰好 4：`/Library/Updates`、`/private/var/vm`、"
+                           + "`/private/var/db`、`/private/var/folders/zz`）——"
+                           + "本轮修复的覆盖面在漂，检查一下 systemProtected 清单")
+            }
+            if CleanPaths.systemProtected.count < 6 {
+                bad.append("systemProtected 清单只剩 \(CleanPaths.systemProtected.count) 条（≥6 是本工具契约）")
+            }
+            // ③ 端到端：逐条扫**每一条**不以 `/System` 开头的 SIP 路径（v1.73.8 复审
+            // P1-2 抓到上一版只跑 `.first` → 只覆盖 `/Library/Updates` 一条，
+            // `/private/var/db`、`/private/var/vm`、`/private/var/folders/zz` 一条都没测过）。
+            // **不再断 `deniedAccessSnapshot().isEmpty`**——`FileSystem.swift:191-198` 的快照
+            // 过滤器本身就把 systemProtected 位置剔掉了，这条断言**结构上恒真**（复审 P1-1），
+            // 不是本轮修复的效果。真正有意义的是 `unreadableRoots` 与 `items`：前者是
+            // DownloadsSummary 自己直接写的（不经快照过滤器）、后者是"扫到底"的证据。
+            for sample in missedByStringGuard {
+                FileSystem.resetDeniedAccess()
+                let sum = DownloadsOrganizerScanner.shared.scan(customDirectory: sample)
+                if !sum.items.isEmpty {
+                    bad.append("\(sample) 下的东西被当清理项列出了：items=\(sum.items.count)")
+                }
+                if !sum.unreadableRoots.isEmpty {
+                    bad.append("\(sample) 被当成『本轮读不到』记进 unreadableRoots："
+                               + "\(sum.unreadableRoots)——G8 判据要在探测之前拦下")
+                }
+            }
+            let fm0 = FileManager.default
+            let ok = "/private/tmp/macclean-g18-ok-\(UUID().uuidString)"
+            try? fm0.createDirectory(atPath: ok, withIntermediateDirectories: true)
+            fm0.createFile(atPath: ok + "/pkg.dmg", contents: Data(repeating: 1, count: 4096))
+            defer { try? fm0.removeItem(atPath: ok) }
+            FileSystem.resetDeniedAccess()
+            let clean = DownloadsOrganizerScanner.shared.scan(customDirectory: ok)
+            if clean.items.isEmpty {
+                bad.append("反证不成立：可读的自定义根被整片拦下——G18 判据过紧了")
+            }
+            FileSystem.resetDeniedAccess()
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("DownloadsOrganizer: 模拟下载目录扫描与时效分析") {
             let fm = FileManager.default
             let testDir = "/tmp/MacCleanTest_Downloads_Scan"

@@ -393,7 +393,12 @@ public final class StartupItemManager {
         programPath: String?,
         isDisabled: Bool
     ) -> StartupItemStatus {
-        if label.hasPrefix("com.apple.") || path.contains("/System/") {
+        // SIP 归属判据统一走 `FileSystem.isSystemProtected`（v1.73.8 G18 二次复审 P2
+        // 抓到旧写法 `path.contains("/System/")` 是同族字符串护栏：既漏掉 `/private/var/db`
+        // 等 SIP 条目、又对假想的 `/usr/local/Foo/System/Bar` 误伤）。`label.hasPrefix("com.apple.")`
+        // 是**苹果发布标签前缀**——那是策略性识别（LaunchAgent 是否来自 Apple），与 SIP
+        // 判据不同族，保留。
+        if label.hasPrefix("com.apple.") || FileSystem.isSystemProtected(path) {
             return .systemProtected
         }
 
