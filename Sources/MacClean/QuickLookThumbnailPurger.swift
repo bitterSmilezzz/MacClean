@@ -127,6 +127,7 @@ public final class QuickLookThumbnailPurger {
 
         var items: [QuickLookCacheItem] = []
         var totalSize: Int64 = 0
+        var unreadablePaths: [String] = []
 
         for candidate in candidatePaths {
             let path = candidate.path
@@ -138,7 +139,7 @@ public final class QuickLookThumbnailPurger {
 
             guard fm.fileExists(atPath: path) else { continue }
 
-            let (size, count) = CLICacheScanner.calculateDirectoryStats(at: path)
+            let (size, count, walkReadable) = CLICacheScanner.calculateDirectoryStats(at: path)
             if size > 0 && count > 0 {
                 let item = QuickLookCacheItem(
                     id: path,
@@ -147,10 +148,17 @@ public final class QuickLookThumbnailPurger {
                     path: path,
                     size: size,
                     fileCount: count,
-                    isSelected: true
+                    readable: walkReadable,
+                    // 遍历被掐断过时不默认勾选（理由同 `CLICacheScanner.scan` 里那段注释）。
+                    isSelected: walkReadable
                 )
                 items.append(item)
                 totalSize += size
+                if !walkReadable { unreadablePaths.append(path) }
+            } else if !walkReadable {
+                // v1.73.7 二次复审 P1-D：完全读不到（枚举器 nil → size=0）时不能静默——
+                // 记进 unreadablePaths，卡片顶栏据此说"本轮 X 处没读到，下面列表不完整"。
+                unreadablePaths.append(path)
             }
         }
 
@@ -158,7 +166,8 @@ public final class QuickLookThumbnailPurger {
 
         return QuickLookThumbnailSummary(
             items: sorted,
-            totalSize: totalSize
+            totalSize: totalSize,
+            unreadablePaths: unreadablePaths
         )
     }
 

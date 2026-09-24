@@ -84,7 +84,14 @@ public final class SpotlightScanner {
                     var isDir: ObjCBool = false
                     guard fm.fileExists(atPath: subPath, isDirectory: &isDir) else { continue }
 
-                    let (dirSize, fileCount, mtime) = calculateDirectoryMetrics(at: subPath)
+                    let (dirSize, fileCount, mtime, metricsReadable) = calculateDirectoryMetrics(at: subPath)
+                    // v1.73.7 二次复审 P1-D：残缺上报必须**在** size 前置门**之前**。
+                    // 上一版把 `if !metricsReadable { issues.append(...) }` 放在下面 :122 的
+                    // item append 之后，遇到"整棵读不到 → size=0" 就被 :88 的 `guard` 短路掉，
+                    // isResultComplete 仍是 true——正是 G9 一路在消灭的那个"读不到退化成没东西"。
+                    if !metricsReadable {
+                        issues.append(Self.readIssue(for: subPath))
+                    }
                     guard dirSize > 0 || fileCount > 0 else { continue }
 
                     let (kind, status) = Self.evaluateCoreSpotlightEntry(
@@ -108,7 +115,10 @@ public final class SpotlightScanner {
                         size: dirSize,
                         fileCount: fileCount,
                         modificationDate: mtime,
-                        isSelected: isOrphan
+                        readable: metricsReadable,
+                        // 遍历被掐断过时不默认勾选（"读不到 ≠ 干净"）——`dirSize` 是
+                        // "至少这么多"而不是"就这么大"，把残缺值当完整证据就是本轮要拦的。
+                        isSelected: isOrphan && metricsReadable
                     )
                     items.append(item)
                     totalSize += dirSize
@@ -126,7 +136,12 @@ public final class SpotlightScanner {
             if FileSystem.isPermissionDenied(cachePath) {
                 issues.append(Self.readIssue(for: cachePath))
             } else {
-                let (cacheSize, fileCount, mtime) = calculateDirectoryMetrics(at: cachePath)
+                let (cacheSize, fileCount, mtime, metricsReadable) = calculateDirectoryMetrics(at: cachePath)
+                // v1.73.7 二次复审 P1-D：与 :87 同族——残缺上报要在 size 前置门之前，
+                // 否则整棵读不到（size=0）时会绕过上报，isResultComplete 又变回 true。
+                if !metricsReadable {
+                    issues.append(Self.readIssue(for: cachePath))
+                }
                 if cacheSize > 0 {
                     orphanCount += 1
                     orphanSize += cacheSize
@@ -140,7 +155,9 @@ public final class SpotlightScanner {
                         size: cacheSize,
                         fileCount: fileCount,
                         modificationDate: mtime,
-                        isSelected: true
+                        readable: metricsReadable,
+                        // 遍历被掐断过时不默认勾选（"读不到 ≠ 干净"）。
+                        isSelected: metricsReadable
                     )
                     items.append(cacheItem)
                     totalSize += cacheSize
@@ -176,7 +193,7 @@ public final class SpotlightScanner {
                 continue
             }
 
-            let (volSize, fileCount, mtime) = calculateDirectoryMetrics(at: spotlightV100)
+            let (volSize, fileCount, mtime, volReadable) = calculateDirectoryMetrics(at: spotlightV100)
             // 卷索引**永不**按文件删除来"清理"：唯一受支持的手段是用户显式勾选后
             // 执行 `mdutil -E <卷>`。因此状态一律非可删，也不计入 activeCount。
             let status: SpotlightIndexStatus = isSystemRoot ? .systemProtected : .needsConfirmation
@@ -191,12 +208,18 @@ public final class SpotlightScanner {
                 size: volSize,
                 fileCount: fileCount,
                 modificationDate: mtime,
+                readable: volReadable,
                 isSelected: false,
                 isSelectedForRebuild: false,
                 note: isSystemRoot ? "启动卷索引：仅在你显式勾选后才会执行 mdutil -E"
                                    : "外接/其他卷索引：仅在你显式勾选后才会执行 mdutil -E")
             items.append(volItem)
             totalSize += volSize
+            // 卷索引本身不默认删除，但残缺时 isResultComplete 仍要翻假——否则面板同时说
+            // 「本轮结果完整」和「这里我们其实只读到一半」，前者会把后者盖过去。
+            if !volReadable {
+                issues.append(Self.readIssue(for: spotlightV100))
+            }
         }
 
         // 优先将可清理的孤儿/损坏项排在前面
@@ -380,14 +403,20 @@ public final class SpotlightScanner {
     }
 
     // MARK: - 辅助：递归统计目录指标
-    private func calculateDirectoryMetrics(at path: String) -> (size: Int64, fileCount: Int, modificationDate: Date) {
+    ///
+    /// `readable == false` 意味着本次遍历被权限掐断过——`size`/`fileCount` 是"至少这么多"
+    /// 而非"就这么大"，消费方不得据此默认勾选删除。判定用**本次遍历自带**的 `WalkBlockFlag`
+    /// （见 `FileSystem.WalkBlockFlag`），不查进程级全局盲区清单。
+    private func calculateDirectoryMetrics(at path: String) -> (size: Int64, fileCount: Int, modificationDate: Date, readable: Bool) {
         let fm = FileManager.default
         var totalSize: Int64 = 0
         var fileCount = 0
         var latestMTime = Date.distantPast
+        let blocked = FileSystem.WalkBlockFlag()
+        let url = URL(fileURLWithPath: path, isDirectory: true)
 
         guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: path),
+            at: url,
             includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles],
             errorHandler: { url, error in
@@ -395,10 +424,21 @@ public final class SpotlightScanner {
                 // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」给出
                 // 同一个数，而这个偏小的值会被一路当权威体积用。
                 FileSystem.recordDeniedAccess(url, error: error)
+                blocked.set()
                 return true
             }
         ) else {
-            return (0, 0, latestMTime)
+            // 与 CLICache / `FileSystem.measureDirectory` 的 nil 分支同处理（v1.73.7 二次
+            // 复审 P1-A）：**必须**先过 `isPermissionDenied` 再用 `NSPOSIXErrorDomain/EACCES`
+            // 的形状——`recordDeniedAccess` 会吞掉 domain 不匹配的 error，"中性 errno"
+            // 那种写法看着记了账其实一条都没落。
+            if FileSystem.isPermissionDenied(path) {
+                FileSystem.recordDeniedAccess(
+                    url,
+                    error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES),
+                                   userInfo: [NSFilePathErrorKey: path]))
+            }
+            return (0, 0, latestMTime, false)
         }
 
         for case let fileURL as URL in enumerator {
@@ -415,6 +455,6 @@ public final class SpotlightScanner {
             }
         }
 
-        return (totalSize, fileCount, latestMTime)
+        return (totalSize, fileCount, latestMTime, !blocked.value)
     }
 }

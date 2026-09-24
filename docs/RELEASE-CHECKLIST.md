@@ -245,6 +245,43 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       下一行），于是一条都没匹配上——lint 在**空集上恒真通过**，看起来像"全仓干净"。
       判据：写完这类 lint 必须**故意在某个产品文件里制造一次违规**跑一遍确认它会红。
       匹配不到任何东西的 lint 等于没有 lint，而且更糟，因为它会被读成"已经封住了"。
+- [ ] **改求体积入口的契约时必须同时钉消费方**：v1.73.6 把 `calculateDirectoryStats`/
+      `calculateDirectoryMetrics` 加了 `recordDeniedAccess` 留痕，但只改了**生产侧**——
+      CLICache/QuickLook/Spotlight 三处的消费方仍是 `if size > 0 { isSelected: true }`，
+      一次被权限掐断的遍历会得到"3 MB 默认勾选"，用户点删除就等于用残缺事实背书；这是
+      G9「读不到 ≠ 干净」在**默认勾选侧**的镜像形态。v1.73.7 把三处 `readable` 补上、
+      `isSelected` 以 `readable` 为闸；**并且加了 lint 钉「三处消费方不许把 `isSelected`
+      硬编成常量 `true`」**。教训：给求体积入口加契约字段（readable / isComplete /
+      unreadableRoots）时，要同一轮把每一条契约在**消费方**都找一遍并各立 lint/行为断言；
+      否则契约字段就只是"文档里有、代码里空"。变异验证：把任一处 `isSelected: readable`
+      改回 `isSelected: true`，**消费方 lint + 对应的 behavioral 断言**应当同时红
+      （atPath 那条 lint 与 `isSelected` 无因果关系，不该被牵进来看似"同时红"——
+      v1.73.7 复审抓出上一版本节里那句"两条 lint 与两处 behavioral 应当同时红"是夸大）。
+- [ ] **"契约两侧都钉"不包括第三侧的门把手：模型默认值 + 卡片全选**：v1.73.7 第一次复审
+      抓出**四条**同族 P1，一条比一条更深：
+      ① 生产侧加了 `readable` 只算第一道；② scan 消费方 `isSelected: readable` 是第二道；
+      ③ **卡片顶部的 `selectAll(true)` 是第三道**——scan 那一刻已经把残缺项关掉了，
+      用户点一次全选就把它翻回来；④ **模型的 `isSelected: Bool = true` 是第四道**——
+      调用方把 `isSelected:` 实参整个删掉，就无声走模型默认，两条 lint 与两处 behavioral
+      都只盯显式实参、看不见"缺参数"这条路。教训：给求体积/清单类返回值加 `readable` /
+      `isComplete` / `unreadableRoots` 时，把这条链一路找到 UI：scan 返回 → item 模型 →
+      卡片全选 → 面板顶栏；**模型的默认勾选值必须是 `false`**（默认勾选是安全策略，
+      不该由"忘了传"这种编译期过得去的形状展开）。lint 判据也别只看字面 `isSelected:`——
+      要求"右值必须引用含 `readable` 的标识符"，这样 `isSelected: isOrphan` 这种"看着
+      像闸其实没有"的**自然回退**才抓得住。变异验证要真去删一次实参、真去摘一次 `&& readable`。
+- [ ] **lint 的窗口必须按**结构**切，不能按字节数或下一个关键字**：v1.73.7 卡片 lint 的第一版
+      写的是"从 `functoggleSelectAll(){` 起取 400 个非空白字符"——同一文件里的
+      `privatevarselectableCount:Int{summary.items.filter(\.readable).count}` 就住在
+      那 400 字符窗口之内，`readable` 三个字蹭到了，变异里把 `&& items[i].readable`
+      摘掉、lint 依然绿。正解：**用大括号深度追踪把方法体精确截出来**，邻居再合规
+      也不背书。同理，v1.73.6 那条 `.enumerator(` 判据的"切下一处 `.enumerator(` 之前"
+      也是同一族——按关键字近似截窗，永远可能被邻居的同关键字喂饱。
+- [ ] **给 lint 立"命中数下界"时要连"允许为 0 的场景"一起想清楚**：v1.73.7 的两条新 lint 都
+      加了 `matched >= 1` / `checkedSites >= 3` 的活性证据，是因为上一轮踩过"匹配 0 处 = 空集
+      恒真通过"的坑；但下界设太高会挡掉合理的重构（比如某天把 `DiagnosticReportScanner`
+      换成 URL 重载，全仓就没有 atPath 了）。**判据**：下界只要挡住"匹配逻辑退化"就够，
+      别拿它当"这条模式必须永远存在"的口号——真消失了就删掉这条 lint 并写清理由，
+      比让 lint 变成永远需要豁免要诚实。
 - [ ] **lint 的"活性证据"要盯命中数，不只看扫到多少文件**：v1.73.6 复审查出——只断言
       `files.count >= 50` 挡不住匹配逻辑退化：只要模式对不上，`offenders` 依然为空、绿灯
       照样报"全仓干净"。正解是**另加一条命中数下界**（当前产品源码非 atPath 的 `.enumerator(`

@@ -232,12 +232,12 @@ public struct QuickLookThumbnailPurgerCard: View {
 
     private var actionFooterBar: some View {
         HStack(spacing: Space.sm) {
-            Button(selectedCount == summary.items.count ? "取消全选" : "全部选中") {
+            Button(selectedCount == selectableCount && selectableCount > 0 ? "取消全选" : "全部选中") {
                 toggleSelectAll()
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
-            .disabled(summary.items.isEmpty || isPurging)
+            .disabled(summary.items.isEmpty || isPurging || selectableCount == 0)
 
             Spacer()
 
@@ -281,11 +281,15 @@ public struct QuickLookThumbnailPurgerCard: View {
     }
 
     private func toggleSelectAll() {
-        let target = selectedCount != summary.items.count
+        let target = selectedCount != selectableCount
         for i in 0..<summary.items.count {
-            summary.items[i].isSelected = target
+            // 见 CLICacheOptimizerCard 同款理由：残缺项不能被全选重新勾上（v1.73.7 复审 P1-1）。
+            summary.items[i].isSelected = target && summary.items[i].readable
         }
     }
+
+    /// 全选作用域只覆盖"本轮真的读全了"的项。
+    private var selectableCount: Int { summary.items.filter(\.readable).count }
 
     private func executePurge() {
         isPurging = true

@@ -34,6 +34,61 @@ enum Selftest {
     static let sourceDirectoryPath = ((#filePath as NSString)
         .deletingLastPathComponent as NSString).deletingLastPathComponent
 
+    /// 给"扫全仓源码"那几条 lint 用的**最小化注释剥离**：
+    /// - 逐行剔除以 `//` 起头的整行；
+    /// - **行尾 `// ...` 也要剥**（v1.73.7 二次复审 P1-B：`guard let e = ... else { return [] }
+    ///   // 这里要 recordDeniedAccess` 这种形状会被上一版放行）；
+    /// - `/* ... */` 块注释支持跨行；
+    /// - **字符串字面量保护**：用行首到目标点为止的 `"` 计数是否偶数来判"是不是在字符串里"
+    ///   （v1.73.7 二次复审 P2-A：`summary: "~/Library/Caches/* 各子目录"` 里 `Caches/*` 会被
+    ///   无保护的剥离器误当块注释开头、把 84.6% 的代码当垃圾丢掉）。
+    /// 不是完整 tokenizer：转义引号 `\"`、多行字符串 `"""` 里的 `//` 会误剥——但误剥只会
+    /// 让 lint 判据更严（少了一些词），不会把漏检变成假绿；这是这一族判据唯一可接受的偏差方向。
+    static func stripSwiftComments(_ src: String) -> String {
+        var out: [String] = []
+        var inBlock = false
+        for raw in src.split(separator: "\n", omittingEmptySubsequences: false) {
+            var line = String(raw)
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if inBlock {
+                if let r = line.range(of: "*/") {
+                    inBlock = false
+                    line = String(line[r.upperBound...])
+                } else {
+                    continue
+                }
+            }
+            if t.hasPrefix("//") { continue }
+
+            // 反复处理本行里的 `/* ... */`；每次先判断 `/*` 之前是不是有奇数个 `"`
+            // （奇数 = 在字符串里，跳过，让 lint 严格化方向偏严而不是偏宽）。
+            while let open = line.range(of: "/*") {
+                let head = String(line[line.startIndex..<open.lowerBound])
+                if head.filter({ $0 == "\"" }).count % 2 == 1 { break }
+                let rest = String(line[open.upperBound...])
+                if let close = rest.range(of: "*/") {
+                    let tail = String(rest[close.upperBound...])
+                    line = head + tail
+                } else {
+                    line = head
+                    inBlock = true
+                    break
+                }
+            }
+            // 行尾 `//`：同上，`"` 计数偶数才当注释。
+            if let dbl = line.range(of: "//") {
+                let before = String(line[line.startIndex..<dbl.lowerBound])
+                if before.filter({ $0 == "\"" }).count % 2 == 0 {
+                    line = before
+                }
+            }
+            if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                out.append(line)
+            }
+        }
+        return out.joined(separator: "\n")
+    }
+
     enum SelftestError: Error {
         case buttonNotFound(String)
     }

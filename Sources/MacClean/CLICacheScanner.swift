@@ -51,6 +51,7 @@ public final class CLICacheScanner {
         var items: [CLICacheItem] = []
         var totalSize: Int64 = 0
         var unrecognized: [CLIToolKind] = []
+        var unreadablePaths: [String] = []
 
         let toolsToScan = customPaths != nil ? Array(customPaths!.keys) : CLIToolKind.allCases
 
@@ -77,7 +78,7 @@ public final class CLICacheScanner {
                 // 软链不作为缓存根：删它不释放空间，还会把治理带到别处
                 if FileSystem.isSymlink(path) { continue }
 
-                let (size, count) = Self.calculateDirectoryStats(at: path)
+                let (size, count, walkReadable) = Self.calculateDirectoryStats(at: path)
                 if size > 0 && count > 0 {
                     items.append(CLICacheItem(
                         id: path,
@@ -86,12 +87,25 @@ public final class CLICacheScanner {
                         path: path,
                         size: size,
                         fileCount: count,
-                        isSelected: true
+                        readable: walkReadable,
+                        // 遍历被权限掐断过时不默认勾选——那个 size 是"至少这么多"而不是
+                        // "就这么大"，把它当完整证据就是本轮 G9「读不到 ≠ 干净」要拦的。
+                        isSelected: walkReadable
                     ))
                     totalSize += size
                     matched = true
+                    if !walkReadable { unreadablePaths.append(path) }
                     // 每个工具只要命中了一个主有效缓存目录即可（避免子目录重复累加）
                     break
+                }
+                // v1.73.7 二次复审 P1-D：根完全读不到时（枚举器 nil → size=0,count=0,readable=false），
+                // 之前无条件 `matched = true` 让工具既不进 items、又不进 unrecognizedTools、
+                // CLICacheSummary 又没有 issue 通道 → 三无状态。现在把这条路径记进 unreadablePaths
+                // 并**不**标记 matched，让下一路径继续被尝试；全空时工具落到 unrecognizedTools，
+                // 用户至少看得到"这条本轮没看清"，而不是"这里没东西"。
+                if !walkReadable {
+                    unreadablePaths.append(path)
+                    continue
                 }
                 matched = true
             }
@@ -105,7 +119,8 @@ public final class CLICacheScanner {
             items: sorted,
             totalSize: totalSize,
             toolCount: sorted.count,
-            unrecognizedTools: unrecognized
+            unrecognizedTools: unrecognized,
+            unreadablePaths: unreadablePaths
         )
     }
 
@@ -230,11 +245,19 @@ public final class CLICacheScanner {
         GovernanceDomain.domain(forPath: path)
     }
 
-    /// 统计目录内文件大小与文件数
-    public static func calculateDirectoryStats(at path: String) -> (size: Int64, fileCount: Int) {
+    /// 统计目录内文件大小与文件数。
+    ///
+    /// `readable == false` 意味着本次遍历被权限掐断过——返回的 `size` 是"至少这么多"
+    /// 而非"就这么大"。消费方（`isSelected`、`totalSize`）必须把它当成不可信的证据，
+    /// 否则一次只读到一半的缓存会被报成"小而自信"并默认勾选删除。
+    /// 判定用**本次遍历自带**的 `WalkBlockFlag`，不查进程级全局盲区清单
+    /// （那份账 64 条封顶、会父子合并、每轮清空，见 `FileSystem.WalkBlockFlag`）。
+    public static func calculateDirectoryStats(at path: String) -> (size: Int64, fileCount: Int, readable: Bool) {
         let fm = FileManager.default
+        let blocked = FileSystem.WalkBlockFlag()
+        let url = URL(fileURLWithPath: path, isDirectory: true)
         guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: path),
+            at: url,
             includingPropertiesForKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .isDirectoryKey],
             options: [.skipsHiddenFiles],
             errorHandler: { url, error in
@@ -242,10 +265,22 @@ public final class CLICacheScanner {
                 // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」给出
                 // 同一个数，而这个偏小的值会被一路当权威体积用。
                 FileSystem.recordDeniedAccess(url, error: error)
+                blocked.set()
                 return true
             }
         ) else {
-            return (0, 0)
+            // 与 `FileSystem.measureDirectory` 的 nil 分支同族处理：先过一遍
+            // `isPermissionDenied` 预筛，命中才用 `NSPOSIXErrorDomain/EACCES` 记账。
+            // **不能传自造 domain** —— `recordDeniedAccess` 的 `isPermissionError` 过滤器
+            // 会把 domain/code 不匹配的 error 整段吞掉，v1.73.7 二次复审 P1-A 实测过：
+            // 传 `domain: "MacClean.FileSystem", code: ENOENT` 时盲区一条都没落。
+            if FileSystem.isPermissionDenied(path) {
+                FileSystem.recordDeniedAccess(
+                    url,
+                    error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES),
+                                   userInfo: [NSFilePathErrorKey: path]))
+            }
+            return (0, 0, false)
         }
 
         var totalSize: Int64 = 0
@@ -263,6 +298,6 @@ public final class CLICacheScanner {
             count += 1
         }
 
-        return (totalSize, count)
+        return (totalSize, count, !blocked.value)
     }
 }

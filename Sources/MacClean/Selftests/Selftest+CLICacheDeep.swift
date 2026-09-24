@@ -403,5 +403,142 @@ extension Selftest {
             guard CLIToolKind.npm.commandSuggestion.contains("npm cache clean") else { return false }
             return true
         }
+
+        // MARK: - 求体积契约：遍历被掐断时不得默认勾选（v1.73.7）
+
+        check("CLICache 面板：遍历被权限掐断时不得默认勾选，且残缺项仍要列出来") {
+            // 上两轮把 handler 补了、把 readable 加上了；这一条钉住**消费方真的用了它**。
+            // 之前是 `if size > 0 { isSelected: true }`——残缺的 size 会被当完整事实
+            // 直接把勾选框打给用户，那是本轮 G9「读不到 ≠ 干净」没做完的那一半。
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-cli-den-sel-\(UUID().uuidString)"
+            let locked = root + "/sub_lock"
+            try? fm.createDirectory(atPath: locked + "/deep", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/sub_ok", withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/sub_ok/a.bin", contents: Data(repeating: 1, count: 8192))
+            fm.createFile(atPath: locked + "/deep/b.bin", contents: Data(repeating: 2, count: 8192))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = CLICacheScanner.shared.scan(customPaths: [.pip: [root]])
+            guard sum.items.count == 1, let it = sum.items.first else {
+                print("      残缺的树还是应该被列出来（不能因权限缺失整项从面板消失）："
+                      + "items=\(sum.items.count)")
+                return false
+            }
+            guard !it.readable else {
+                print("      item 模型上的 readable 字段没被填成 false——卡片全选按它过滤，"
+                      + "不填就等于放行（v1.73.7 复审 P1-1）")
+                return false
+            }
+            guard !it.isSelected else {
+                print("      遍历被掐断却仍默认勾选（size=\(it.size) 是\"至少这么多\"，不是完整事实）")
+                return false
+            }
+            // 反证：完整可读的缓存必须仍然默认勾选——否则等于把这条契约焊死成"永不勾选"，
+            // 那是另一种坏（正常项被压成手动确认，用户体验回退）。
+            let ok = "/private/tmp/macclean-cli-ok-sel-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: ok, withIntermediateDirectories: true)
+            fm.createFile(atPath: ok + "/x.bin", contents: Data(repeating: 3, count: 4096))
+            defer { try? fm.removeItem(atPath: ok) }
+            FileSystem.resetDeniedAccess()
+            let clean = CLICacheScanner.shared.scan(customPaths: [.npm: [ok]])
+            guard let ci = clean.items.first, ci.readable, ci.isSelected else {
+                print("      完整可读的缓存被去默认勾选了（正常项被压成手动确认）")
+                return false
+            }
+            FileSystem.resetDeniedAccess()
+            return true
+        }
+
+        check("CLICacheItem 的 isSelected 默认必须是 false（v1.73.7 复审 P1-3）") {
+            // `isSelected: Bool = true` 的模型默认是本轮 lint 与行为自检都抓不到的第三条
+            // 退路：调用方只要把 `isSelected:` 实参整个删掉，就无声回到"默认勾选"。
+            // lint #2 只看字面 `isSelected:`，删掉字面就绕开；behavioral 只看 scan 输出，
+            // 但 scan 里不显式传就等于走模型默认——两条都测不到。
+            // 所以钉模型：`isSelected` 的默认必须是 false；要默认勾选必须显式写出。
+            let bare = CLICacheItem(
+                id: "/Users/example/.cache/whatever", toolKind: .npm, title: "npm",
+                path: "/Users/example/.cache/whatever", size: 100, fileCount: 1)
+            if bare.isSelected {
+                print("      不传 `isSelected:` 时默认值仍是 true——契约可以整段消失")
+                return false
+            }
+            if !bare.readable {
+                print("      `readable` 的默认值被翻成了 false——那会让所有 fixture 都变成残缺")
+                return false
+            }
+            return true
+        }
+
+        check("QuickLookCacheItem / SpotlightStoreItem 的 isSelected 默认也必须是 false（v1.73.7 二次复审 P2-4）") {
+            // 上一版只钉了 CLICacheItem；QuickLook 与 Spotlight 的同族默认翻回 true
+            // 时，lint #2 与 behavioral 都抓不到（scan 里传的是显式实参）。三个默认值
+            // 一条 check 一起钉住。
+            let ql = QuickLookCacheItem(
+                id: "/Users/example/ql", kind: .thumbnailDatabase, title: "T",
+                path: "/Users/example/ql", size: 100, fileCount: 1)
+            if ql.isSelected {
+                print("      QuickLookCacheItem 默认勾选没关掉")
+                return false
+            }
+            let spot = SpotlightStoreItem(
+                id: "/Users/example/spot", name: "s", path: "/Users/example/spot",
+                kind: .spotlightCache, status: .bloatedOrCorrupted,
+                size: 100, modificationDate: Date.distantPast)
+            if spot.isSelected {
+                print("      SpotlightStoreItem 默认勾选没关掉")
+                return false
+            }
+            return true
+        }
+
+        check("CLICache 根完全读不到时不得静默：unreadablePaths 记账 + tool 落到 unrecognizedTools") {
+            // v1.73.7 二次复审 P1-D：之前 `matched = true` 无条件短路，整棵读不到的树
+            // 既不进 items（size=0 触发 if 前置门失败），又不进 unrecognizedTools
+            //（matched=true 让它跳过），CLICacheSummary 又没有 issue 通道 → 三无状态。
+            // 现在把这条路径记进 unreadablePaths 且不设 matched，让工具落到 unrecognized；
+            // 卡片至少亮"这一路本轮没看清"的通道，不再是"这里 0 字节"的谎报。
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-cli-fail-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root)
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = CLICacheScanner.shared.scan(customPaths: [.pip: [root]])
+            // scanner 内部会 normalizePath（macOS 上 /private/tmp/... 归一成 /tmp/...），
+            // 断言两侧都要用归一化形式比较，否则永远对不上（v1.73.7 首测踩到过）。
+            let normRoot = FileSystem.normalizePath(root)
+            var bad: [String] = []
+            if sum.items.contains(where: { $0.path == normRoot || $0.path == root }) {
+                bad.append("整棵读不到还是被列成了正常项")
+            }
+            if !sum.unreadablePaths.contains(normRoot) {
+                bad.append("unreadablePaths 没记这条路径：\(sum.unreadablePaths)")
+            }
+            if !sum.unrecognizedTools.contains(.pip) {
+                bad.append("pip 没落到 unrecognizedTools——三无状态又回来了")
+            }
+            if !FileSystem.deniedAccessSnapshot().contains(normRoot) {
+                bad.append("nil 分支的记账没生效：domain/errno 形状过不了 isPermissionError 过滤器")
+            }
+            FileSystem.resetDeniedAccess()
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
     }
 }

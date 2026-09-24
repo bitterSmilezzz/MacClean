@@ -363,5 +363,55 @@ extension Selftest {
                   fm.fileExists(atPath: inside) else { return false }
             return true
         }
+
+        check("QuickLook 面板：求体积被权限掐断时不得默认勾选（复用 CLICache 的 readable 契约）") {
+            // QuickLook 与 CLICache 共用 `CLICacheScanner.calculateDirectoryStats`，
+            // 上两轮改了 stats 的返回；这条测的是 QuickLook 消费方有没有跟上——否则
+            // 面板显示 3 MB 默认勾选、实际还有 500 MB 没读到，正是 G9 要拦的那一半。
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-ql-den-sel-\(UUID().uuidString)"
+            let locked = root + "/sub_lock"
+            try? fm.createDirectory(atPath: locked + "/deep", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/sub_ok", withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/sub_ok/a.bin", contents: Data(repeating: 1, count: 8192))
+            fm.createFile(atPath: locked + "/deep/b.bin", contents: Data(repeating: 2, count: 8192))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = QuickLookThumbnailPurger.shared.scan(customDirectories: [root])
+            guard sum.items.count == 1, let it = sum.items.first else {
+                print("      残缺的树仍要被列出来（不能整项从面板消失）：items=\(sum.items.count)")
+                return false
+            }
+            guard !it.readable else {
+                print("      item 模型上的 readable 字段没被填成 false——"
+                      + "卡片全选按它过滤，不填就等于放行（v1.73.7 复审 P1-1）")
+                return false
+            }
+            guard !it.isSelected else {
+                print("      遍历被掐断却默认勾选（size=\(it.size) 只是\"至少这么多\"）")
+                return false
+            }
+            // 反证：完整可读的树必须仍然默认勾选，别把这条契约焊死成"永不勾选"
+            let ok = "/private/tmp/macclean-ql-ok-sel-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: ok, withIntermediateDirectories: true)
+            fm.createFile(atPath: ok + "/x.bin", contents: Data(repeating: 3, count: 4096))
+            defer { try? fm.removeItem(atPath: ok) }
+            FileSystem.resetDeniedAccess()
+            let clean = QuickLookThumbnailPurger.shared.scan(customDirectories: [ok])
+            guard let ci = clean.items.first, ci.readable, ci.isSelected else {
+                print("      完整可读的 QuickLook 目录被去默认勾选了")
+                return false
+            }
+            FileSystem.resetDeniedAccess()
+            return true
+        }
     }
 }

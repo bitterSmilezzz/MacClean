@@ -706,6 +706,263 @@ extension Selftest {
             return offenders.isEmpty
         }
 
+        check("产品源码里 `enumerator(atPath:)` 每一处都必须紧邻 nil-else 上报 unreadable") {
+            // v1.73.6 复审查出的最后一个 atPath 豁免点：`Scanner.swift:974` 的 D8 Maven
+            // 用的是没有 `errorHandler` 参数的 `enumerator(atPath:)`，且连 nil 分支都没有——
+            // 一次根读不到就静默返回 `[]`，面板显示"这里没有失效元数据"。本轮把它换成了
+            // 带 errorHandler 的 URL 重载。这条 lint 钉住"atPath 不许再裸用"，且要求
+            // 现存那一处（DiagnosticReportScanner:105）保持 nil-else 上报，否则红。
+            // **活性证据**：命中数必须 ≥ 1（当前只有 DiagnosticReportScanner 一处），
+            // 匹配集为空等于 lint 自己失效——v1.73.6 踩过一次同族假绿，别再踩。
+            // **多行排版容忍**：把注释行剔除后**整文件拼一起再 squeeze 空白**——swift-format
+            // 完全可能把 `fm.enumerator(\n  atPath: p)` 折成两行，v1.73.6 复审核实过：
+            // 按单行子串匹配的多行折行假绿是这一族 lint 的通病（RELEASE-CHECKLIST §"排版匹配"）。
+            // **邻居不背书用大括号深度精确截 else 体**：v1.73.7 二次复审 P1-B 实测——
+            // 上一版窗口切"下一处 `.enumerator(` 之前"，而 `DiagnosticReportScanner.swift`
+            // 全文只有 1 处 `.enumerator(`，窗口一路开到 EOF；把 :105 的 else 上报整段
+            // 删成 `else { continue }`，:134 处另一个 `rootFailed` 分支的 `kind: .unreadable`
+            // 落进同一窗口，lint 判绿。所以判据必须只在**本次 else 的花括号体内**取，
+            // 邻居再合规也不背书。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
+            var hits = 0
+            var offenders: [String] = []
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<源文件不可读>")
+                    continue
+                }
+                let code = Selftest.stripSwiftComments(src)
+                    .filter { !$0.isWhitespace }
+                var searchFrom = code.startIndex
+                while let rng = code.range(of: "enumerator(atPath:", range: searchFrom..<code.endIndex) {
+                    hits += 1
+                    let afterCall = rng.upperBound
+                    // 找**紧邻**的 `else{`；用大括号深度把 else 体精确截出来。
+                    guard let elseRng = code.range(of: "else{", range: afterCall..<code.endIndex) else {
+                        offenders.append("\(rel)<atPath 后无 else 分支>")
+                        searchFrom = rng.upperBound
+                        continue
+                    }
+                    var depth = 1
+                    var i = elseRng.upperBound
+                    var endIdx = code.endIndex
+                    while i < code.endIndex {
+                        let c = code[i]
+                        if c == "{" { depth += 1 }
+                        else if c == "}" {
+                            depth -= 1
+                            if depth == 0 { endIdx = i; break }
+                        }
+                        i = code.index(after: i)
+                    }
+                    let body = String(code[elseRng.upperBound..<endIdx])
+                    let reports = body.contains(".unreadable")
+                        || body.contains(".permissionDenied")
+                        || body.contains("recordDeniedAccess")
+                        || body.contains("unreadableRoots")
+                        || body.contains("permissionIssues")
+                    if body.isEmpty || !reports {
+                        offenders.append(rel)
+                    }
+                    searchFrom = rng.upperBound
+                }
+            }
+            if hits < 1 {
+                print("      atPath 命中数为 \(hits)，lint 空集通过等于没在管——"
+                      + "匹配逻辑或调用形态可能被改坏，绿灯不可信")
+                return false
+            }
+            if !offenders.isEmpty {
+                print("      atPath 处没有 nil-else 上报 unreadable：\(offenders)")
+            }
+            return offenders.isEmpty
+        }
+
+        check("求体积入口的调用方不得用无 readable 契约的 size 撑起默认勾选") {
+            // 与上一条 lint 一对：一条管"遍历必须留痕"、这条管"消费遍历结果的地方必须以
+            // readable 为闸"。CLICache / QuickLook / Spotlight 三处的求体积调用以前都是
+            // `if size > 0 { isSelected: true }`——遍历被掐断过时那个偏小的 size 会被
+            // 当成完整事实，用户看到"这个缓存 3 MB，勾选删掉"，实际上里面还有 500 MB 没读到。
+            // 本轮把 `calculateDirectoryStats`/`calculateDirectoryMetrics` 的返回加了
+            // `readable`，并把它提升到 item 模型；这条 lint 钉住调用方 `isSelected:` 的右值
+            // **必须引用含 `readable` 的标识符**（`isSelected: readable` / `isOrphan && metricsReadable`
+            // / `walkReadable` 都算），或者显式 `false`。常量 `true`、以及 review P1-4 抓到的
+            // 「回退成 `isOrphan` 而不 && readable」这类"看着像闸其实没有"的形状，都要判红。
+            // **活性证据**：命中数 ≥ 3。多行折行/邻居不背书的处理同上。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let targets = ["CLICacheScanner.swift", "QuickLookThumbnailPurger.swift",
+                           "SpotlightScanner.swift"]
+            var offenders: [String] = []
+            var checkedSites = 0
+            for name in targets {
+                let path = (sourceDir as NSString).appendingPathComponent(name)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(name):<不可读>")
+                    continue
+                }
+                let code = Selftest.stripSwiftComments(src)
+                    .filter { !$0.isWhitespace }
+                var searchFrom = code.startIndex
+                while let rng = code.range(of: "isSelected:", range: searchFrom..<code.endIndex) {
+                    checkedSites += 1
+                    // 抽 `isSelected:` 后面到下一个分隔符（`,` `)` `}` 或又一个 `keyWord:`）
+                    // 为止的右值片段。因为已经去过空白，只需按分隔符切。
+                    let after = rng.upperBound
+                    var endIdx = after
+                    var depth = 0
+                    var i = after
+                    outer: while i < code.endIndex {
+                        let c = code[i]
+                        switch c {
+                        case "(", "[", "{": depth += 1
+                        case ")", "]", "}":
+                            if depth == 0 { break outer }
+                            depth -= 1
+                        case ",":
+                            if depth == 0 { break outer }
+                        default: break
+                        }
+                        // 允许 `&&` 继续吃进 rhs
+                        i = code.index(after: i)
+                        if i >= code.endIndex { break }
+                        // 检测 `word:` 结束 rhs（下一个 labeled 参数）
+                        let ahead = code[i...]
+                        if let firstColon = ahead.firstIndex(of: ":"),
+                           firstColon != i {
+                            let between = code[i..<firstColon]
+                            // between 若是合法标识符（含 ! ? 前缀），说明下一个 `:` 是新参数标签
+                            let isIdent = between.allSatisfy {
+                                $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "!" || $0 == "?"
+                            }
+                            if isIdent, let firstCh = between.first,
+                               firstCh.isLetter || firstCh == "_" || firstCh == "." {
+                                break outer
+                            }
+                        }
+                    }
+                    endIdx = i
+                    let rhs = String(code[after..<min(endIdx, code.endIndex)])
+                    // 允许：`false`（永不勾选）、含 `eadable` 的表达式（readable/metricsReadable/
+                    // walkReadable 等，允许 &&/|| 组合）；**禁止**：`true`、不含 readable 的
+                    // 任意其它表达式（比如光秃秃的 `isOrphan`——那是本轮契约之外的老形状）。
+                    let ok = rhs == "false" || rhs.contains("eadable")
+                    if !ok {
+                        offenders.append("\(name)<rhs=\(rhs.prefix(30))>")
+                    }
+                    searchFrom = rng.upperBound
+                }
+            }
+            if checkedSites < 3 {
+                print("      lint 只扫到 \(checkedSites) 处 `isSelected:` 消费方，"
+                      + "至少应有 3 处；匹配可能已经失效")
+                return false
+            }
+            if !offenders.isEmpty {
+                print("      默认勾选没有以 readable 为闸：\(offenders.joined(separator: ", "))")
+            }
+            return offenders.isEmpty
+        }
+
+        check("三张卡片的全选必须走 readable（v1.73.7 复审 P1-1）") {
+            // scan 阶段把 isSelected 关到 readable 上只完成了一半：卡片顶部的
+            // `selectAll(true)` / `toggleSelectAll()` 若还是 `for i in 0..<count { items[i].isSelected = true }`
+            // 的老形状，用户点一次全选就把残缺项重新默认勾上——本轮 lint #2 与行为断言
+            // 都只覆盖 scan 那一刻，抓不到这条退路。
+            // **钉的是全选函数体本身**：只要求"整文件某处提到 readable"太松——
+            // 变异里我把 `summary.items[i].isSelected = target && items[i].readable`
+            // 换成 `= target`，`selectableCount` 计算属性还在文件里，那版判据照样绿。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let cards: [(String, [String])] = [
+                ("CLICacheOptimizerCard.swift", ["toggleSelectAll"]),
+                ("QuickLookThumbnailPurgerCard.swift", ["toggleSelectAll"]),
+                ("SpotlightOptimizerCard.swift", ["selectAll"]),
+            ]
+            var offenders: [String] = []
+            for (name, funcs) in cards {
+                let path = (sourceDir as NSString).appendingPathComponent(name)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(name):<不可读>")
+                    continue
+                }
+                let code = Selftest.stripSwiftComments(src)
+                    .filter { !$0.isWhitespace }
+                for fn in funcs {
+                    let key = "func\(fn)("
+                    guard let rng = code.range(of: key) else {
+                        offenders.append("\(name)<找不到 \(fn) 定义>")
+                        continue
+                    }
+                    // 用**大括号深度**精确截出这一个方法的函数体——上一版按"下一处 `func` 之前"
+                    // 或"往后 400 字符"取窗，被同文件里的 `selectableCount: Int {
+                    //   items.filter(\.readable).count }` 蹭到了 readable 而免检
+                    // （变异验证：把全选里的 `&& readable` 摘掉，判据必须变红；
+                    //  如果还是绿的，就是窗口太宽，见 RELEASE-CHECKLIST §"活性证据"）。
+                    let after = rng.upperBound
+                    guard let braceIdx = code[after...].firstIndex(of: "{") else {
+                        offenders.append("\(name)<\(fn) 找不到方法体>")
+                        continue
+                    }
+                    var depth = 0
+                    var endIdx = code.endIndex
+                    var i = braceIdx
+                    while i < code.endIndex {
+                        let c = code[i]
+                        if c == "{" { depth += 1 }
+                        else if c == "}" {
+                            depth -= 1
+                            if depth == 0 {
+                                endIdx = code.index(after: i)
+                                break
+                            }
+                        }
+                        i = code.index(after: i)
+                    }
+                    let body = String(code[braceIdx..<endIdx])
+                    if !body.contains("readable") {
+                        offenders.append("\(name)<\(fn) 方法体没按 readable 过滤>")
+                    }
+                }
+            }
+            if !offenders.isEmpty {
+                print("      卡片全选没有走 readable：\(offenders)——"
+                      + "scan 阶段的闸会被一次全选按钮绕过")
+            }
+            return offenders.isEmpty
+        }
+
+        check("Spotlight 残缺时必须同时补 issue，卡片 isResultComplete 才翻得动（v1.73.7 复审 P1-2）") {
+            // 钉的是**形状**：SpotlightScanner 里 coreSpotlight 与 cachePath 两处 `!metricsReadable`
+            // 都要紧跟 `issues.append(Self.readIssue(for: <参数>))`；卷索引一处 `!volReadable`
+            // 同理。**每条 needle 必须带独有的参数名**（v1.73.7 二次复审 P1-C：上一版
+            // 两条 `metricsReadable` needle 字面完全一样，删掉 coreSpotlight 那一处 append
+            // 时 cachePath 那处还在，`code.contains` 就判绿了）。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let path = (sourceDir as NSString).appendingPathComponent("SpotlightScanner.swift")
+            guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                print("      SpotlightScanner.swift 不可读")
+                return false
+            }
+            let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+            // 三条唯一 needle：参数名分别是 subPath、cachePath、spotlightV100
+            let needles: [(label: String, needle: String)] = [
+                ("coreSpotlight", "if!metricsReadable{issues.append(Self.readIssue(for:subPath))}"),
+                ("cachePath", "if!metricsReadable{issues.append(Self.readIssue(for:cachePath))}"),
+                ("volumeIndex", "if!volReadable{issues.append(Self.readIssue(for:spotlightV100))}"),
+            ]
+            var missing: [String] = []
+            for entry in needles where !code.contains(entry.needle) {
+                missing.append(entry.label)
+            }
+            if !missing.isEmpty {
+                print("      Spotlight 残缺分支没补 issue：\(missing)——"
+                      + "isResultComplete 仍是 true，面板同时说\"结果完整\"与\"这条我不敢替你决定\"")
+            }
+            return missing.isEmpty
+        }
+
         check("遍历被权限掐断时必须留痕，且不完整的结果不许报成 readable") {
             // mode 000 在 root（或部分 MDM/override 账号）下不拦 opendir，那会让这条
             // 以"代码没问题但自检红"的形态出现。跳过要**打印出来**，别静默 return true
@@ -736,6 +993,9 @@ extension Selftest {
             let cli = CLICacheScanner.calculateDirectoryStats(at: t1.root)
             var bad: [String] = []
             if cli.size <= 0 { bad.append("可读部分也没算进来了：size=\(cli.size)") }
+            if cli.readable {
+                bad.append("遍历被掐断却仍报 readable=true（消费方会拿偏小的数默认勾选删除）")
+            }
             if !FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(t1.locked)) {
                 bad.append("被掐断的子树没留痕（盲区 \(FileSystem.deniedAccessSnapshot().count) 处）")
             }

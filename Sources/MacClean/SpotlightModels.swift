@@ -110,6 +110,10 @@ public struct SpotlightStoreItem: Identifiable, Equatable, Hashable {
     public let size: Int64                    // 占用字节
     public let fileCount: Int                 // 包含文件数
     public let modificationDate: Date         // 修改时间
+    /// 遍历是否完整。false = 被权限掐断过，`size` 是"至少这么多"而不是"就这么大"。
+    /// 卡片全选必须按它过滤（v1.73.7 复审 P1-1），SpotlightScanner 也要在残缺时
+    /// 补上 `readIssue` 让 `isResultComplete` 跟着翻（P1-2）。
+    public let readable: Bool
     public var isSelected: Bool               // 是否勾选清理
     /// v1.73.0：该卷是否被用户**显式勾选**去执行 `mdutil -E`。
     /// 默认恒为 false —— 重建索引是有后果的操作，绝不允许"顺手全卷重建"。
@@ -126,6 +130,7 @@ public struct SpotlightStoreItem: Identifiable, Equatable, Hashable {
         size: Int64,
         fileCount: Int = 1,
         modificationDate: Date,
+        readable: Bool = true,
         isSelected: Bool = false,
         isSelectedForRebuild: Bool = false,
         note: String? = nil
@@ -138,6 +143,7 @@ public struct SpotlightStoreItem: Identifiable, Equatable, Hashable {
         self.size = size
         self.fileCount = fileCount
         self.modificationDate = modificationDate
+        self.readable = readable
         self.isSelected = isSelected
         self.isSelectedForRebuild = isSelectedForRebuild
         self.note = note

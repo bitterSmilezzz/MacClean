@@ -294,12 +294,12 @@ public struct CLICacheOptimizerCard: View {
 
     private var actionFooterBar: some View {
         HStack(spacing: Space.sm) {
-            Button(selectedCount == summary.items.count ? "取消全选" : "全部选中") {
+            Button(selectedCount == selectableCount && selectableCount > 0 ? "取消全选" : "全部选中") {
                 toggleSelectAll()
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
-            .disabled(summary.items.isEmpty || isCleaning)
+            .disabled(summary.items.isEmpty || isCleaning || selectableCount == 0)
 
             Spacer()
 
@@ -343,11 +343,18 @@ public struct CLICacheOptimizerCard: View {
     }
 
     private func toggleSelectAll() {
-        let target = selectedCount != summary.items.count
+        let target = selectedCount != selectableCount
         for i in 0..<summary.items.count {
-            summary.items[i].isSelected = target
+            // 全选只勾"本轮真的读全了"的项——`readable == false` 的那一项 size 只是下限，
+            // 用户点一次全选就把它翻回默认勾选，等于绕过 scan 阶段那道闸（v1.73.7 复审 P1-1）。
+            summary.items[i].isSelected = target && summary.items[i].readable
         }
     }
+
+    /// 全选作用域：只统计"可以安全默认勾选"的项。用 `summary.items.count` 会让
+    /// 存在残缺项时按钮永远显示"全部选中"——即使所有可读项已被勾上，用户也点不到
+    /// "取消全选"（因为 selectedCount 永远达不到 items.count）。
+    private var selectableCount: Int { summary.items.filter(\.readable).count }
 
     private func executeClean(toTrash: Bool) {
         isCleaning = true

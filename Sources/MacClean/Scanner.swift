@@ -971,13 +971,45 @@ final class Scanner {
         if FileSystem.isDir(m2) {
             var targets: [String] = []
             var total: Int64 = 0
-            if let en = FileManager.default.enumerator(atPath: m2) {
-                for case let file as String in en {
-                    if file.hasSuffix(".lastUpdated") || file.hasSuffix("_remote.repositories") {
-                        let full = (m2 as NSString).appendingPathComponent(file)
-                        let sz = FileSystem.size(at: full)
-                        if sz > 0 { targets.append(full); total += sz }
-                    }
+            // 用带 `errorHandler` 的 URL 重载，不用 `enumerator(atPath:)`——后者没有
+            // 错误上报参数，Foundation 的默认语义是"第一个错误就停止遍历且不报告"；
+            // 一次被权限掐断的遍历会让 `targets` 空掉、面板显示「这里没有失效元数据」，
+            // 而它其实压根没读完。nil 分支同理——不记账就等于把"读不到"讲成"干净"。
+            let m2URL = URL(fileURLWithPath: m2, isDirectory: true)
+            guard let en = FileManager.default.enumerator(
+                at: m2URL,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [],
+                errorHandler: { url, error in
+                    FileSystem.recordDeniedAccess(url, error: error)
+                    return true
+                }
+            ) else {
+                // 根开不起来。**必须走 `FileSystem.isPermissionDenied` 这道预筛 + 用
+                // `NSPOSIXErrorDomain/EACCES` 这个能过 `isPermissionError` 过滤器的 errno 形状**
+                // ——`recordDeniedAccess` 首行 `guard isPermissionError(error) else { return }`
+                // 会把 domain/code 不匹配的 error 整段吞掉，写一个自造 domain 就等于**没记**
+                // （v1.73.7 二次复审 P1-A 抓到的正是这条死代码）。同族正解在
+                // `FileSystem.swift` 的 `measureDirectory` nil 分支。
+                if FileSystem.isPermissionDenied(m2) {
+                    FileSystem.recordDeniedAccess(
+                        m2URL,
+                        error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES),
+                                       userInfo: [NSFilePathErrorKey: m2]))
+                }
+                return items
+            }
+            for case let fileURL as URL in en {
+                // 只按**普通文件**判后缀——`FileSystem.size(at:)` 对**目录**会递归求和，
+                // 一旦仓库里出现一个名叫 `foo.lastUpdated` 或 `bar_remote.repositories` 的**目录**
+                // （Maven 语义里不该有，但 D8 是全仓唯一按后缀名批量删的规则），
+                // 旧写法会把整棵目录当"失效元数据"提交给删除链路。
+                let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+                guard values?.isRegularFile == true else { continue }
+                let path = fileURL.path
+                if path.hasSuffix(".lastUpdated") || path.hasSuffix("_remote.repositories") {
+                    let sz = FileSystem.size(at: path)
+                    if sz > 0 { targets.append(path); total += sz }
                 }
             }
             if !targets.isEmpty {

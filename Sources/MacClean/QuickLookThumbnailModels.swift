@@ -29,8 +29,14 @@ public struct QuickLookCacheItem: Identifiable, Equatable, Hashable {
     public let path: String                   // 绝对路径
     public let size: Int64                    // 占用字节
     public let fileCount: Int                 // 内部文件数量
+    /// 遍历是否完整。false = 被权限掐断过，`size` 是下限。见 `CLICacheItem.readable`
+    /// 的同款理由——QuickLook 借用 `CLICacheScanner.calculateDirectoryStats`，
+    /// 契约要一起带到模型层，卡片全选才拦得住。
+    public let readable: Bool
     public var isSelected: Bool               // 是否选中清理
 
+    /// `isSelected` 默认 `false`（同 `CLICacheItem`）：默认勾选必须由调用方
+    /// 显式写出 `isSelected: readable`，而不是靠"忘了传就走默认 true"这条路展开。
     public init(
         id: String,
         kind: QuickLookCacheKind,
@@ -38,7 +44,8 @@ public struct QuickLookCacheItem: Identifiable, Equatable, Hashable {
         path: String,
         size: Int64,
         fileCount: Int,
-        isSelected: Bool = true
+        readable: Bool = true,
+        isSelected: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -46,6 +53,7 @@ public struct QuickLookCacheItem: Identifiable, Equatable, Hashable {
         self.path = path
         self.size = size
         self.fileCount = fileCount
+        self.readable = readable
         self.isSelected = isSelected
     }
 }
@@ -55,13 +63,17 @@ public struct QuickLookCacheItem: Identifiable, Equatable, Hashable {
 public struct QuickLookThumbnailSummary: Equatable {
     public var items: [QuickLookCacheItem]
     public var totalSize: Int64
+    /// 本轮**认得出**但根读不到的路径。见 `CLICacheSummary.unreadablePaths` 的同款理由。
+    public var unreadablePaths: [String]
 
     public init(
         items: [QuickLookCacheItem] = [],
-        totalSize: Int64 = 0
+        totalSize: Int64 = 0,
+        unreadablePaths: [String] = []
     ) {
         self.items = items
         self.totalSize = totalSize
+        self.unreadablePaths = unreadablePaths
     }
 
     /// 已勾选的释放空间

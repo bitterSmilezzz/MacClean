@@ -474,5 +474,71 @@ extension Selftest {
             }
             return true
         }
+
+        check("Spotlight 面板：遍历被掐断时同时翻 readable、isSelected 与 isResultComplete（v1.73.7 复审 P1-1/P1-2）") {
+            // 只补 `isSelected: metricsReadable` 是不够的——SpotlightModels.swift 的
+            // `isResultComplete = issues.isEmpty` 会仍然报 true，卡片顶部就同时出现
+            // 「结果完整」+「这条我不敢替你决定」两种口径；后者被前者的绿勾吃掉。
+            // 这条测的就是残缺时三处（item.readable / item.isSelected / summary.isResultComplete）
+            // 一起翻假。
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-spot-den-\(UUID().uuidString)"
+            let locked = root + "/sub_lock"
+            try? fm.createDirectory(atPath: locked + "/deep", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/sub_ok", withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/sub_ok/a.bin", contents: Data(repeating: 1, count: 8192))
+            fm.createFile(atPath: locked + "/deep/b.bin", contents: Data(repeating: 2, count: 8192))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = SpotlightScanner.shared.scan(
+                customCoreSpotlightDir: "/private/tmp/macclean-nonexistent-core-\(UUID().uuidString)",
+                customCacheDir: root,
+                customVolumeDirs: [],
+                inventory: selftestInventory())
+            var bad: [String] = []
+            guard let it = sum.items.first(where: { $0.path == root }) else {
+                bad.append("残缺的树没被列出来：items=\(sum.items.map(\.path))")
+                print("      " + bad.joined(separator: "\n      "))
+                return false
+            }
+            if it.readable { bad.append("item.readable 没被填成 false——卡片按它过滤，不填就放行（P1-1）") }
+            if it.isSelected { bad.append("残缺项仍默认勾选（P1-1）") }
+            if sum.isResultComplete {
+                bad.append("残缺时 isResultComplete 仍报 true（P1-2）——面板同时说\"结果完整\"与\"这条我不敢替你决定\"，后者被前者盖过")
+            }
+            // 反证：完整可读的树必须 readable && isSelected（bloatedOrCorrupted 状态默认勾）
+            let ok = "/private/tmp/macclean-spot-ok-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: ok + "/inner", withIntermediateDirectories: true)
+            fm.createFile(atPath: ok + "/inner/x.bin", contents: Data(repeating: 3, count: 4096))
+            defer { try? fm.removeItem(atPath: ok) }
+            FileSystem.resetDeniedAccess()
+            let clean = SpotlightScanner.shared.scan(
+                customCoreSpotlightDir: "/private/tmp/macclean-nonexistent-core-\(UUID().uuidString)",
+                customCacheDir: ok,
+                customVolumeDirs: [],
+                inventory: selftestInventory())
+            guard let ci = clean.items.first(where: { $0.path == ok }) else {
+                bad.append("完整可读的缓存没被列出来")
+                print("      " + bad.joined(separator: "\n      "))
+                return false
+            }
+            if !ci.readable { bad.append("完整树被判成残缺（P1-1 反证）") }
+            if !ci.isSelected { bad.append("完整树没被默认勾选（契约焊死成永不勾）") }
+            if !clean.isResultComplete {
+                bad.append("完整树却被判 isResultComplete=false（会把正常面板拖进\"结果不完整\"状态）")
+            }
+            if !clean.issues.isEmpty { bad.append("完整树却留了 issue：\(clean.issues.count) 条") }
+            FileSystem.resetDeniedAccess()
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
     }
 }

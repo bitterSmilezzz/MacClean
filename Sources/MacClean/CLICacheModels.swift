@@ -94,8 +94,17 @@ public struct CLICacheItem: Identifiable, Equatable, Hashable {
     public let path: String               // 绝对路径
     public let size: Int64                // 缓存占用字节
     public let fileCount: Int             // 包含的文件数量
+    /// 本次遍历是否完整。false = 被权限掐断过，`size` 是"至少这么多"而不是"就这么大"。
+    /// 卡片的全选按钮**必须**按这个字段过滤，否则残缺项会被用户一次点击重新默认勾上——
+    /// v1.73.7 复审 P1-1 抓到的正是这条：`scan()` 阶段把 `isSelected` 关到 `readable` 上，
+    /// 但 `selectAll(true)` 里裸 `for i in … { items[i].isSelected = true }` 会把它翻回来。
+    public let readable: Bool
     public var isSelected: Bool           // 是否勾选清理
 
+    /// `isSelected` 的默认值是 `false`——默认勾选是安全策略，不该由"忘了传"这种
+    /// 编译期过得去的形状悄悄打开（v1.73.7 复审 P1-3）。任何调用方要默认勾选都必须
+    /// 显式写出 `isSelected: readable`（或 `isSelected: readable && …`），
+    /// 让 lint 能钉住"这个 true 是从 readable 来的"这条链。
     public init(
         id: String,
         toolKind: CLIToolKind,
@@ -103,7 +112,8 @@ public struct CLICacheItem: Identifiable, Equatable, Hashable {
         path: String,
         size: Int64,
         fileCount: Int,
-        isSelected: Bool = true
+        readable: Bool = true,
+        isSelected: Bool = false
     ) {
         self.id = id
         self.toolKind = toolKind
@@ -111,6 +121,7 @@ public struct CLICacheItem: Identifiable, Equatable, Hashable {
         self.path = path
         self.size = size
         self.fileCount = fileCount
+        self.readable = readable
         self.isSelected = isSelected
     }
 }
@@ -124,17 +135,24 @@ public struct CLICacheSummary: Equatable {
     /// 扫不到**精确**缓存路径的工具：卡片必须如实说"该工具缓存位置未识别"，
     /// 而不是悄悄退回到删工具目录（v1.73.0）。
     public var unrecognizedTools: [CLIToolKind]
+    /// 本轮**认得出**但**读不到**（枚举器 nil）的路径。v1.73.7 二次复审 P1-D：
+    /// 只把残缺项的 `isSelected` 关掉、又让 `matched = true` 短路掉 unrecognizedTools，
+    /// 结果就是"三无状态"——面板既没列这一项、也没亮未识别、也没报残缺。
+    /// 这条通道给卡片顶栏用："本轮 X 处缓存读不到，下面的列表不完整"。
+    public var unreadablePaths: [String]
 
     public init(
         items: [CLICacheItem] = [],
         totalSize: Int64 = 0,
         toolCount: Int = 0,
-        unrecognizedTools: [CLIToolKind] = []
+        unrecognizedTools: [CLIToolKind] = [],
+        unreadablePaths: [String] = []
     ) {
         self.items = items
         self.totalSize = totalSize
         self.toolCount = toolCount
         self.unrecognizedTools = unrecognizedTools
+        self.unreadablePaths = unreadablePaths
     }
 
     /// 已选中的释放潜力

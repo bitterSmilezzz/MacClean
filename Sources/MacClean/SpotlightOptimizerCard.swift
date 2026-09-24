@@ -34,6 +34,13 @@ public struct SpotlightOptimizerCard: View {
         displayedItems.filter(\.isSelected).count
     }
 
+    /// 全选作用域：孤儿/损坏 **且** 本轮真的读全了（`readable == true`）的项。
+    /// 之前 disabled 只看孤儿数、label 是常量「全选」——当孤儿项全被权限掐断时，
+    /// 按钮可点但点了什么都不发生（v1.73.7 二次复审 P1-E）。
+    private var selectableCount: Int {
+        displayedItems.filter { $0.status.isOrphanOrCorrupted && $0.readable }.count
+    }
+
     private var selectedSize: Int64 {
         displayedItems.filter(\.isSelected).reduce(0) { $0 + $1.size }
     }
@@ -359,12 +366,12 @@ public struct SpotlightOptimizerCard: View {
 
     private var actionFooterBar: some View {
         HStack(spacing: Space.xs) {
-            Button("全选") {
-                selectAll(true)
+            Button(selectedCount == selectableCount && selectableCount > 0 ? "取消全选" : "全选") {
+                selectAll(!(selectedCount == selectableCount && selectableCount > 0))
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(displayedItems.filter(\.status.isOrphanOrCorrupted).isEmpty)
+            .disabled(selectableCount == 0)
 
             Button("全不选") {
                 selectAll(false)
@@ -445,7 +452,9 @@ public struct SpotlightOptimizerCard: View {
     private func selectAll(_ select: Bool) {
         for i in 0..<summary.items.count {
             if summary.items[i].status.isOrphanOrCorrupted {
-                summary.items[i].isSelected = select
+                // 残缺项不能被全选重新勾上（v1.73.7 复审 P1-1）：scan 阶段 `isSelected: isOrphan && readable`
+                // 只是把默认关到位，用户点一次全选就得走同一道闸。
+                summary.items[i].isSelected = select && summary.items[i].readable
             }
         }
     }
