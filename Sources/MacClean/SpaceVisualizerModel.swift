@@ -215,22 +215,26 @@ struct SpaceNode: Identifiable, Equatable {
         return FileManager.default.fileExists(atPath: expanded)
     }
 
-    /// 判定该节点是否可作为超大/陈旧文件进行原位归档压缩或外接盘迁移
+    /// 判定该节点是否可作为超大/陈旧文件进行原位归档压缩或外接盘迁移。
+    ///
+    /// **路径判据与 `SpaceArchiveService.isSafeToArchivePath` 同源**（v1.73.9）：
+    /// 上一版这里自己维护一份 10 条字面的"危险根"清单 + `standardizingPath`，
+    /// 与服务侧（`normalizePath(realPath())` + `coreGuardVerdict` + 卷下深度 ≥2）
+    /// 是两套标准——清单不认 `/private/var/db`、`/private/var/vm`、
+    /// `/private/var/folders/zz`、`/Library/Updates` 这几条真在 `systemProtected`
+    /// 里的 SIP 位置，UI 就把"归档"按钮开放给它们；用户点下去才被服务侧拒——
+    /// 是「UI 谎报能归档」，也正是 `RELEASE-CHECKLIST §"别自己复制清单"` 点名的形态。
+    /// `standardizingPath` 会依路径是否存在改变形态，`/private/var/db` 与
+    /// `/var/db` 匹配不上（见 `FileSystem.swift:1058` 的自述），一并换掉。
     var canArchiveOrMigrate: Bool {
         guard isPhysicalItem, let p = path else { return false }
-        let norm = (CleanPaths.expand(p) as NSString).standardizingPath
-
-        // 排除系统核心根目录与关键根目录
-        let forbidden = ["/", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/etc", "/var", "/Volumes"]
-        if forbidden.contains(norm) || norm == NSHomeDirectory() {
-            return false
-        }
-        // 本身已经是 zip 的无需再归档
-        if norm.lowercased().hasSuffix(".zip") {
-            return false
-        }
-        // 体积门槛：> 10 MB 适合归档与迁移
-        return size >= 10 * 1024 * 1024
+        // 体积门槛：> 10 MB 适合归档与迁移。这一条是 UI 策略、不是安全护栏，
+        // 服务侧不看它（服务侧被显式调用即执行），所以留在模型里。
+        guard size >= 10 * 1024 * 1024 else { return false }
+        // `.zip` 本身已压缩，不需要再归档；这一条也是 UI 策略。
+        let expanded = CleanPaths.expand(p)
+        if expanded.lowercased().hasSuffix(".zip") { return false }
+        return SpaceArchiveService.isSafeToArchivePath(expanded)
     }
 
     /// 是否为沉睡冷文件（半年以上未修改）

@@ -167,5 +167,75 @@ extension Selftest {
 
             return true
         }
+
+        check("归档/迁移入口的 UI 判据与服务判据同源：SIP 位置不开放按钮（v1.73.9）") {
+            // 上一版 `SpaceVisualizerModel.canArchiveOrMigrate` 自己维护一份 10 条字面
+            // "危险根"清单 + `standardizingPath`；服务侧 `isSafeToArchive` 走的是
+            // `normalizePath(realPath())` + `coreGuardVerdict` + 卷下深度 ≥2。两套标准的
+            // 交集之外就是 UI 谎报的口子：`/private/var/db` 等 4 条 SIP 位置（都在
+            // `CleanPaths.systemProtected` 里）不匹配清单里的任何一条字面，UI 就把
+            // "归档"按钮开放出去，用户点下去才被服务侧拒。这条 check 钉住两侧同源。
+            var bad: [String] = []
+            // ① 6 条 SIP 路径必须被服务判据拒（也是 UI 判据应该拒的）。
+            // 服务判据本身不查存在性，用假想的子路径也稳。
+            for sip in CleanPaths.systemProtected {
+                if SpaceArchiveService.isSafeToArchivePath(sip + "/macclean-fake/inner") {
+                    bad.append("isSafeToArchivePath 放行了 SIP 位置 \(sip)/…")
+                }
+            }
+            // ② UI 判据（走同一条服务判据）在 SIP 节点上必须返 false。
+            // **挑一条只在 SIP 清单里、不在旧 UI 手写清单里**的 SIP 路径——旧手写清单是
+            // `["/", "/System", "/Library", "/Applications", "/usr", "/bin", "/sbin",
+            //   "/etc", "/var", "/Volumes"]`（10 条精确匹配），`/private/var/db` 与它
+            // 别名 `/var/db` **一条都不在**里面（`/var` 只精确匹配 `/var`、不匹 `/var/db`），
+            // 所以旧实现会让按钮开放给这条真在 `systemProtected` 里的 SIP 位置。用 `/System`
+            // 之类的两条清单交集做样本就变成"OLD 也拒 → 断言恒真"（v1.73.8 二次复审
+            // P1 的同一族假绿：判据看起来在测、其实两个实现都能过——先跑一次 OLD 变异
+            // 才算证明它有效）。
+            let discriminatingSIP = "/private/var/db"
+            // v1.73.9 复审 P1：上一版这里 `else { print; return true }` 把"样本不存在"
+            // 记成**绿灯**——`Selftest.check` 只看返回值 true/false，print 不算数。
+            // `/private/var/db` 在 macOS 上必然存在（SIP 清单里就它，`/var/db` 是它的
+            // firmlink 目标），一旦不存在说明本机被非常规改动，判红而不是判绿。
+            if !FileManager.default.fileExists(atPath: discriminatingSIP) {
+                print("      判别性 SIP 样本 \(discriminatingSIP) 在本机不存在——端到端断言无法定论，判红而不是判绿")
+                return false
+            }
+            let node = SpaceNode(name: "sip-node", path: discriminatingSIP,
+                                 size: 100 * 1024 * 1024, color: .gray)
+            if node.canArchiveOrMigrate {
+                bad.append("canArchiveOrMigrate 在 SIP 节点 \(discriminatingSIP) 上仍返 true——"
+                           + "UI 与服务判据不同源，用户点下去才被拒")
+            }
+            // ③ 反证：主目录下一个真实存在、体积达阈的普通文件必须仍返 true——
+            // 否则本轮改动把正常入口也关了。造一个 11 MB 的临时文件在用户缓存目录下，
+            // `defer` 删自己建的这一份（`MEMORY: feedback-assert-external-tool-behavior-not-arg-shape`
+            // 的规矩：失败分支删的必须是自己建的东西）。
+            let home = NSHomeDirectory()
+            let probeDir = home + "/Library/Caches/macclean-selftest-archive"
+            let probeFile = probeDir + "/big.bin"
+            let fm = FileManager.default
+            try? fm.createDirectory(atPath: probeDir, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: probeDir) }
+            // 11 MB 稀疏文件即可（服务判据不看真实占用；UI 的 `size` 是构造字段，直接给）
+            fm.createFile(atPath: probeFile, contents: Data(count: 1024))
+            let okNode = SpaceNode(name: "big.bin", path: probeFile,
+                                   size: 11 * 1024 * 1024, color: .gray)
+            if !okNode.canArchiveOrMigrate {
+                bad.append("反证不成立：主目录下 11 MB 的普通文件被 UI 判据拒了——"
+                           + "本轮把正常入口一起关掉了；用户看不到本可以归档的东西")
+            }
+            // ④ `standardizingPath` 的漂移形态也要一并挡：构造一个 `/private` 别名下的
+            // SIP 路径（真机 SIP 清单里就有 `/private/var/db` 这类），断两侧的判据结果一致。
+            let aliasSamples = ["/private/var/db", "/private/var/vm", "/private/var/folders/zz",
+                                "/var/db", "/var/vm", "/var/folders/zz"]
+            for p in aliasSamples {
+                if SpaceArchiveService.isSafeToArchivePath(p + "/x") {
+                    bad.append("别名路径 \(p) 被判据放行——`normalizePath` 是不是又漂回 `standardizingPath` 了")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
     }
 }

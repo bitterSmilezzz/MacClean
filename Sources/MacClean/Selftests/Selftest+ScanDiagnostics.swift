@@ -1143,6 +1143,156 @@ extension Selftest {
             return offenders.isEmpty
         }
 
+        check("G19 不变量：产品源码非注释里不得出现 `standardizingPath`，UI 侧归档/迁移判据必须与 service 侧同源") {
+            // `FileSystem.swift:1058` 明写："为什么不能只用 `standardizingPath`：该 API
+            // 会视路径在文件系统中是否真实存在而决定是否解析 `/private` 别名"——于是同
+            // 一目录在不同上下文里得到两种形态、比较时互相匹配不上，历史上导致过 7 项
+            // 清理与护栏测试失败（Cleaner 彻底删除／移入废纸篓、isSafeToClean Cellar 边界等）。
+            // 本仓库的确定性归一化只有 `FileSystem.normalizePath`。v1.73.9 抓到两处漏网：
+            //   · `SpaceVisualizerModel.canArchiveOrMigrate`（原 :221）——UI 判据 + 一份
+            //     手写"危险根"清单，与服务侧 `isSafeToArchivePath`（`normalizePath(realPath())`
+            //     + `coreGuardVerdict` + 卷下深度 ≥2）完全两套标准，SIP 位置在 UI 上被放行、
+            //     用户点下去才被服务侧拒；
+            //   · `DevProjectScanner.swift:53` `projectMap` 合并 key——同一工程从两条来源
+            //     被扫到时一个成 `/private/Users/x/proj`、另一个成 `/Users/x/proj`，
+            //     聚合失效，界面上一个工程两张卡。
+            // 两侧判据同源 + 归一化确定性——这两条一起钉，needles 与 mustBeThere 各一。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
+            guard files.count >= 50 else {
+                print("      只扫到 \(files.count) 个产品源码文件，这条 lint 没有覆盖面")
+                return false
+            }
+            // `SpaceVisualizerModel.swift` 必须走 `SpaceArchiveService.isSafeToArchivePath`——
+            // 正向哨兵。否则本轮"UI/服务同源"改回两套只是把 `standardizingPath` 换掉、
+            // 判据仍是两份。
+            let mustDelegate: [String: String] = [
+                "SpaceVisualizerModel.swift": "SpaceArchiveService.isSafeToArchivePath(",
+            ]
+            // v1.73.9 复审 P1 抓到"上一版只归一读侧、写侧仍 `p.path` 原样"——修完读侧
+            // 忘写侧就是这一族最阴的形态：mergeKey 本身对、helper 有自检，但**没被调**。
+            // 单靠 mergeKey 的 helper 自检抓不到（它只测 helper 正确、不测调用点），
+            // 只能靠源码结构判据。切进 `func scan(roots:` 体内，扫所有 `projectMap[...]=`
+            // 赋值（3 处），断言每一处的中括号里必须是 `Self.mergeKey(` 或已归一的
+            // `normalizedPath` 变量——写 `projectMap[p.path] = p`（原始未归一）就判红。
+            let devProjectScanKey: (file: String, fn: String, needles: [String]) = (
+                "DevProjectScanner.swift", "funcscan(roots:",
+                ["Self.mergeKey(", "normalizedPath"]
+            )
+            // v1.73.9 复审 P2 抓到：上一版 `mustDelegate` 只在**整文件字面**判"出现过一次"，
+            // 塞进 `if false {}` 死分支、塞进字符串字面量、或挪到别的函数体都能满足——
+            // 与 v1.73.8 二次复审 P2-3 抓到的同族假绿一模一样。改成**切进 `canArchiveOrMigrate`
+            // 属性体**判"这个体里必须出现"（大括号深度截体，同 v1.73.7 复审后立的规矩）。
+            // 同时补上 G18 有的两条护栏：`mustDelegate` 里的文件在不在 files 里、每文件
+            // 30% 保留比例活性证据——`SpaceVisualizerModel.swift` 一旦被挪进子目录，
+            // `mustDelegate[rel]` 永不命中、哨兵静默停摆。
+            let missingDelegates = Set(mustDelegate.keys).subtracting(Set(files)).sorted()
+            guard missingDelegates.isEmpty else {
+                print("      lint 覆盖不到必委托的文件（可能被移进子目录）：\(missingDelegates)")
+                return false
+            }
+            var offenders: [String] = []
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<源文件不可读>")
+                    continue
+                }
+                let rawNonWs = src.filter { !$0.isWhitespace }.count
+                let code = Selftest.stripSwiftComments(src)
+                let squeezed = code.filter { !$0.isWhitespace }
+                // 每文件 30% 保留比例活性证据（同 G18）：inBlock 被字符串里的 `/*`
+                // 拖到 EOF 时，单文件会露馅、全仓量却几乎不动。
+                if rawNonWs >= 1_000 {
+                    let ratio = Double(squeezed.count) / Double(rawNonWs)
+                    if ratio < 0.30 {
+                        offenders.append("\(rel)<剥离后只剩 \(squeezed.count)/\(rawNonWs)"
+                                         + "（\(Int(ratio * 100))%），本文件 lint 覆盖已失效>")
+                    }
+                }
+                if squeezed.contains("standardizingPath") {
+                    offenders.append("\(rel)<含 standardizingPath>")
+                }
+                if let required = mustDelegate[rel] {
+                    // 精确截 `var canArchiveOrMigrate: Bool {` 的属性体（大括号深度），
+                    // 判据**只在体内**取——否则死分支 / 别的函数里同样能满足"整文件出现过"，
+                    // 委托被整段撤掉也判绿（v1.73.9 复审 P2）。
+                    guard let header = squeezed.range(of: "varcanArchiveOrMigrate:Bool{")
+                            ?? squeezed.range(of: "canArchiveOrMigrate:Bool{") else {
+                        offenders.append("\(rel)<找不到 canArchiveOrMigrate 定义，委托无从核实>")
+                        continue
+                    }
+                    // `header` 已经含方法体开括号 `{`——从它后面一个字符起扫，depth 初值 1。
+                    // （上一版 `header.upperBound...` 里再找 `{`，找到的其实是嵌套的第一个
+                    // 花括号，把方法体的边界截错位置；G19 lint 因此把已经委托的属性判成
+                    // "没引用"。）
+                    var depth = 1
+                    var i = header.upperBound
+                    var endIdx = squeezed.endIndex
+                    while i < squeezed.endIndex {
+                        let c = squeezed[i]
+                        if c == "{" { depth += 1 }
+                        else if c == "}" {
+                            depth -= 1
+                            if depth == 0 { endIdx = i; break }
+                        }
+                        i = squeezed.index(after: i)
+                    }
+                    let body = String(squeezed[header.upperBound..<endIdx])
+                    if !body.contains(required) {
+                        offenders.append("\(rel)<canArchiveOrMigrate 方法体里没引用 "
+                                         + "\(required)——委托可能被整段撤掉>")
+                    }
+                }
+                // DevProject `projectMap[...]=` 的每一处都必须走 mergeKey/normalizedPath。
+                if rel == devProjectScanKey.file {
+                    guard let fnRng = squeezed.range(of: devProjectScanKey.fn) else {
+                        offenders.append("\(rel)<找不到 \(devProjectScanKey.fn)，写侧归一判据无从核实>")
+                        continue
+                    }
+                    var depth = 1
+                    var i = fnRng.upperBound
+                    var endIdx = squeezed.endIndex
+                    while i < squeezed.endIndex {
+                        let c = squeezed[i]
+                        if c == "{" { depth += 1 }
+                        else if c == "}" {
+                            depth -= 1
+                            if depth == 0 { endIdx = i; break }
+                        }
+                        i = squeezed.index(after: i)
+                    }
+                    let body = String(squeezed[fnRng.upperBound..<endIdx])
+                    // 切所有 `projectMap[<X>]=` 的 X 段，每个 X 必须命中 needles 之一
+                    var cursor = body.startIndex
+                    var writes = 0
+                    while let openRng = body.range(of: "projectMap[", range: cursor..<body.endIndex) {
+                        writes += 1
+                        // 找到配对的 `]` 之前的内容（projectMap 里不带嵌套方括号）
+                        let afterKey = openRng.upperBound
+                        guard let closeIdx = body[afterKey...].firstIndex(of: "]") else {
+                            offenders.append("\(rel)<projectMap[ 没闭合>")
+                            break
+                        }
+                        let key = String(body[afterKey..<closeIdx])
+                        if !devProjectScanKey.needles.contains(where: key.contains) {
+                            offenders.append("\(rel)<projectMap[\(key)]= 写侧没走 mergeKey>")
+                        }
+                        cursor = body.index(after: closeIdx)
+                    }
+                    if writes < 3 {
+                        offenders.append("\(rel)<只扫到 \(writes) 处 projectMap 赋值，"
+                                         + "少于 3 处——匹配逻辑或函数体截法退化>")
+                    }
+                }
+            }
+            if !offenders.isEmpty {
+                print("      G19 违规：\(offenders)")
+            }
+            return offenders.isEmpty
+        }
+
         check("出厂 deadline 必须是有限且够干活的小值") {
             // 钉的是常量 `defaultGatedReadDeadline`，**不是**运行时那个可变的当前值：
             // 同文件里几条卡死模拟自检会把它临时改成 0.3 再还原，断当前值等于断别人设的值。

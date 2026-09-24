@@ -136,7 +136,7 @@ final class SpaceArchiveService {
         }
 
         // 路径安全判定（不可压缩根目录或关键系统目录）
-        guard isSafeToArchive(expanded) else {
+        guard Self.isSafeToArchivePath(expanded) else {
             return ArchiveResult(success: false, archivePath: "", originalSize: 0, archiveSize: 0, savedBytes: 0, deletedOriginal: false, errorMessage: "该路径受系统核心保护，禁止归档")
         }
 
@@ -223,7 +223,7 @@ final class SpaceArchiveService {
             return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "目标外接卷未就绪或已拔出")
         }
 
-        guard isSafeToArchive(expanded) else {
+        guard Self.isSafeToArchivePath(expanded) else {
             return MigrationResult(success: false, destinationPath: "", migratedBytes: 0, deletedOriginal: false, errorMessage: "系统受保护关键文件禁止迁移")
         }
 
@@ -364,7 +364,15 @@ final class SpaceArchiveService {
     /// `/Library/Printers`、`~/Library/Mail`、`~/Library/Keychains` 全都放行；
     /// 用的又是 `standardizingPath`（会依路径是否存在改变形态，`/private/var` 与
     /// `/var` 匹配不上），也不查 G6 用户数据硬排除与用户白名单。
-    private func isSafeToArchive(_ path: String) -> Bool {
+    ///
+    /// internal（原 `private`）：v1.73.9 让 `SpaceVisualizerModel.canArchiveOrMigrate`
+    /// 直接吃这个判据。UI 侧此前自己维护一份"危险根"清单 + `standardizingPath`，
+    /// 与本判据（`normalizePath(realPath())` + `coreGuardVerdict` + 卷下深度 ≥2）
+    /// 完全两套：清单只列 10 个字面、不认 `/private/var/db`、`/private/var/vm`、
+    /// `/private/var/folders/zz`、`/Library/Updates`——UI 会把按钮开放给这些 SIP
+    /// 位置，用户点下去才被本函数拒——是「UI 谎报能归档」。同一份 G8/G6/白名单
+    /// 判据被两处各读一次，正是 `RELEASE-CHECKLIST §"别自己复制清单"` 点名的形态。
+    static func isSafeToArchivePath(_ path: String) -> Bool {
         if FileSystem.isSymlink(path) { return false }
         let real = FileSystem.normalizePath(FileSystem.realPath(path))
         guard !real.isEmpty, real != "/" else { return false }

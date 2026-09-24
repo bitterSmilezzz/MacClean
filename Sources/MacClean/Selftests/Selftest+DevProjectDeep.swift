@@ -356,5 +356,48 @@ extension Selftest {
 
             return true
         }
+
+        check("DevProject `projectMap` 合并 key：写侧与读侧必须归一到同一路径（v1.73.9 复审 P1）") {
+            // 上一版只归一读侧（`FileSystem.normalizePath(wp.path)`）、写侧仍
+            // `projectMap[p.path] = p` 原样——DerivedData 侧的 `p.path` 常常带
+            // `.xcodeproj`/`.xcworkspace` 工程包后缀（本文件 `deriveProjectName` 就
+            // 明写这条），工作区侧扫到的是纯目录，两侧不剥后缀就永远错过。
+            // ** OLD 变异跑过一遍**：把写侧改回 `projectMap[p.path] = p` 时 ① 立刻判红。
+            var bad: [String] = []
+            // ① 剥工程包后缀：DerivedData 侧带 `.xcodeproj` 与工作区侧纯目录 → 同一 key
+            let dd = "/Users/example/Code/proj/proj.xcodeproj"
+            let ws = "/Users/example/Code/proj"
+            let k1 = DevProjectScanner.mergeKey(dd)
+            let k2 = DevProjectScanner.mergeKey(ws)
+            if k1 != k2 {
+                bad.append("工程包尾段没剥：\(dd) → \(k1) 与 \(ws) → \(k2) 不同 key")
+            }
+            if k1.hasSuffix(".xcodeproj") || k1.hasSuffix(".xcworkspace") {
+                bad.append("mergeKey 结果仍带工程包后缀：\(k1)")
+            }
+            // ② `/private` 别名两侧同形：`/private/Users/x/proj` 与 `/Users/x/proj` 应相等
+            let withAlias = "/private/Users/example/Code/proj"
+            let noAlias = "/Users/example/Code/proj"
+            if DevProjectScanner.mergeKey(withAlias) != DevProjectScanner.mergeKey(noAlias) {
+                bad.append("`/private` 别名没归一："
+                           + "\(DevProjectScanner.mergeKey(withAlias)) vs "
+                           + "\(DevProjectScanner.mergeKey(noAlias))")
+            }
+            // ③ 尾斜杠 / 多余分隔符 / `..` 段都要归一（`normalizePath` 的强项，
+            // 而 `standardizingPath` 依赖存在性会漂）
+            let messy = "/Users/example/Code/proj//foo/.."
+            if DevProjectScanner.mergeKey(messy) != "/Users/example/Code/proj" {
+                bad.append("messy 路径没被归一到 /Users/example/Code/proj："
+                           + DevProjectScanner.mergeKey(messy))
+            }
+            // ④ 反证：`.xcodeproj` 与它所在目录本身要归一到同一个 key；但**另一个**
+            // 工程的目录不能被错误合并进来（否则两张卡反过来合成一张、丢一张）。
+            if DevProjectScanner.mergeKey("/Users/example/A/A.xcodeproj")
+                == DevProjectScanner.mergeKey("/Users/example/B") {
+                bad.append("两个不同工程被 mergeKey 撞到同一 key（过度归一）")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
     }
 }

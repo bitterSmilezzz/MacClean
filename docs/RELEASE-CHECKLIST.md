@@ -311,6 +311,23 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       换成 URL 重载，全仓就没有 atPath 了）。**判据**：下界只要挡住"匹配逻辑退化"就够，
       别拿它当"这条模式必须永远存在"的口号——真消失了就删掉这条 lint 并写清理由，
       比让 lint 变成永远需要豁免要诚实。
+- [ ] **"UI 侧的护栏"和"服务/删除侧的护栏"也要读同一份判据**：v1.73.9 抓到 `SpaceVisualizerModel.canArchiveOrMigrate`
+      自己维护一份 10 条字面的"危险根"清单 + `standardizingPath`——服务侧走的是
+      `normalizePath(realPath())` + `coreGuardVerdict` + 卷下深度 ≥2，两套判据**交集之外**就是
+      UI 谎报的口子（`/private/var/db` 真在 SIP 清单里，但**不在**UI 那份 10 条字面里，
+      UI 把"归档"按钮开放出去、用户点下去才被服务侧拒）。同一份 G8 清单被扫描/UI/服务
+      三处各自抄一遍是本仓同族问题的第三条腿（v1.73.6 求体积生产侧、v1.73.7 UI 卡片全选、
+      v1.73.8 扫描根字符串护栏、v1.73.9 UI 判据 vs 服务判据）——每次都是"上一轮我以为已经收完
+      了的那一族"。判据的**唯一入口**要在文档里明写（G19 行），下一轮加消费点时先看是不是
+      复用而不是复制。
+- [ ] **端到端"变异性"断言要挑**判别性样本**，两侧都拒的例子不算**：v1.73.9 自检的第一版
+      用 `systemProtected.first` 挑样本，落到 `/System`——`/System` 恰好**也**在旧 UI 手写
+      清单里，OLD/NEW 都拒 → 断言恒真。按 `MEMORY: feedback-reproduce-reviewer-causality`
+      跑一次 OLD 变异才露馅。**规矩**：写"OLD 会红 NEW 会绿"的断言时，样本必须**只在**
+      本轮修复的覆盖面里、**不在**被替换掉的旧实现的覆盖面里；否则就是一条"看起来在测、
+      其实两个实现都能过"的假绿。`/private/var/db` 对旧 UI 手写清单就是这种判别性样本
+      （`/var` 精确匹配不认 `/var/db`）——选它、不是选 `/System`。
+
 - [ ] **lint 的"活性证据"要盯命中数，不只看扫到多少文件**：v1.73.6 复审查出——只断言
       `files.count >= 50` 挡不住匹配逻辑退化：只要模式对不上，`offenders` 依然为空、绿灯
       照样报"全仓干净"。正解是**另加一条命中数下界**（当前产品源码非 atPath 的 `.enumerator(`
@@ -369,7 +386,7 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 - [ ] AI 面板：设置（baseURL/Key/模型）→ 连通性测试 → ✨ 提问 → 回答
 
 ## 3. 安全护栏
-- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G18）
+- [ ] 无新增危险路径（对照 CLEANUP-RULES.md G1–G19）
 - [ ] **治理模块内不得出现裸删除调用**（G14）：`grep -rn 'FileManager\.default\.\(removeItem\|trashItem\)\|fm\.\(removeItem\|trashItem\)' Sources/MacClean --exclude-dir=Selftests`
       命中只允许在：① `ResidueDeletionGate` 自己；② `Cleaner`（分类主链路，自带 `isSafeToClean` 与历史/撤销记账）；
       ③ `SpaceArchiveService`（归档后校验完整性才移走原件）；④ `LaunchAgentManager`（只删本 App 自己写的那一个 plist）；

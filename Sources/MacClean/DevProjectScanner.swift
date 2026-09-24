@@ -25,6 +25,22 @@ public final class DevProjectScanner: ObservableObject {
         "~/github"
     ]
 
+    /// `projectMap` 合并 key 的唯一算法。v1.73.9 复审 P1 抓到"上一版只归一读侧、写侧仍
+    /// `p.path` 原样"——一个工程两张卡其实没修完，且 `standardizingPath` 会依路径是否存在
+    /// 决定是否解析 `/private` 别名（见 `FileSystem.swift:1058` 自述）。这里做两件事：
+    /// ① 确定性 `FileSystem.normalizePath`（不触碰文件系统、`/private/var/db` 与 `/var/db`
+    /// 同形）；② 剥掉 Xcode 工程包尾段——`scanDerivedData()` 出来的 `path` 常常带
+    /// `.xcodeproj`/`.xcworkspace` 后缀（本文件 `deriveProjectName` 就明写这条），
+    /// 工作区侧扫到的是纯目录，两侧不先剥就永远错过。internal static 是给自检留的缝：
+    /// 直接把两条形态不同的路径喂进来、断言映射到同一 key，比"扫一次真盘看卡片数"更聚焦。
+    static func mergeKey(_ raw: String) -> String {
+        let n = FileSystem.normalizePath(raw)
+        if n.hasSuffix(".xcodeproj") || n.hasSuffix(".xcworkspace") {
+            return (n as NSString).deletingLastPathComponent
+        }
+        return n
+    }
+
     // MARK: - 主扫描入口
 
     /// 扫描全量开发工程与构建产物
@@ -36,12 +52,16 @@ public final class DevProjectScanner: ObservableObject {
             lastScanDate = Date()
         }
 
-        var projectMap: [String: DevProject] = [:] // path -> DevProject
+        var projectMap: [String: DevProject] = [:] // mergeKey(路径) -> DevProject
+
+        // 合并 key 的唯一算法见 `Self.mergeKey`（internal 是给自检留的缝：v1.73.9 复审
+        // P1 抓到上一版只归一读侧、写侧仍 `p.path` 原样——"一个工程两张卡"其实没修完；
+        // 自检要能直接喂两条形态不同的路径进去、断言映射到同一个 key）。
 
         // 1. 扫描 Xcode DerivedData 并反查工程路径
         let derivedDataProjects = scanDerivedData()
         for p in derivedDataProjects {
-            projectMap[p.path] = p
+            projectMap[Self.mergeKey(p.path)] = p
         }
 
         // 2. 扫描工作区代码目录下的多语言工程产物
@@ -50,7 +70,12 @@ public final class DevProjectScanner: ObservableObject {
 
         // 3. 聚合合并（若相同工程既有 DerivedData 又有本地 target/.build，合并至同一卡片）
         for wp in workspaceProjects {
-            let normalizedPath = (wp.path as NSString).standardizingPath
+            // 合并 key 走 `FileSystem.normalizePath`（v1.73.9）：上一版用 `standardizingPath`，
+            // 那个 API 会依路径是否存在决定是否解析 `/private` 别名（见 `FileSystem.swift:1058`
+            // 自述），于是同一工程从两条来源被扫到时一个成 `/private/Users/x/proj`、另一个成
+            // `/Users/x/proj`，`projectMap` 里成两个 key、界面上两张卡——聚合本身就是它的用途，
+            // 判据漂移等于合并失效。归一化必须是**确定性**的、不触碰文件系统。
+            let normalizedPath = Self.mergeKey(wp.path)
             if var existing = projectMap[normalizedPath] {
                 // 合并技术栈
                 for t in wp.types where !existing.types.contains(t) {
