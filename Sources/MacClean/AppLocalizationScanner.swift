@@ -186,7 +186,7 @@ public enum AppLocalizationScanner {
             // 读不到语言包清单 = 无法给出任何结论，不是"这个 App 没有外语包"
             return AppLocalizationBundle(
                 id: appPath, appName: appName, bundleID: bundleID, appPath: appPath,
-                appTotalSize: directorySize(at: appPath), languagePacks: [],
+                appTotalSize: FileSystem.bundleSize(at: appPath), languagePacks: [],
                 isRunningApp: blockIsRunning, isAppleSystemApp: blockIsApple,
                 evidenceNote: "语言资源目录读不到（\(resourcesPath)）：无法判断可清理项。")
         }
@@ -216,7 +216,7 @@ public enum AppLocalizationScanner {
                 code: code,
                 displayName: LocalizationHelper.displayName(for: code),
                 path: lprojPath,
-                size: directorySize(at: lprojPath),
+                size: FileSystem.bundleSize(at: lprojPath),
                 // 阻断时全部保护：既有 UI 只允许勾选 `!isProtected`，这样默选也进不来
                 isProtected: reason != nil,
                 // **绝不默认勾选**：删包内资源要用签名完整性换空间，决定权只能在用户
@@ -231,7 +231,7 @@ public enum AppLocalizationScanner {
             appName: appName,
             bundleID: bundleID,
             appPath: appPath,
-            appTotalSize: directorySize(at: appPath),
+            appTotalSize: FileSystem.bundleSize(at: appPath),
             languagePacks: packs.sorted {
                 // 排序：保护语言排前面，其余按占用大小降序
                 if $0.isProtected != $1.isProtected {
@@ -258,29 +258,6 @@ public enum AppLocalizationScanner {
             if let bid = bundleID?.lowercased(), app.bundleIdentifier?.lowercased() == bid { return true }
         }
         return false
-    }
-
-    /// 计算目录大小
-    public static func directorySize(at path: String) -> Int64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: path),
-            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey],
-            options: [],
-            errorHandler: nil
-        ) else { return 0 }
-
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            if let resourceValues = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .fileSizeKey]) {
-                let size = resourceValues.totalFileAllocatedSize
-                    ?? resourceValues.fileAllocatedSize
-                    ?? resourceValues.fileSize
-                    ?? 0
-                total += Int64(size)
-            }
-        }
-        return total
     }
 
     // MARK: - 清理

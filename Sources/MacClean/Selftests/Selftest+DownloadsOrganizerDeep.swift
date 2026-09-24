@@ -592,6 +592,189 @@ extension Selftest {
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
         }
+
+        check("面板给 .app 求体积时，走不通的子目录必须记成盲区（不许静默算成 0）") {
+            // 原先这条走的是 AppLocalizationScanner.directorySize：
+            // `enumerator(... errorHandler: nil)` —— 第一个错误就把遍历**掐断**，
+            // 于是"有一半没读到"和"真的是 0 字节"在结果上一模一样，界面上一个
+            // 真实的 App 显示 0 B。这正是 FileSystem.swift 顶部注释写明要消灭的那个形状。
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-dssize-\(UUID().uuidString)"
+            let app = root + "/Big.app"
+            let denied = app + "/Contents/Privileged"
+            try? fm.createDirectory(atPath: app + "/Contents/Resources", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: denied, withIntermediateDirectories: true)
+            fm.createFile(atPath: app + "/Contents/Resources/blob.bin",
+                          contents: Data(repeating: 5, count: 8192))
+            // 被拒的目录里**要有东西**，否则"补上授权后体积变大"这个活性判据
+            // 无从成立（第一版这里是个空目录，解锁前后都是 8192，反证腿永远等不到增长）。
+            fm.createFile(atPath: denied + "/payload.bin",
+                          contents: Data(repeating: 9, count: 32768))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: denied)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: denied)
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = DownloadsOrganizerScanner.shared.scan(customDirectory: root)
+            guard let shown = sum.items.first(where: { $0.fileName == "Big.app" }) else {
+                print("      fixture 没被列进面板，这条没在测真实路径")
+                return false
+            }
+            // 数字本身也要可证伪：只断"记了盲区"的话，把 size 改成恒返回 0 照样绿，
+            // 而界面显示的就是那个 0 B。
+            guard shown.size > 0 else {
+                print("      可读部分没算进体积（面板会显示 0 B）")
+                return false
+            }
+            let seen = FileSystem.deniedAccessSnapshot()
+            guard seen.contains(FileSystem.normalizePath(denied)) else {
+                print("      走不通的子目录没记盲区（本轮盲区 \(seen.count) 处）")
+                return false
+            }
+            // 反证：没有拒绝项时不该凭空冒出盲区。
+            // **必须先失效缓存**——第一次 scan 的结果已在两级缓存里，直接再 scan 一次
+            // 是零 I/O 命中，永远不会报错，这一腿就成了恒绿断言（复审 F2）。
+            FileSystem.invalidateMeasurements(for: [app, denied, root])
+            let firstSize = shown.size
+            FileSystem.resetDeniedAccess()
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: denied)
+            let sum2 = DownloadsOrganizerScanner.shared.scan(customDirectory: root)
+            let secondSize = sum2.items.first(where: { $0.fileName == "Big.app" })?.size ?? 0
+            // 断"变大"而不是断"> 0"：缓存命中时旧值本来就 > 0，只看正负查不出
+            // 失效没覆盖到包内口径那个会话键。
+            guard secondSize > firstSize else {
+                print("      反证腿没真的重走遍历：\(firstSize) → \(secondSize)"
+                      + "（invalidateMeasurements 是否漏了包内口径的会话键？）")
+                return false
+            }
+            guard !FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(denied)) else {
+                print("      可读的子目录被记成了盲区")
+                return false
+            }
+            return true
+        }
+
+        check("产品源码不得再出现 errorHandler:nil / {_,_ in false} 这两种字面量") {
+            // 只钉这一族**字面量**，封不住整个类别：Foundation 里整个省略
+            // `errorHandler:` 参数与传 `nil` 语义完全相同（第一个错误终止遍历且不报告），
+            // 而当前产品源码另有 5 处 `.enumerator(` 就是这么写的（见 v1.73.5 复审待议）。
+            // 所以这条的红/绿只表示「没人再用这两种显式坏写法」，不表示「求体积已收口」。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter {
+                $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/")
+            }.sorted()
+            let mustBeThere: Set<String> = ["AppLocalizationScanner.swift", "FileSystem.swift",
+                                            "DownloadsOrganizerScanner.swift"]
+            let missing = mustBeThere.subtracting(Set(files)).sorted()
+            guard missing.isEmpty else {
+                print("      扫描范围缺了必然存在的文件：\(missing)")
+                return false
+            }
+            // 只钉 3 个文件名不足以证明「扫过了全仓」：subpathsOfDirectory 退化成
+            // 只返回这几个时，这条 lint 就在一片空集上恒真通过。补一个宽松下界。
+            guard files.count >= 50 else {
+                print("      只扫到 \(files.count) 个产品源码文件，这条 lint 没有覆盖面")
+                return false
+            }
+            var offenders: [String] = []
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<不可读>")
+                    continue
+                }
+                for (idx, line) in src.split(separator: "\n", omittingEmptySubsequences: false)
+                    .enumerated() {
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    if t.hasPrefix("//") || t.hasPrefix("///") { continue }
+                    // 去掉所有空白再匹配：`errorHandler:nil`、多行折行、多个空格都拦得住。
+                    let squeezed = String(t.filter { !$0.isWhitespace })
+                    if squeezed.contains("errorHandler:nil")
+                        || squeezed.contains("errorHandler:{_,_infalse}") {
+                        offenders.append("\(rel):\(idx + 1)")
+                    }
+                }
+            }
+            if !offenders.isEmpty { print("      errorHandler 静默吞错的遍历：\(offenders)") }
+            return offenders.isEmpty
+        }
+
+        check("两种求体积口径不得共用缓存：bundleSize 必须真的比 size 大且与调用顺序无关") {
+            // `measure` 的会话缓存与跨会话指纹缓存都以路径为键，而"是否下钻进包"是
+            // 后加的第二个维度。键里不带它，先调用哪一个就会把哪一个的数固化成权威值
+            // ——少算三成的那个数会串到另一个口径上去（v1.73.5 复审 F3 的直接风险）。
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-pkgsize-\(UUID().uuidString)"
+            let app = root + "/Outer.app"
+            // 嵌套包必须长得像包（`Contents/Info.plist`）才会被 `.skipsPackageDescendants`
+            // 跳掉。实测裸 `Inner.framework/Versions/A/Resources/` 不算包，两种口径给出
+            // 同一个数——那样这条断言就成了"恒等式"，什么也没测（探针验证过才改成这样）。
+            let inner = app + "/Contents/PlugIns/Inner.bundle/Contents/Resources"
+            try? fm.createDirectory(atPath: app + "/Contents/MacOS", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: inner, withIntermediateDirectories: true)
+            fm.createFile(atPath: app + "/Contents/MacOS/bin", contents: Data(repeating: 1, count: 4096))
+            fm.createFile(atPath: app + "/Contents/PlugIns/Inner.bundle/Contents/Info.plist",
+                          contents: Data("<plist/>".utf8))
+            fm.createFile(atPath: inner + "/blob.bin", contents: Data(repeating: 2, count: 65536))
+            defer { try? fm.removeItem(atPath: root) }
+
+            // 顺序 A：先粗口径，再要包内口径
+            FileSystem.invalidateMeasurements(for: [app])
+            let coarseFirst = FileSystem.size(at: app)
+            let fineFirst = FileSystem.bundleSize(at: app)
+            // 顺序 B：反过来，且先失效会话缓存，确保不是"第一次调用留下的运气"
+            FileSystem.invalidateMeasurements(for: [app])
+            let fineSecond = FileSystem.bundleSize(at: app)
+            let coarseSecond = FileSystem.size(at: app)
+
+            var bad: [String] = []
+            if fineFirst <= coarseFirst {
+                bad.append("下钻包内没有多算：size=\(coarseFirst) bundleSize=\(fineFirst)"
+                           + "（嵌套包没被跳过？检查 fixture 是否长得像包）")
+            }
+            if fineSecond != fineFirst || coarseSecond != coarseFirst {
+                bad.append("结果随调用顺序变化，说明两种口径共用了缓存："
+                           + "\(coarseFirst)/\(fineFirst) vs \(coarseSecond)/\(fineSecond)")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("被权限挡过的**部分**结果不得写进跨会话指纹缓存（残缺不许被固化 7 天）") {
+            // 复审 F1 说的是"0 被固化"。实测那个场景不成立：根整个读不到时指纹的
+            // childCount 从 0 变成真实值，补授权后指纹自然不匹配、会重算。
+            // 真正会被固化的是**部分结果**——根可列、某个子目录被拒，遍历继续，
+            // 得到一个偏小的 size；而根的指纹（子项数 + 子项 mtime 之和）在 chmod 前后不变，
+            // 于是这个残缺值会被当权威值复用最长 7 天。这条钉的是后者。
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-partial-\(UUID().uuidString)"
+            let locked = root + "/locked"
+            try? fm.createDirectory(atPath: locked + "/deep", withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/visible.bin", contents: Data(repeating: 1, count: 8192))
+            fm.createFile(atPath: locked + "/deep/big.bin", contents: Data(repeating: 2, count: 98304))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: root)
+            }
+            FileSystem.beginMeasurementSession()
+            let partial = FileSystem.size(at: root)
+            guard partial >= 8192, partial < 106496 else {
+                print("      前置条件不成立：期望拿到部分值，实测 \(partial)")
+                return false
+            }
+            // 只改子目录权限：根的子项数与子项 mtime 都不变 → 指纹不变
+            try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+            FileSystem.beginMeasurementSession()
+            let full = FileSystem.size(at: root)
+            guard full > partial else {
+                print("      授权补上后仍返回那个部分值 \(partial) —— 残缺结果被跨会话缓存固化了")
+                return false
+            }
+            return true
+        }
     }
 }
 

@@ -181,7 +181,7 @@ public final class FontCacheInspector {
         for candidate in candidatePaths {
             guard Self.isUserCachePath(candidate.path) else { continue }
             guard fm.fileExists(atPath: candidate.path) else { continue }
-            let size = AppLocalizationScanner.directorySize(at: candidate.path)
+            let size = FileSystem.size(at: candidate.path)
             if size > 0 {
                 results.append(FontCacheItem(
                     id: candidate.path, name: candidate.name, path: candidate.path,

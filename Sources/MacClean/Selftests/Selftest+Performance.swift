@@ -323,7 +323,7 @@ extension Selftest {
         // 规则 v2 步骤 6 给 C1/C6/A1 各加了一次"这个目录读得到吗"探测（每个候选目录一次）。
         // 探测走 `opendir`+`closedir` 而不是 `contentsOfDirectory`：后者要把顶层条目全读一遍，
         // 而扫描紧接着就要为同一条路径做一次全量遍历——那是白花一趟 readdir。
-        check("盲区探测的开销相对同一路径体积测算的倍数（且必须真的能发现被拒目录）") {
+        check("盲区探测的开销不随目录条目数增长（且必须真的能发现被拒目录）") {
             let fm = FileManager.default
             let root = "/private/tmp/macclean_s6_perf_\(UUID().uuidString)"
             try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
@@ -332,19 +332,19 @@ extension Selftest {
             // 分子恒为 0，比值怎么量都"通过"——那是一条只会点头的假绿断言。
             let savedProbe = FileSystem.proactiveBlindSpotProbe
             FileSystem.proactiveBlindSpotProbe = true
+            FileSystem.resetWedgedReadsForSelftest()
             defer {
                 FileSystem.proactiveBlindSpotProbe = savedProbe
                 try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root + "/locked")
                 try? fm.removeItem(atPath: root)
             }
+            // 正确性腿只需要"一个可读目录"，不需要 150 个 × 60 文件。
+            // 缩放比判据用的是下面的 sparse/dense 两组，与这里无关。
             var paths: [String] = []
-            for i in 0..<150 {
+            for i in 0..<2 {
                 let p = "\(root)/c\(i)"
                 try? fm.createDirectory(atPath: p + "/sub", withIntermediateDirectories: true)
-                // 每个候选目录放 60 个条目：让"读一遍顶层"与"只开一下"的代价差暴露出来
-                for j in 0..<60 {
-                    fm.createFile(atPath: p + "/sub/f\(j).bin", contents: Data(repeating: 1, count: 512))
-                }
+                fm.createFile(atPath: p + "/sub/f0.bin", contents: Data(repeating: 1, count: 512))
                 paths.append(p)
             }
             let locked = root + "/locked"
@@ -367,32 +367,75 @@ extension Selftest {
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             guard bad.isEmpty else { return false }
 
-            func timed(_ body: (String) -> Void) -> TimeInterval {
+            func timed(_ list: [String], _ body: (String) -> Void) -> TimeInterval {
                 let start = Date()
-                for p in paths { body(p) }
+                for p in list { body(p) }
                 return Date().timeIntervalSince(start)
             }
-            /// 体积测算必须先失效两级缓存。
-            /// 第一版没有这一步，测出来是"探测 2.2 ms ÷ 测算 0.4 ms = 5.13 倍"——
-            /// 看着像探测太贵，实际是分母被 `measure` 的会话缓存 + 跨会话增量指纹缓存
-            /// 打成了空调用。拿缓存命中当基准，任何新增 I/O 都会被判成 regression。
-            func timedMeasure() -> TimeInterval {
-                FileSystem.invalidateMeasurements(for: paths)
-                return timed { _ = FileSystem.size(at: $0) }
+            // 判据换成**负载无关**的那一个：探测的开销不许随目录条目数增长。
+            // 原先量的是"探测 ÷ 同一路径体积测算 < 0.5"，而分子自 v1.73.3 起含一次
+            // GCD 派发 + 信号量等待——机器一忙（实测 load 9.7）就从 0.04 倍跳到 0.58 倍假红，
+            // 上轮评审预言过这条会因调度抖动假红，一轮之内就咬人了。
+            // 现在两个被测量在同一个时刻、同样的负载下跑，负载对分子分母同比例作用，比值稳定；
+            // 而"探测退化成读一遍顶层条目"这件事仍然会暴露：条目数 1→60 会直接把比值推到 ~60。
+            let sparseRoot = "\(root)/sparse"
+            let denseRoot = "\(root)/dense"
+            var sparse: [String] = []
+            var dense: [String] = []
+            // 对比要拉到 1 : 300。60 的时候实测把探测改成"读一遍顶层"也只推到 2.8 倍
+            // ——每次调用的固定开销（一次 GCD 派发 + 信号量）盖过了条目成本，界就分不开。
+            // 条目必须摆在**顶层**：第一版放在 sub/ 下，两种目录顶层都只有 1 个条目，
+            // 那个变异照样测不出来——是变异验证把它判红的。
+            for i in 0..<8 {
+                let s = "\(sparseRoot)/c\(i)"
+                let d = "\(denseRoot)/c\(i)"
+                try? fm.createDirectory(atPath: s, withIntermediateDirectories: true)
+                try? fm.createDirectory(atPath: d, withIntermediateDirectories: true)
+                fm.createFile(atPath: s + "/f0.bin", contents: Data(repeating: 1, count: 512))
+                for j in 0..<300 {
+                    fm.createFile(atPath: d + "/f\(j).bin", contents: Data(repeating: 1, count: 128))
+                }
+                sparse.append(s); dense.append(d)
             }
-            let probe1 = timed { _ = FileSystem.recordBlindSpotIfNeeded(at: $0) }
-            let size1 = timedMeasure()
-            let probe2 = timed { _ = FileSystem.recordBlindSpotIfNeeded(at: $0) }
-            let size2 = timedMeasure()
-            let probe = min(probe1, probe2), measure = min(size1, size2)
-            let ratio = measure > 0 ? probe / measure : .greatestFiniteMagnitude
-            print(String(format: "      150 个目录（每个 60 个条目，测算前失效缓存）："
-                            + "盲区探测 %.1f ms，体积测算 %.1f ms → %.2f 倍",
-                         probe * 1000, measure * 1000, ratio))
-            // 上界 0.5：探测是 3 个 syscall（lstat/opendir/closedir），
-            // 体积测算对同一路径至少还要枚举一遍子树。比值一旦接近 1，
-            // 说明探测又退化成"读一遍目录内容"了。
-            return ratio < 0.5
+            // 丢弃返回值会让这条在"探测根本没发生"时照样绿：目录一旦被记进
+            // `wedgedReads`（TTL 600 s），后续探测不再 dispatch 而直接短路，
+            // 量到的是"什么都不做"的时间，比值当然漂亮。短路/超时的返回值是 true，
+            // 所以这里把它当活性证据用：任何一次 true 都说明本轮比值不可信。
+            let shortCircuited = SelftestCounter()
+            func bestProbe(_ list: [String]) -> TimeInterval {
+                func once() -> TimeInterval {
+                    timed(list) { if FileSystem.recordBlindSpotIfNeeded(at: $0) { shortCircuited.bump() } }
+                }
+                return min(once(), once())
+            }
+            let pSparse = bestProbe(sparse), pDense = bestProbe(dense)
+            if shortCircuited.count > 0 {
+                print("      \(shortCircuited.count) 次探测被判成读不到/被 TTL 短路，本轮比值无意义")
+                return false
+            }
+            // 这里**不设绝对时间下界**：任何写死的毫秒数都是一台特定机器上的经验值，
+            // 拿它当门禁就会重演本轮那条比率断言的假红。上面"有没有返回 true"才是与
+            // 机器无关的活性证据——短路、被 TTL 吞掉、额度耗尽这三种"没真跑"都会让它返回 true。
+            let scale = pSparse > 0 ? pDense / pSparse : .greatestFiniteMagnitude
+            // 只作信息输出，不再当门禁：这条就是刚被负载证伪过的那一个
+            let sizeStart = Date()
+            FileSystem.invalidateMeasurements(for: dense)
+            for p in dense { _ = FileSystem.size(at: p) }
+            let sizeCost = Date().timeIntervalSince(sizeStart)
+            print(String(format: "      8 个目录：探测 1 条目 %.1f ms / 300 条目 %.1f ms → %.2f 倍"
+                            + "（体积测算 %.1f ms，仅参考）",
+                         pSparse * 1000, pDense * 1000, scale, sizeCost * 1000))
+            // 上界 3：探测是 lstat + opendir + closedir，一个条目都不读，比值应≈1；
+            // 退化成"读一遍顶层"时实测 6~10 倍。两侧同负载下量，抖动抵消。
+            return scale < 3.0
         }
     }
+}
+
+/// 线程安全的计数（自检里量"有没有真的发生过"用）
+final class SelftestCounter {
+    private let lock = NSLock()
+    private var n = 0
+    func bump() { lock.lock(); n += 1; lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return n }
 }

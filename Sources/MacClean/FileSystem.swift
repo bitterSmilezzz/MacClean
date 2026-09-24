@@ -463,6 +463,7 @@ enum FileSystem {
         measurementLock.lock()
         measurementCache.removeAll(keepingCapacity: true)
         sampledOnlyKeys.removeAll()
+        incompleteWalks.removeAll()
         measurementLock.unlock()
         // 盲区清单按"一轮扫描"为口径：跨轮累积会让界面永远显示一堆早就解决掉的授权提示。
         resetDeniedAccess()
@@ -494,6 +495,13 @@ enum FileSystem {
                 while current.count > 1 {
                     measurementCache.removeValue(forKey: current)
                     sampledOnlyKeys.remove(current)
+                    incompleteWalks.remove(current)
+                    // 包内口径的键是同一个路径加后缀，**必须一起删**：只删裸键的话，
+                    // 删掉一个 `.app` 之后同一会话里 `bundleSize` 仍会命中删除前的旧值。
+                    let pkg = current + packageSizingSuffix
+                    measurementCache.removeValue(forKey: pkg)
+                    sampledOnlyKeys.remove(pkg)
+                    incompleteWalks.remove(pkg)
                     let parent = normalizePath((current as NSString).deletingLastPathComponent)
                     if parent == current { break }
                     current = parent
@@ -555,7 +563,28 @@ enum FileSystem {
     /// ③ 指纹匹配直接复用上次全量递归结果，避免成千上万小文件重复遍历；
     /// ④ 均未命中才执行实际 `computeMeasurement`，并回填两级缓存。
     static func measure(at path: String) -> Measurement {
-        let key = cacheKey(path)
+        measure(at: path, descendIntoPackages: false, sessionKey: cacheKey(path))
+    }
+
+    /// 给"包内也要算"的调用方用的口径：`.app`/`.pkg` 里嵌套的 framework、helper bundle
+    /// 一并计入。与 `measure(at:)` **不能共用缓存**——两者对同一个路径给出的数不同，
+    /// 混用就等于把少算 3%~35% 的结果当成权威值复用（v1.73.5 复审 F3）。
+    static func bundleSize(at path: String) -> Int64 {
+        measure(at: path, descendIntoPackages: true,
+                sessionKey: sessionKey(path, descendIntoPackages: true)).size
+    }
+
+    /// 会话缓存的键。**两种口径必须走这一个函数生成**：口径是键的第二维，
+    /// 谁手写拼接就迟早会漏掉某一维（`invalidateMeasurements` 就漏过一次，
+    /// 结果是删掉 `.app` 之后同一会话内 `bundleSize` 仍报删除前的大数）。
+    private static func sessionKey(_ path: String, descendIntoPackages: Bool) -> String {
+        cacheKey(path) + (descendIntoPackages ? packageSizingSuffix : "")
+    }
+    private static let packageSizingSuffix = "\u{1F}pkg"
+
+    private static func measure(at path: String, descendIntoPackages: Bool,
+                                sessionKey: String) -> Measurement {
+        let key = sessionKey
         measurementLock.lock()
         // 只做过抽样的条目**不能**当体积用：它的 `size` 不是全量递归的结果，
         // 复用会把几 GB 的目录报成 0 字节。这类条目必须重新完整测算。
@@ -565,8 +594,9 @@ enum FileSystem {
         }
         measurementLock.unlock()
 
-        // ② 查跨会话增量指纹缓存
-        if let incHit = IncrementalCache.lookup(at: path) {
+        // 包内口径不查跨会话缓存：那份缓存的键里没有"是否下钻包"这一维，
+        // 复用它会把两种口径互相污染。代价是这几处每次走一遍遍历。
+        if !descendIntoPackages, let incHit = IncrementalCache.lookup(at: path) {
             measurementLock.lock()
             measurementCache[key] = incHit
             sampledOnlyKeys.remove(key)   // 增量缓存存的是上次的**全量**结果
@@ -575,20 +605,30 @@ enum FileSystem {
         }
 
         // ④ 深度递归遍历测算
-        let computed = computeMeasurement(at: path)
+        let computed = computeMeasurement(at: path, descendIntoPackages: descendIntoPackages)
 
         measurementLock.lock()
         measurementCache[key] = computed
         sampledOnlyKeys.remove(key)
+        let walkWasBlocked = incompleteWalks.contains(key)
+        if walkWasBlocked { incompleteWalks.remove(key) }
         measurementLock.unlock()
 
-        // 写入增量指纹缓存
-        IncrementalCache.update(at: path, measurement: computed)
+        // 写入增量指纹缓存——**但被权限挡住过的除外**。
+        // 那一支的 size 是 0，而指纹只看目录自身的 lstat 与顶层子项数：授权补上之后
+        // 两者都没变，于是"0 字节"会被固化最长 7 天，正是 §7.2 要消灭的那个形状。
+        if !descendIntoPackages && !walkWasBlocked {
+            IncrementalCache.update(at: path, measurement: computed)
+        }
 
         return computed
     }
 
-    private static func computeMeasurement(at path: String) -> Measurement {
+    /// 本轮遍历中被挡住过的条目。只用于"不要把残缺结果写进跨会话缓存"。
+    private static var incompleteWalks: Set<String> = []
+
+    private static func computeMeasurement(at path: String,
+                                         descendIntoPackages: Bool = false) -> Measurement {
         // 软链本身几乎不占空间 —— 删掉它释放的是 0 字节，不是目标的体积。
         // 返回目标体积会让界面虚报"可释放 896 MB"，而实际一个字节都没释放。
         if isSymlink(path) { return Measurement() }
@@ -612,17 +652,30 @@ enum FileSystem {
         guard let enumerator = FileManager.default.enumerator(
             at: URL(fileURLWithPath: path, isDirectory: true),
             includingPropertiesForKeys: keys,
-            options: [.skipsPackageDescendants],
+            options: descendIntoPackages ? [] : [.skipsPackageDescendants],
             errorHandler: { url, error in
                 recordDeniedAccess(url, error: error)
+                measurementLock.lock()
+                incompleteWalks.insert(sessionKey(path, descendIntoPackages: descendIntoPackages))
+                measurementLock.unlock()
                 return true
             }
         ) else {
-            // 枚举器建不起来（权限等）→ 至少保留"存在"这一事实，并把盲区记下来
-            if isPermissionDenied(path) {
-                recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true),
-                                   error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)))
-            }
+            // 枚举器建不起来（权限等）→ 至少保留"存在"这一事实，并把盲区记下来。
+            // 同时标成残缺：这一支的 size 是 0，绝不能被当成权威体积缓存下去。
+            let k = sessionKey(path, descendIntoPackages: descendIntoPackages)
+            measurementLock.lock()
+            incompleteWalks.insert(k); incompleteWalks.insert(cacheKey(path))
+            measurementLock.unlock()
+            // **无条件**记账，不要再拿 `isPermissionDenied` 当门槛：枚举器返回 nil
+            // 本身就是一手失败证据。而 `isPermissionDenied` 在"在途额度已满、这次根本没
+            // 去 open"时返回 false，于是这条真实失败会被漏记，界面就把读不到的目录
+            // 报成 0 字节——正是 G9 立起来要挡的那一个。
+            // 实测这条分支在本机几乎不可达：`FileManager.enumerator` 对 mode 000 的目录
+            // 返回的是**可用的**枚举器，拒绝发生在迭代时、由 errorHandler 兜住。
+            // 所以这里改的是防御性正确，不是复现过的现场——也因此**没有**为它配自检
+            // （强行造一条会造出恒绿断言，v1.73.5 复审就是这么被证伪的）。
+            noteDeniedRoot(normalizePath(path))
             return Measurement(newest: modificationDate(path), isDirectory: true, exists: true)
         }
 
@@ -632,7 +685,12 @@ enum FileSystem {
         var count = 0
         for case let fileURL as URL in enumerator {
             count += 1
-            if count > 200_000 { break }   // 防御：超大目录只估算前 20 万文件
+            if count > 200_000 {          // 防御：超大目录只估算前 20 万文件
+                measurementLock.lock()
+                incompleteWalks.insert(sessionKey(path, descendIntoPackages: descendIntoPackages))
+                measurementLock.unlock()
+                break
+            }
             let values = autoreleasepool { () -> URLResourceValues? in
                 try? fileURL.resourceValues(forKeys: Set(keys))
             }
@@ -820,7 +878,7 @@ enum FileSystem {
     /// - 单文件：只看 mtime，按距今天数分级（atime 不参与任何判据，见 `usage` 内的说明）。
     /// - 目录：先看目录自身 mtime（快速路径）；较旧时抽样枚举内部文件（限深度 3、样本 2000，
     ///   找到近期修改文件即提前终止），统计最新修改时间与近期文件数来分级。
-    /// 性能约束：最坏情况枚举 2000 个文件元数据，远轻于 directorySize 的 20 万上限。
+    /// 性能约束：最坏情况枚举 2000 个文件元数据即停，不做全量求和。
     static func usage(of path: String) -> UsageInfo {
         let now = Date()
         let day: TimeInterval = 86400
@@ -950,7 +1008,9 @@ enum FileSystem {
         if (st.st_mode & S_IFMT) != S_IFDIR {
             return !FileManager.default.isReadableFile(atPath: path)
         }
-        return canOpenDirectoryBounded(path) != true
+        // `.deferred` = 一次都没去 open（在途额度满 / 同路径正被别的线程读）。
+        // 把它算成"权限不足"会对没碰过的目录凭空记一条盲区告警。
+        return probeDirectory(path) == .unreadable
     }
 
     /// G8：系统级硬保护判定（文档 §7：SIP restricted / sunlnk / 系统必需）。

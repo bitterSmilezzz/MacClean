@@ -76,7 +76,9 @@ public final class DownloadsOrganizerScanner {
 
             let size: Int64
             if isDirectory {
-                size = AppLocalizationScanner.directorySize(at: path)
+                // 这一支专门给 `.app`/`.pkg` 求体积，必须下钻进包：嵌套 framework 与
+                // helper bundle 常常占三成以上，跳过它们会让页头"共占用"少算到离谱。
+                size = FileSystem.bundleSize(at: path)
             } else {
                 size = Int64(resourceValues.totalFileAllocatedSize ?? resourceValues.fileSize ?? 0)
             }
