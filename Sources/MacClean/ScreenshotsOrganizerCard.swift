@@ -215,10 +215,30 @@ public struct ScreenshotsOrganizerCard: View {
 
     // MARK: - 子组件：列表容器
 
+    /// 本轮"没看全"的提示。文案只有一个来源，见 `OrganizerRootsBanner`。
+    private var rootsBanner: OrganizerRootsBanner {
+        OrganizerRootsBanner(unreadable: summary.unreadableRoots, deferred: summary.deferredRoots)
+    }
+
     private var contentListContainer: some View {
         ScrollView {
             VStack(spacing: 2) {
-                if filteredItems.isEmpty {
+                // 结果没回来之前 `summary` 就是空表，这里却写着"未发现符合条件的…"——
+                // 三个根各带 5 s 截止时这段最长约 15 s，每次归档完还会重演一遍。
+                if isScanning && summary.items.isEmpty {
+                    Text("正在读取截图与录屏目录…")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
+                        .padding(.vertical, Space.lg)
+                }
+                // 三个默认根（桌面/下载/图片）可能只读到一部分，所以只要有一个没读到
+                // 就要说明"这份列表不完整"；"没顾上读"与"读不到"由 banner 分开讲。
+                if rootsBanner.hasAnything {
+                    rootsBanner
+                }
+                // "没有文件"只有在**真的读过**时才许说，否则同一屏上就是两句相反的结论。
+                if filteredItems.isEmpty && !rootsBanner.hasAnything
+                    && !(isScanning && summary.items.isEmpty) {
                     Text("未发现符合条件的屏幕截图或录屏文件")
                         .font(Typo.caption)
                         .foregroundStyle(Ink.tertiary)

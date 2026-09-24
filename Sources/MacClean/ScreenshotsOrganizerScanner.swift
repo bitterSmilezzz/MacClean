@@ -54,6 +54,8 @@ public final class ScreenshotsOrganizerScanner {
 
         let searchPaths = directories ?? defaultPaths
         var allItems: [ScreenshotItem] = []
+        var unreadable: [String] = []
+        var deferred: [String] = []
         let now = Date()
 
         for dirPath in searchPaths {
@@ -64,11 +66,28 @@ public final class ScreenshotsOrganizerScanner {
 
             guard fm.fileExists(atPath: dirPath) else { continue }
 
+            // 三个默认根（桌面/下载/图片）全是 TCC 门禁目录：未决授权会让枚举器的首次
+            // `opendir` 永不返回，被拒则枚举器给 nil。两种都要记成"这个根没读到"，
+            // 但"本轮没顾上读"（在途额度满）要另列一笔——说成权限不足就是凭空造告警。
+            switch FileSystem.probeDirectory(dirPath) {
+            case .readable:
+                break
+            case .unreadable:
+                unreadable.append(FileSystem.normalizePath(dirPath))
+                continue
+            case .deferred:
+                deferred.append(FileSystem.normalizePath(dirPath))
+                continue
+            }
+
             guard let enumerator = fm.enumerator(
                 at: URL(fileURLWithPath: dirPath),
                 includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey, .fileSizeKey, .totalFileAllocatedSizeKey],
                 options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]
-            ) else { continue }
+            ) else {
+                unreadable.append(FileSystem.normalizePath(dirPath))
+                continue
+            }
 
             for case let fileURL as URL in enumerator {
                 let path = fileURL.path
@@ -154,7 +173,9 @@ public final class ScreenshotsOrganizerScanner {
             recordingSize: recordingSize,
             recordingCount: recordingCount,
             staleSize: staleSize,
-            staleCount: staleCount
+            staleCount: staleCount,
+            unreadableRoots: unreadable,
+            deferredRoots: deferred
         )
     }
 

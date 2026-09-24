@@ -272,24 +272,38 @@ enum FileSystem {
     ///
     /// internal 是给自检留的缝：自检传一个**真的永不返回**的 body 进来，就能在没有
     /// 卡死卷宗的开发机上复现这条路径——不去伪造 `opendir` 的行为，只替换被包住的那次读取。
-    static func readWithinDeadline<T>(_ path: String, _ body: @escaping () -> T) -> T? {
+    /// 有截止读取的结果。**四种结局必须分得开**，尤其"没去试"与"试了读不到"：
+    /// 后者是盲区（要告诉用户），前者只是本轮没顾上（告诉用户就是谎报）。
+    enum GatedRead<T> {
+        case value(T)
+        /// 真去开了，被拒或等到超时——这是盲区。
+        case unreadable
+        /// 在途额度已满 / 同一目录正被别的线程读：**根本没去 open**，不得声称读不到。
+        case deferred
+    }
+
+    private static func readWithinDeadlineDetailed<T>(_ path: String,
+                                                      _ body: @escaping () -> T) -> GatedRead<T> {
         let key = normalizePath(path)
         let now = Date()
         wedgedLock.lock()
         if let at = wedgedReads[key], now.timeIntervalSince(at) < wedgedRetryInterval {
             wedgedLock.unlock()
-            return nil
+            // TTL 内的短路不是"没试"：上一次真的失败了，只是不再为它多漏一条线程。
+            // 这里补记盲区，免得面板说"读不到"而诊断清单上却查无此处。
+            noteDeniedRoot(key)
+            return .unreadable
         }
         if inFlightReads.contains(key) {
             wedgedLock.unlock()
-            return nil
+            return .deferred
         }
         inFlightReads.insert(key)
         wedgedLock.unlock()
 
         guard gatedReadSlots.wait(timeout: .now()) == .success else {
             wedgedLock.lock(); inFlightReads.remove(key); wedgedLock.unlock()
-            return nil
+            return .deferred
         }
 
         let done = DispatchSemaphore(value: 0)
@@ -305,13 +319,44 @@ enum FileSystem {
             wedgedReads[key] = Date()      // 占位改记成"卡过"：那条 block 还在内核里
             wedgedLock.unlock()
             noteDeniedRoot(key)
-            return nil
+            return .unreadable
         }
         wedgedLock.lock()
         inFlightReads.remove(key)
         wedgedReads.removeValue(forKey: key)   // 读通了，别再当它卡过
         wedgedLock.unlock()
-        return box.value
+        return .value(box.value!)
+    }
+
+    /// 见 `readWithinDeadlineDetailed`。返回 nil = 本轮没看清（盲区或没顾上，不区分）。
+    static func readWithinDeadline<T>(_ path: String, _ body: @escaping () -> T) -> T? {
+        switch readWithinDeadlineDetailed(path, body) {
+        case .value(let v): return v
+        case .unreadable, .deferred: return nil
+        }
+    }
+
+    /// 有截止地"开一下这个目录"，并区分**读不到**与**没去试**。
+    /// 给要把结论直接讲给用户看的调用方用（归档面板），别用折叠成 Bool 的那一个。
+    enum GatedProbe { case readable, unreadable, deferred }
+
+    static func probeDirectory(_ path: String) -> GatedProbe {
+        // 判类型必须用 `stat`（**跟随软链**）而不是 `lstat`：`opendir` 会跟着链接走进目标目录，
+        // 未决授权就卡在目标上。用 lstat 判会让一个软链形态的缓存目录直接被判成"不是目录、
+        // 不用探测"而放行，恰好绕开这套机制存在的唯一理由。
+        var st = stat()
+        guard stat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
+            return .readable      // 不存在 / 不是目录：不是"读不到"，交给调用方原有的存在性判断
+        }
+        switch readWithinDeadlineDetailed(path, { canOpenDirectory(path) }) {
+        case .value(true): return .readable
+        case .value(false):
+            // 真去开了、被拒：这就是盲区，必须记账，否则面板说"读不到"而诊断清单查无此处。
+            noteDeniedRoot(normalizePath(path))
+            return .unreadable
+        case .unreadable: return .unreadable
+        case .deferred: return .deferred
+        }
     }
 
     /// 扫描**本来就要读**某个可能被 TCC 拦住的目录时，先用带截止的探测过一遍：
@@ -321,8 +366,12 @@ enum FileSystem {
     /// **额外**多开一次去记账"（那一次才是无人值守会撞上模态授权框的东西），
     /// 而这里这次开本来就要发生——把它关掉不会省掉那次 `open`，只会把无截止的那次
     /// 留给紧随其后的 `size(at:)`。有了截止时间，无人值守才敢照开不误。
+    ///
+    /// **只许用于"跳过"这一种决策**。它把"读不到"和"本轮没顾上"都折成 false；
+    /// 对扫描器来说两者都是"这轮不看这里"，语义没问题，但**不许拿它去生成
+    /// 用户可见的"读不到"文案**——那要用 `probeDirectory`。
     static func isReadableWithDeadline(_ path: String) -> Bool {
-        canOpenDirectoryBounded(path) == true
+        probeDirectory(path) == .readable
     }
 
     /// 带截止时间的目录列举，**只**用在可能被 TCC 拦住的家目录根

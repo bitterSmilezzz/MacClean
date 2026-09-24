@@ -367,6 +367,231 @@ extension Selftest {
             }
             return true
         }
+
+        // MARK: - 读不到 ≠ 没有文件（G9 在归档面板上的落地）
+
+        check("归档面板：目录读不到时给出 unreadableRoots，不再回一个空 summary 装作扫过了") {
+            let fm = FileManager.default
+            let locked = "/private/tmp/macclean-dl-locked-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: locked + "/inner", withIntermediateDirectories: true)
+            fm.createFile(atPath: locked + "/inner/a.dmg", contents: Data(repeating: 1, count: 4096))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: locked)
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = DownloadsOrganizerScanner.shared.scan(customDirectory: locked)
+            guard sum.unreadableRoots == [FileSystem.normalizePath(locked)] else {
+                print("      读不到的目录没被标出来：unreadableRoots 共 \(sum.unreadableRoots.count) 条")
+                return false
+            }
+            // 盲区也要记账：面板之外（扫描诊断）得知道这里没看清
+            guard FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(locked)) else {
+                print("      没记进盲区清单（本轮盲区 \(FileSystem.deniedAccessSnapshot().count) 处）")
+                return false
+            }
+            return true
+        }
+
+        check("反证：可读目录照常列出条目，且 unreadableRoots 必须为空") {
+            // 上一条只断"标出来了"。若实现退化成"一律标 unreadable"，它也照样绿——
+            // 那等于把面板所有结果都判成不完整，是另一种坏。
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-dl-ok-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/app.dmg", contents: Data(repeating: 7, count: 8192))
+            defer { try? fm.removeItem(atPath: root) }
+            FileSystem.resetDeniedAccess()
+            let sum = DownloadsOrganizerScanner.shared.scan(customDirectory: root)
+            guard sum.unreadableRoots.isEmpty, sum.deferredRoots.isEmpty else {
+                print("      可读目录被误标成没读到：unreadable=\(sum.unreadableRoots.count) "
+                      + "deferred=\(sum.deferredRoots.count)")
+                return false
+            }
+            // 不断 totalSize 的具体字节数：那是 totalFileAllocatedSize，换卷/克隆就变，
+            // 与代码语义无关，只会造出顺序相关的假红。
+            guard sum.items.count == 1, sum.totalSize > 0 else {
+                print("      可读目录没列到那一个条目：items=\(sum.items.count) total=\(sum.totalSize)")
+                return false
+            }
+            return true
+        }
+
+        check("两个归档扫描器的门禁根用三态探测，不许退回折叠成 Bool 的写法") {
+            // `isReadableWithDeadline` 把"读不到"和"本轮没去试"都折成 false。
+            // 对扫描器的 `guard … else { continue }` 没问题，但面板拿它生成用户可见的
+            // "读不到"文案，就是在对没碰过的目录凭空造一条权限告警（本轮查出过的真 P0）。
+            let dir = Selftest.sourceDirectoryPath
+            var bad: [String] = []
+            for file in ["DownloadsOrganizerScanner.swift", "ScreenshotsOrganizerScanner.swift"] {
+                guard let src = try? String(
+                    contentsOfFile: (dir as NSString).appendingPathComponent(file), encoding: .utf8) else {
+                    bad.append("\(file):<不可读>")
+                    continue
+                }
+                if !src.contains("FileSystem.probeDirectory(") {
+                    bad.append("\(file): 根读取不再带截止")
+                }
+                if src.contains("FileSystem.isReadableWithDeadline(")
+                    || src.contains("FileSystem.canOpenDirectory(")
+                    || src.contains("isReadableFile(atPath:") {
+                    bad.append("\(file): 用了折叠成 Bool 的探测，分不清「读不到」与「没去试」")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("卡片：「没读到」与「没有文件」互斥，且两种情形的措辞只有一个来源") {
+            let dir = Selftest.sourceDirectoryPath
+            guard let banner = try? String(
+                contentsOfFile: (dir as NSString).appendingPathComponent("OrganizerRootsBanner.swift"),
+                encoding: .utf8) else {
+                print("      读不到 OrganizerRootsBanner.swift")
+                return false
+            }
+            var bad: [String] = []
+            // 读不到 / 没顾上 是两句话；把后者也说成权限不足就是谎报。
+            let parts = banner.components(separatedBy: "if !deferred.isEmpty {")
+            guard parts.count == 2 else {
+                print("      banner 不再分「读不到」与「没顾上」两支")
+                return false
+            }
+            if !parts[0].contains("本轮没能读到") || !parts[0].contains("lock.fill") {
+                bad.append("「读不到」那支缺了警示措辞或锁形图标")
+            }
+            if parts[1].contains("lock.fill") || parts[1].contains("没能读到") {
+                bad.append("「没顾上读」那支借用了权限/锁的措辞——会对没去 open 的目录声称读不到")
+            }
+            for file in ["DownloadsOrganizerCard.swift", "ScreenshotsOrganizerCard.swift"] {
+                guard let src = try? String(
+                    contentsOfFile: (dir as NSString).appendingPathComponent(file), encoding: .utf8) else {
+                    bad.append("\(file):<不可读>")
+                    continue
+                }
+                // 只圈列表容器：撞到下一个 private 成员就收口，否则会被同文件别处的字样蒙过去
+                guard let head = src.range(of: "private var contentListContainer") else {
+                    bad.append("\(file):<没有 contentListContainer>")
+                    continue
+                }
+                let after = src[head.upperBound...]
+                let scope: Substring = after.range(of: "\n    private ")
+                    .map { after[..<$0.lowerBound] } ?? after
+                if !scope.contains("&& !rootsBanner.hasAnything") {
+                    bad.append("\(file): 「未发现符合条件的…」不再与警示条互斥")
+                }
+                // 钉**具体标识符**：上一版写成 "isScanning 或 isProcessing 任一命中"，
+                // 于是截图卡片把守卫挂到了 isProcessing（只在清理/归档时为真，那时 items 必非空）
+                // ——「正在读取…」成了死代码，而这条断言照样绿。或集是假断言。
+                if !scope.contains("if isScanning && summary.items.isEmpty {") {
+                    bad.append("\(file): 读取中没用 isScanning 抑制「没有文件」（写错标识符=死代码）")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("卡死过的目录：面板要拿到 unreadable（不是 deferred），措辞才是「没能读到」") {
+            // 真机卡死走的是**超时**这一支，而其余几条用的都是 mode 000（立即 EACCES），
+            // 那条路径一次都没被执行过。这里用同一个卡死源把超时支钉住：
+            // 超时之后 TTL 内的再问必须仍答 .unreadable 并带盲区记账，
+            // 否则面板会把它讲成"本轮没顾上"，用户就不会去查授权。
+            let saved = FileSystem.gatedReadDeadline
+            FileSystem.gatedReadDeadline = 0.3
+            FileSystem.resetWedgedReadsForSelftest()
+            FileSystem.resetDeniedAccess()
+            defer { FileSystem.gatedReadDeadline = saved }
+            let wedge = "/private/tmp/macclean-dl-wedge-\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: wedge, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: wedge) }
+            let gate = DispatchSemaphore(value: 0)
+            defer { gate.signal() }
+            let first: [String]? = FileSystem.readWithinDeadline(wedge) { () -> [String] in
+                gate.wait()
+                return []
+            }
+            guard first == nil else {
+                print("      卡死源没兜住，本条没在测超时支")
+                return false
+            }
+            guard FileSystem.probeDirectory(wedge) == .unreadable else {
+                print("      超时过的目录被归成了别的结局（面板措辞会退成「没顾上」）")
+                return false
+            }
+            guard FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(wedge)) else {
+                print("      超时支没记盲区（本轮盲区 \(FileSystem.deniedAccessSnapshot().count) 处）")
+                return false
+            }
+            return true
+        }
+
+        check("在途额度满时归入 deferredRoots，不得报成读不到也不得记盲区") {
+            let saved = FileSystem.gatedReadDeadline
+            FileSystem.gatedReadDeadline = 0.3
+            FileSystem.resetWedgedReadsForSelftest()
+            defer { FileSystem.gatedReadDeadline = saved }
+            let fm = FileManager.default
+            let ok = "/private/tmp/macclean-dl-defer-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: ok, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: ok) }
+            let gate = DispatchSemaphore(value: 0)
+            // 占几条还几条，且**只还一次**：多 signal 会把在途上限抬到 4 以上，
+            // 那就不是在测限流了。早退时也要还，所以 defer 与显式调用共用一个开关。
+            let releaseOnce = SelftestOnce { for _ in 0..<4 { gate.signal() } }
+            for i in 0..<4 {
+                let blocker = "/private/tmp/macclean-dl-block-\(UUID().uuidString)-\(i)"
+                _ = FileSystem.readWithinDeadline(blocker) { () -> [String] in
+                    gate.wait()
+                    return []
+                }
+            }
+            FileSystem.resetDeniedAccess()
+            let sum = DownloadsOrganizerScanner.shared.scan(customDirectory: ok)
+            // 4 条卡死的 body 各占一分令牌，就必须放行 4 次；只 signal 一次会把
+            // 3 分令牌永久吃掉，后面所有门禁读取都退化成 .deferred——本条自己制造饥饿。
+            releaseOnce.run()
+            // 归还的验证要看**满额**回来了，而不是"还剩一分"（那一分正是本条要用的）。
+            var drained = false
+            var notReadableLast = -1
+            let probes = (0..<4).map { "/private/tmp/macclean-drain-\(UUID().uuidString)-\($0)" }
+            for p2 in probes { try? FileManager.default.createDirectory(atPath: p2,
+                                                                       withIntermediateDirectories: true) }
+            defer { probes.forEach { try? FileManager.default.removeItem(atPath: $0) } }
+            // 刚被放行的那几条 body 还要一点时间才把令牌还回来，所以要重试着等满额，
+            // 不能假设 signal 之后立刻可用（第一版就是这么假红的）。
+            for _ in 0..<60 {
+                let drainGroup = DispatchGroup()
+                let drainLock = NSLock()
+                var notReadable = 0
+                for p2 in probes {
+                    drainGroup.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        defer { drainGroup.leave() }
+                        if FileSystem.probeDirectory(p2) != .readable {
+                            drainLock.lock(); notReadable += 1; drainLock.unlock()
+                        }
+                    }
+                }
+                drainGroup.wait()
+                notReadableLast = notReadable
+                if notReadable == 0 { drained = true; break }
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            var bad: [String] = []
+            if !sum.unreadableRoots.isEmpty {
+                bad.append("根本没去 open 的目录被报成「读不到」，面板会弹权限告警")
+            }
+            if sum.deferredRoots != [FileSystem.normalizePath(ok)] {
+                bad.append("额度满时没有归入 deferredRoots：\(sum.deferredRoots.count) 条")
+            }
+            if !FileSystem.deniedAccessSnapshot().isEmpty {
+                bad.append("对没试过的目录凭空记了一条盲区")
+            }
+            if !drained { bad.append("额度未归还：最后一轮仍有 \(notReadableLast) 个探测拿不到令牌") }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
     }
 }
 
@@ -376,5 +601,20 @@ enum DownloadsOrganizerTestSupport {
     static func age(_ path: String, days: Int) {
         try? FileManager.default.setAttributes(
             [.modificationDate: Date().addingTimeInterval(-Double(days) * 86400)], ofItemAtPath: path)
+    }
+}
+
+/// 只执行一次的清理块（自检里用来归还并发令牌）
+final class SelftestOnce {
+    private let body: () -> Void
+    private let lock = NSLock()
+    private var done = false
+    init(_ body: @escaping () -> Void) { self.body = body }
+    func run() {
+        lock.lock()
+        if done { lock.unlock(); return }
+        done = true
+        lock.unlock()
+        body()
     }
 }

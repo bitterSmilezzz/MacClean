@@ -338,7 +338,9 @@ extension Selftest {
             defer { FileSystem.gatedReadDeadline = saved }
             let wedge = "/private/tmp/macclean-wedge-\(UUID().uuidString)"
             let gate = DispatchSemaphore(value: 0)
-            defer { gate.signal() }
+            // 本条会真的投放**两**次卡死 body（第一次、以及清空记录后的第三次），
+            // 所以归还也要两次——少一次就有一分在途令牌在本进程剩余 lifetime 内消失。
+            defer { for _ in 0..<2 { gate.signal() } }
             let body: () -> [String] = { gate.wait(); return [] }
             let first: [String]? = FileSystem.readWithinDeadline(wedge, body)
             let start = Date()
@@ -495,7 +497,10 @@ extension Selftest {
             FileSystem.resetDeniedAccess()
             defer { FileSystem.gatedReadDeadline = saved }
             let gate = DispatchSemaphore(value: 0)
-            defer { gate.signal() }
+            // 占了几条就还几条：body 卡在 gate 上时它一直握着在途令牌，
+            // 只 signal 一次等于把 3 分令牌永久吃掉——本进程后面所有门禁读取都会
+            // 静默退化成"没顾上"。（这条是下一轮新增的额度归还断言替我们抓出来的。）
+            defer { for _ in 0..<4 { gate.signal() } }
             // 用 4 个各自卡死的目录把在途额度占满（上限见 gatedReadSlots）
             for i in 0..<4 {
                 let p = "/private/tmp/macclean-slot-\(UUID().uuidString)-\(i)"
@@ -577,6 +582,34 @@ extension Selftest {
             }
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
+        }
+
+        check("软链形态的门禁目录不许绕开截止探测（C6 的缓存目录就是这一类）") {
+            let fm = FileManager.default
+            let base = "/private/tmp/macclean-sym-\(UUID().uuidString)"
+            let target = base + "/target"
+            let link = base + "/link"
+            try? fm.createDirectory(atPath: target, withIntermediateDirectories: true)
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: target)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target)
+                try? fm.removeItem(atPath: base)
+            }
+            // 用绝对路径建软链，normalizePath 之后仍指向同一个目标
+            try? fm.createSymbolicLink(atPath: link, withDestinationPath: target)
+            FileSystem.resetWedgedReadsForSelftest()
+            FileSystem.resetDeniedAccess()
+            // `opendir` 会跟随软链走进 target 并在那里被拒/卡住，所以判类型必须用 stat。
+            // 用 lstat 的话这里会被判"不是目录、不用探测"而放行，调用方接着无截止地 open 它。
+            guard FileSystem.isReadableWithDeadline(link) == false else {
+                print("      软链目录被当成「不用探测」放行了，截止机制在这条路径上失效")
+                return false
+            }
+            guard FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(link)) else {
+                print("      软链目录判出了读不到却没记盲区")
+                return false
+            }
+            return true
         }
 
         check("出厂 deadline 必须是有限且够干活的小值") {

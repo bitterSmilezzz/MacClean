@@ -220,16 +220,36 @@ public struct DownloadsOrganizerCard: View {
 
     // MARK: - 子组件：列表容器
 
+    /// 本轮"没看全"的提示。文案只有一个来源，见 `OrganizerRootsBanner`。
+    private var rootsBanner: OrganizerRootsBanner {
+        OrganizerRootsBanner(unreadable: summary.unreadableRoots, deferred: summary.deferredRoots)
+    }
+
     private var contentListContainer: some View {
         ScrollView {
             VStack(spacing: 2) {
-                if filteredItems.isEmpty {
+                // 结果还没回来时，这里曾是斩钉截铁的「未发现符合条件的下载文件」——
+                // `summary` 的初值就是空表。加上有截止探测后这段最长可达 5 s，
+                // 而且每次清理完 `loadData()` 都会再演一遍"刚删完就报这里没文件"。
+                if isScanning && summary.items.isEmpty {
+                    Text("正在读取下载目录…")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
+                        .padding(.vertical, Space.lg)
+                }
+                if rootsBanner.hasAnything {
+                    rootsBanner
+                }
+                // "没有文件"只有在**真的读过**时才许说。警示条已经讲清了没读到的情形，
+                // 同一屏上再补一句「未发现符合条件的…」就是两句相反的结论。
+                if filteredItems.isEmpty && !rootsBanner.hasAnything
+                    && !(isScanning && summary.items.isEmpty) {
                     Text("未发现符合条件的下载文件")
                         .font(Typo.caption)
                         .foregroundStyle(Ink.tertiary)
                         .padding(.vertical, Space.lg)
-                } else {
-                    ForEach(filteredItems) { item in
+                }
+                ForEach(filteredItems) { item in
                         HStack(spacing: Space.sm) {
                             Button(action: {
                                 toggleItemSelection(id: item.id)
@@ -292,7 +312,6 @@ public struct DownloadsOrganizerCard: View {
                         .clipShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
                     }
                 }
-            }
             .padding(.vertical, 2)
         }
         .frame(minHeight: 220, maxHeight: 320)

@@ -90,6 +90,12 @@ public struct DownloadsSummary: Equatable {
     public var archiveCount: Int
     public var staleSize: Int64           // 超过 30 天的文件大小
     public var staleCount: Int            // 超过 30 天的文件数量
+    /// 本轮**没能读到**的根目录。空 `items` 与"读过了、确实没有"必须分得开，
+    /// 否则界面上"未发现符合条件的下载文件"就成了谎报（G9 同一类）。
+    public var unreadableRoots: [String]
+    /// 本轮**根本没去读**的根（在途额度已满）。与 `unreadableRoots` 是两件事：
+    /// 前者是"没顾上"，后者是"读了但读不到"。把前者也说成权限不足就是凭空造告警。
+    public var deferredRoots: [String]
 
     public init(
         items: [DownloadItem] = [],
@@ -99,7 +105,9 @@ public struct DownloadsSummary: Equatable {
         archiveSize: Int64 = 0,
         archiveCount: Int = 0,
         staleSize: Int64 = 0,
-        staleCount: Int = 0
+        staleCount: Int = 0,
+        unreadableRoots: [String] = [],
+        deferredRoots: [String] = []
     ) {
         self.items = items
         self.totalSize = totalSize
@@ -109,6 +117,8 @@ public struct DownloadsSummary: Equatable {
         self.archiveCount = archiveCount
         self.staleSize = staleSize
         self.staleCount = staleCount
+        self.unreadableRoots = unreadableRoots
+        self.deferredRoots = deferredRoots
     }
 
     /// 已勾选的释放空间

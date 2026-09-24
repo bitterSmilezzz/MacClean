@@ -105,6 +105,10 @@ public struct ScreenshotsSummary: Equatable {
     public var recordingCount: Int
     public var staleSize: Int64           // 超过 30 天的陈旧大小
     public var staleCount: Int            // 超过 30 天的陈旧文件数
+    /// 本轮**没能读到**的根目录，理由同 `DownloadsSummary.unreadableRoots`。
+    public var unreadableRoots: [String]
+    /// 本轮**根本没去读**的根（在途额度已满），理由同 `DownloadsSummary.deferredRoots`。
+    public var deferredRoots: [String]
 
     public init(
         items: [ScreenshotItem] = [],
@@ -114,7 +118,9 @@ public struct ScreenshotsSummary: Equatable {
         recordingSize: Int64 = 0,
         recordingCount: Int = 0,
         staleSize: Int64 = 0,
-        staleCount: Int = 0
+        staleCount: Int = 0,
+        unreadableRoots: [String] = [],
+        deferredRoots: [String] = []
     ) {
         self.items = items
         self.totalSize = totalSize
@@ -124,6 +130,8 @@ public struct ScreenshotsSummary: Equatable {
         self.recordingCount = recordingCount
         self.staleSize = staleSize
         self.staleCount = staleCount
+        self.unreadableRoots = unreadableRoots
+        self.deferredRoots = deferredRoots
     }
 
     /// 已选中的总空间

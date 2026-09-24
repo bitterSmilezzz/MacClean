@@ -344,6 +344,38 @@ extension Selftest {
             }
             return true
         }
+
+        check("三个根只读到一部分时：没读到的那个要单独报出来，读到的条目不许一起丢") {
+            // 这张卡片的默认根（桌面/下载/图片）是**多个**目录，所以"全空"不是唯一的坏法：
+            // 只要有一个根没读到就整单报空、或反过来把没读到的根悄悄吞掉，都得拦下来。
+            let fm = FileManager.default
+            let base = "/private/tmp/macclean-shot-\(UUID().uuidString)"
+            let ok = base + "/ok"
+            let locked = base + "/locked"
+            try? fm.createDirectory(atPath: ok, withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+            // 文件名要能被 detectCaptureType 认出来，否则条目为 0 就成了合理结果
+            fm.createFile(atPath: ok + "/Screenshot 2026-01-01 at 10.00.00.png",
+                          contents: Data(repeating: 3, count: 2048))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: base)
+            }
+            let sum = ScreenshotsOrganizerScanner.shared.scan(directories: [ok, locked])
+            var bad: [String] = []
+            if sum.unreadableRoots != [FileSystem.normalizePath(locked)] {
+                bad.append("没读到的根没被单独标出：unreadable=\(sum.unreadableRoots.count)")
+            }
+            if !sum.deferredRoots.isEmpty {
+                bad.append("可读的根被一起算成「没顾上」：\(sum.deferredRoots.count)")
+            }
+            if sum.items.count != 1 {
+                bad.append("可读那个根的条目被一起吞掉了：items=\(sum.items.count)")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
     }
 }
 

@@ -21,12 +21,26 @@ public final class DownloadsOrganizerScanner {
             return DownloadsSummary()
         }
 
+        // `~/Downloads` 是 TCC 门禁目录。授权请求**未决**时，下面那个枚举器的第一次
+        // `opendir` 不返回错误，而是停在内核里永不返回——面板就一直转圈；而枚举器
+        // 返回 nil（权限被拒）时，旧写法直接给出一个空 summary，界面于是显示
+        // 「未发现符合条件的下载文件」——把"这轮没读到"报成"这里没有文件"。
+        // 先有截止地开一次，并且**分清三种结局**：读不到 → 报盲区；本轮没顾上（在途额度满）
+        // → 只能说"没读到，稍后再试"，不能说成权限不足。
+        let probe = FileSystem.probeDirectory(downloadsPath)
+        if probe != .readable {
+            // 存规范化形态：盲区清单用的也是它，两边对不上就没法交叉核对
+            let key = FileSystem.normalizePath(downloadsPath)
+            return probe == .deferred ? DownloadsSummary(deferredRoots: [key])
+                                      : DownloadsSummary(unreadableRoots: [key])
+        }
+
         guard let enumerator = fm.enumerator(
             at: URL(fileURLWithPath: downloadsPath),
             includingPropertiesForKeys: [.isDirectoryKey, .isPackageKey, .contentModificationDateKey, .fileSizeKey, .totalFileAllocatedSizeKey],
             options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]
         ) else {
-            return DownloadsSummary()
+            return DownloadsSummary(unreadableRoots: [FileSystem.normalizePath(downloadsPath)])
         }
 
         var items: [DownloadItem] = []
