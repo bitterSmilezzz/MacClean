@@ -399,6 +399,9 @@ public struct DownloadsOrganizerCard: View {
                 if res.errorCount > 0 { text += "；\(res.errorCount) 项未移动：\(res.firstFailure ?? "被安全护栏拦下")" }
                 self.bannerFeedback = text
                 self.loadData()
+                // 归档同样经 `recordArchiveMove` 写了历史（mode「归档移动」），
+                // 不刷新的话记录已在盘上、界面却停在旧值，用户看不到这条也看不到侧栏计数。
+                self.onTriggerClean?()
             }
         }
     }

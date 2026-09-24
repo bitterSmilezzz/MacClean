@@ -507,7 +507,7 @@ enum CleanupRules {
              restore: .impossible, tier: .t1),
         Rule(id: "T2", category: .largeFiles, nature: .userData,
              consequence: "下载目录里的文件，是你自己的东西",
-             summary: "~/Downloads/*（>500MB 或 >180 天未访问）",
+             summary: "~/Downloads/*（>500MB 或 >180 天未修改）",
              auditOnly: true,
              contract: .userData, ownership: .unknown, hostState: .unknown,
              restore: .impossible, tier: .t3),

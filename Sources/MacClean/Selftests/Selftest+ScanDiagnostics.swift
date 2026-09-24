@@ -247,6 +247,12 @@ extension Selftest {
                 print("      本机已授予完全磁盘访问权限，本条按通过处理（盲区本就不存在）")
                 return true
             }
+            // 显式开主动探测：本条钉的是**用户亲手点扫描**那一路（`AppState.scan` 就开着它）。
+            // 默认值是关的（无人值守开探测会被模态授权框挂死），不写这一行的话
+            // 探测根本不会发生，"一条盲区都没有"就成了正确行为——那就是个假绿。
+            let savedProbe = FileSystem.proactiveBlindSpotProbe
+            FileSystem.proactiveBlindSpotProbe = true
+            defer { FileSystem.proactiveBlindSpotProbe = savedProbe }
             FileSystem.beginMeasurementSession()
             let outcome = Scanner.scanDetailed(.userCaches)
             let denied = outcome.issues.filter { $0.kind == .permissionDenied }
@@ -282,6 +288,308 @@ extension Selftest {
             }
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
+        }
+
+        // MARK: - 目录读取的截止时间
+        //
+        // 起因是实测：`~/Downloads` 上挂着一个再没人应答的 TCC 授权请求时，
+        // `opendir` / `contentsOfDirectory` 不返回错误，而是停在内核 `__open` 上永不返回，
+        // 于是 `--scan`、`--selftest`、GUI 点「扫描」全部 0% CPU 卡死（采样 2335/2335 同一帧）。
+
+        check("读取卡死时必须在 deadline 内脱身，并且记成盲区而不是「这里没东西」") {
+            let saved = FileSystem.gatedReadDeadline
+            FileSystem.gatedReadDeadline = 0.3
+            FileSystem.resetWedgedReadsForSelftest()
+            defer { FileSystem.gatedReadDeadline = saved }
+            FileSystem.resetDeniedAccess()
+            let wedge = "/private/tmp/macclean-wedge-selftest"
+            // body 在 deadline 之内**确实永不返回**，但断言做完后由测试自己放行：
+            // 不放行就会永久占掉一个并发令牌，攒满 4 个之后同轮后面的门禁读取
+            // "没试就跳过"，会把步骤6 的端到端盲区自检饿成假红。
+            let gate = DispatchSemaphore(value: 0)
+            defer { gate.signal() }
+            let start = Date()
+            let got: [String]? = FileSystem.readWithinDeadline(wedge) {
+                gate.wait()
+                return ["never reached"]
+            }
+            let elapsed = Date().timeIntervalSince(start)
+            guard got == nil else {
+                print("      卡死的读取被当成成功，返回了 \(got?.count ?? -1) 项")
+                return false
+            }
+            // 两头都要钉：等太久 = 没兜住；几乎不等 = deadline 被设成 0，
+            // 那会把所有可读目录一并报成盲区，是另一种假。
+            guard elapsed >= 0.1, elapsed < 2.0 else {
+                print("      等待时长不对：\(String(format: "%.2f", elapsed)) s（deadline 0.3 s）")
+                return false
+            }
+            guard FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(wedge)) else {
+                print("      超时的目录没进盲区清单：\(FileSystem.deniedAccessSnapshot())")
+                return false
+            }
+            return true
+        }
+
+        check("卡过的目录在 TTL 内不重试，清空记录后又要真的重试一次") {
+            let saved = FileSystem.gatedReadDeadline
+            FileSystem.gatedReadDeadline = 0.3
+            FileSystem.resetWedgedReadsForSelftest()
+            defer { FileSystem.gatedReadDeadline = saved }
+            let wedge = "/private/tmp/macclean-wedge-\(UUID().uuidString)"
+            let gate = DispatchSemaphore(value: 0)
+            defer { gate.signal() }
+            let body: () -> [String] = { gate.wait(); return [] }
+            let first: [String]? = FileSystem.readWithinDeadline(wedge, body)
+            let start = Date()
+            let second: [String]? = FileSystem.readWithinDeadline(wedge, body)
+            let again = Date().timeIntervalSince(start)
+            guard first == nil, second == nil else { return false }
+            guard again < 0.05 else {
+                print("      同一目录第二轮又等了一次 deadline：\(String(format: "%.2f", again)) s")
+                return false
+            }
+            // 跨轮不清：每轮扫描都 `resetDeniedAccess()`，若它也清了这份记录，
+            // 就等于每轮对每个仍然卡死的目录重新漏一条收不回来的线程。
+            FileSystem.resetDeniedAccess()
+            let t0 = Date()
+            let afterRoundReset: [String]? = FileSystem.readWithinDeadline(wedge, body)
+            let resetWait = Date().timeIntervalSince(t0)
+            guard afterRoundReset == nil, resetWait < 0.05 else {
+                print("      resetDeniedAccess() 把卡死记录一起清了："
+                      + "同一目录在下一轮又被试了一次（等了 \(String(format: "%.2f", resetWait)) s）")
+                return false
+            }
+            // 反证：显式清空这份记录之后，同一个目录要**真的再被试一次**。
+            // 少了这一句，"立即返回"也可能只是因为 body 被彻底短路、从此再也不会跑。
+            FileSystem.resetWedgedReadsForSelftest()
+            let t1 = Date()
+            let third: [String]? = FileSystem.readWithinDeadline(wedge, body)
+            let thirdWait = Date().timeIntervalSince(t1)
+            guard third == nil, thirdWait >= 0.1 else {
+                print("      清空记录后没有重新试：third=\(String(describing: third))，"
+                      + "等了 \(String(format: "%.2f", thirdWait)) s")
+                return false
+            }
+            return true
+        }
+
+        check("超时给 nil、空目录给 []：两者不许混成同一个结论") {
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean-bounded-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root + "/empty", withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: root + "/full", withIntermediateDirectories: true)
+            fm.createFile(atPath: root + "/full/a.bin", contents: Data([1]))
+            defer { try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root)
+                    try? fm.removeItem(atPath: root) }
+            FileSystem.resetDeniedAccess()
+            let empty = FileSystem.childrenBounded(of: root + "/empty")
+            let full = FileSystem.childrenBounded(of: root + "/full")
+            var bad: [String] = []
+            if empty != [] { bad.append("空目录应返回 [] 而不是 nil：\(String(describing: empty))") }
+            if full != [root + "/full/a.bin"] {
+                bad.append("可读目录没列到那一个条目：\(String(describing: full))")
+            }
+            if !FileSystem.deniedAccessSnapshot().isEmpty {
+                bad.append("正常读取被记成了盲区：\(FileSystem.deniedAccessSnapshot())")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("T2 顶层列举与 T3 根探测保持带截止写法（Scanner 的两处门禁根接线）") {
+            let src = (try? String(contentsOfFile:
+                (Selftest.sourceDirectoryPath as NSString).appendingPathComponent("Scanner.swift"),
+                encoding: .utf8)) ?? ""
+            guard src.count > 4000 else {
+                print("      读不到 Scanner.swift 正文（\(src.count) 字符），这条无从判定")
+                return false
+            }
+            var bad: [String] = []
+            if !src.contains("childrenBounded(of: downloads)") {
+                bad.append("T2 不再用带截止的列举读 ~/Downloads")
+            }
+            if !src.contains("canOpenDirectoryBounded(rootPath)") {
+                bad.append("T3 的 bigFileRoots 少了带截止的根探测")
+            }
+            if src.contains("FileSystem.children(of: downloads)") {
+                bad.append("T2 残留无截止的 children(of:) 列举")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("被明确拒绝（mode 000）的目录同样要进盲区：探测不许只回答能不能开") {
+            let fm = FileManager.default
+            let locked = "/private/tmp/macclean-locked-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+            fm.createFile(atPath: locked + "/a.bin", contents: Data([1]))
+            try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+            defer {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked)
+                try? fm.removeItem(atPath: locked)
+            }
+            FileSystem.resetDeniedAccess()
+            guard FileSystem.canOpenDirectoryBounded(locked) == false else {
+                print("      mode 000 的目录没被判成「打不开」")
+                return false
+            }
+            guard FileSystem.deniedAccessSnapshot().contains(FileSystem.normalizePath(locked)) else {
+                print("      判出了打不开却没记盲区——界面上这里就等于「没东西」")
+                return false
+            }
+            return true
+        }
+
+        check("并发问同一个卡死目录：body 只许跑一次（查询与占位必须同临界区）") {
+            final class Counter {
+                let lock = NSLock()
+                private var _runs = 0
+                func bump() { lock.lock(); _runs += 1; lock.unlock() }
+                // 读也必须走同一把锁：写侧持锁、读侧裸取，TSan 判的是货真价实的 data race
+                // （本条自检第一版就是这么红的）。
+                var runs: Int { lock.lock(); defer { lock.unlock() }; return _runs }
+            }
+            let saved = FileSystem.gatedReadDeadline
+            FileSystem.gatedReadDeadline = 0.3
+            FileSystem.resetWedgedReadsForSelftest()
+            defer { FileSystem.gatedReadDeadline = saved }
+            let wedge = "/private/tmp/macclean-race-\(UUID().uuidString)"
+            let gate = DispatchSemaphore(value: 0)
+            defer { gate.signal() }
+            let counter = Counter()
+            let body: () -> [String] = {
+                counter.bump()
+                gate.wait()
+                return []
+            }
+            // 必须用**起跑屏障**让 8 个线程同一瞬间进入：不加屏障时它们被 dispatch 错开，
+            // 第一个线程早就占好位了，"先查后占"这种坏写法也能每次只跑一个 body——
+            // 实测就是这样漏掉一次变异（自检全绿而 race 仍在）。
+            // `Application Support` 同时属于 .appResidue 与 .browserAndSystem，
+            // 6 个分类并发扫描时两个线程会同时问到同一个 key，这条钉的就是那个瞬间。
+            let start = DispatchSemaphore(value: 0)
+            let group = DispatchGroup()
+            for _ in 0..<8 {
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { group.leave() }
+                    start.wait()
+                    _ = FileSystem.readWithinDeadline(wedge, body)
+                }
+            }
+            for _ in 0..<8 { start.signal() }
+            group.wait()
+            guard counter.runs == 1 else {
+                print("      同一个卡死目录跑了 \(counter.runs) 次 body：查询与占位不在同一次临界区，"
+                      + "并发扫描会为同一个目录漏 \(counter.runs) 条收不回来的线程")
+                return false
+            }
+            return true
+        }
+
+        check("并发令牌耗尽时跳过但不记盲区：没碰过的目录不许被说成读不到") {
+            let saved = FileSystem.gatedReadDeadline
+            FileSystem.gatedReadDeadline = 0.3
+            FileSystem.resetWedgedReadsForSelftest()
+            FileSystem.resetDeniedAccess()
+            defer { FileSystem.gatedReadDeadline = saved }
+            let gate = DispatchSemaphore(value: 0)
+            defer { gate.signal() }
+            // 用 4 个各自卡死的目录把在途额度占满（上限见 gatedReadSlots）
+            for i in 0..<4 {
+                let p = "/private/tmp/macclean-slot-\(UUID().uuidString)-\(i)"
+                _ = FileSystem.readWithinDeadline(p) { () -> [String] in
+                    gate.wait()
+                    return []
+                }
+            }
+            // 现在来问一个**完全可读**的目录
+            let fm = FileManager.default
+            let ok = "/private/tmp/macclean-ok-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: ok, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: ok) }
+            FileSystem.resetDeniedAccess()
+            let got = FileSystem.childrenBounded(of: ok)
+            let snap = FileSystem.deniedAccessSnapshot()
+            guard got == nil else {
+                print("      额度耗尽却仍读到了（返回 \(String(describing: got))），这条没在测限流")
+                return false
+            }
+            guard !snap.contains(FileSystem.normalizePath(ok)) else {
+                print("      根本没去 open 的目录被记成「读不到」——凭空造了一条权限告警")
+                return false
+            }
+            return true
+        }
+
+        check("卡死去重：查询与占位必须在同一次临界区（源码形状）") {
+            // 上面那条并发行为自检钉的是"同一个 key 只跑一次 body"，但**它分辨不了原子性**：
+            // 把查询与占位拆成两次临界区，窗口只有几条指令，8 个线程实测仍然只跑 1 次 body
+            // ——变异验不出来（试过，全绿）。所以这里用形状钉住那个不变量本身：
+            // 占位那一行不许自带一次新的 lock/unlock，否则就是 check-then-act。
+            let src = (try? String(contentsOfFile:
+                (Selftest.sourceDirectoryPath as NSString).appendingPathComponent("FileSystem.swift"),
+                encoding: .utf8)) ?? ""
+            guard src.count > 4000 else {
+                print("      读不到 FileSystem.swift 正文（\(src.count) 字符）")
+                return false
+            }
+            var bad: [String] = []
+            guard let line = src.split(separator: "\n").first(where: {
+                $0.contains("inFlightReads.insert(key)")
+            }) else {
+                print("      找不到 inFlightReads.insert(key) 这一行")
+                return false
+            }
+            if line.contains("wedgedLock.") {
+                bad.append("占位与查询被拆成两次临界区（check-then-act）：\(line.trimmingCharacters(in: .whitespaces))")
+            }
+            if !src.contains("if inFlightReads.contains(key)") {
+                bad.append("在途占位的查询消失了，同一个卡死目录可能被并发放行多次")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("C1/C6/A1 三处候选目录都要有截止跳过（探测关掉时跳过语义不能一起消失）") {
+            let src = (try? String(contentsOfFile:
+                (Selftest.sourceDirectoryPath as NSString).appendingPathComponent("Scanner.swift"),
+                encoding: .utf8)) ?? ""
+            guard src.count > 4000 else {
+                print("      读不到 Scanner.swift 正文（\(src.count) 字符）")
+                return false
+            }
+            // 三处 recordBlindSpotIfNeeded 都必须紧跟一道不受 proactiveBlindSpotProbe 管的
+            // isReadableWithDeadline：否则探测一关，`continue` 永不发生，
+            // 紧接着的 size(at:) 就去无截止地开同一个目录。
+            let lines = src.split(separator: "\n").map(String.init)
+            var bad: [String] = []
+            let probeLines = lines.enumerated().filter { $0.element.contains("recordBlindSpotIfNeeded(at:") }
+            if probeLines.count != 3 {
+                bad.append("recordBlindSpotIfNeeded 调用点变成 \(probeLines.count) 处（期望 3）")
+            }
+            for (idx, _) in probeLines {
+                let window = lines[idx..<min(idx + 3, lines.count)]
+                if !window.contains(where: { $0.contains("isReadableWithDeadline(") }) {
+                    bad.append("探测调用后三行内没有有截止跳过：\(lines[idx].trimmingCharacters(in: .whitespaces))")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("出厂 deadline 必须是有限且够干活的小值") {
+            // 钉的是常量 `defaultGatedReadDeadline`，**不是**运行时那个可变的当前值：
+            // 同文件前两条自检会把它临时改成 0.3 再还原，断当前值等于断别人设的值。
+            // 设成 .infinity / 3600 就等于没有截止，卡死原样回来；设成 0 则把可读目录
+            // 一口全报成盲区——两头都要钉住。
+            let d = FileSystem.defaultGatedReadDeadline
+            guard d > 0, d <= 30 else {
+                print("      defaultGatedReadDeadline = \(d)，不在 (0, 30] 内")
+                return false
+            }
+            return true
         }
 
     }

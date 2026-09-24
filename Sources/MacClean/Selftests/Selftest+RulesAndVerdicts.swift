@@ -1034,5 +1034,190 @@ extension Selftest {
                 && CleanPaths.runningDisplayNames == refreshed.displayNames
         }
 
+        // T2 闲置判据：只看 mtime，读不到就不下结论（旧写法用 atime 且 `?? .distantPast`）
+        check("T2 闲置判据：以 mtime 为准、atime 不参与、读不到时判为不闲置") {
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean_t2_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: root) }
+            let day: TimeInterval = 86400
+            let now = Date()
+            func touch(_ name: String, mtimeAgo: TimeInterval) -> String {
+                let p = root + "/" + name
+                try? Data(repeating: 0x41, count: 2048).write(to: URL(fileURLWithPath: p))
+                try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-mtimeAgo)],
+                                      ofItemAtPath: p)
+                return p
+            }
+
+            // 1. 200 天没改过 → 闲置，且回传的日期就是判据用的那个
+            let oldFile = touch("old.dmg", mtimeAgo: 200 * day)
+            let oldVerdict = Scanner.staleDownloadsVerdict(at: oldFile, now: now, olderThan: 180 * day)
+            guard oldVerdict.isStale, let last = oldVerdict.lastUsed,
+                  abs(now.timeIntervalSince(last) - 200 * day) < 60 else { return false }
+
+            // 2. 昨天刚改过 → 不闲置
+            let freshFile = touch("fresh.dmg", mtimeAgo: day)
+            guard Scanner.staleDownloadsVerdict(at: freshFile, now: now, olderThan: 180 * day).isStale == false else { return false }
+
+            // 3. 把 atime 拧成 400 天前，mtime 仍是昨天 → 依旧不闲置（证明判据不读 atime）
+            var times = [timeval](repeating: timeval(tv_sec: 0, tv_usec: 0), count: 2)
+            times[0].tv_sec = Int(now.addingTimeInterval(-400 * day).timeIntervalSince1970)
+            times[1].tv_sec = Int(now.addingTimeInterval(-day).timeIntervalSince1970)
+            guard utimes(freshFile, &times) == 0 else { return false }
+            guard Scanner.staleDownloadsVerdict(at: freshFile, now: now, olderThan: 180 * day).isStale == false else { return false }
+
+            // 4. 路径不存在（读不到时间）→ 判为不闲置，绝不退化成"无限旧"
+            let gone = Scanner.staleDownloadsVerdict(at: root + "/does-not-exist.dmg",
+                                                     now: now, olderThan: 180 * day)
+            return gone.isStale == false && gone.lastUsed == nil
+        }
+
+        check("T2 接线：判据用的日期要真的交给条目，且 Scanner 里的文案不说「未访问」") {
+            // 这条原先自己 `CleanItem(note: "…", modificationDate: verdict.lastUsed)` 造了一个
+            // 条目再去断言它的字段——那测的是 `Models.swift` 的字段透传，不是 `Scanner` 有没有
+            // 真的把日期交出去：把 Scanner 里那行删掉，自检照旧全绿。改成两半各自钉：
+            // ① 生产数据（规则 summary）；② Scanner 源码里那两处实参确实带上了。
+            let src = (try? String(contentsOfFile:
+                (Selftest.sourceDirectoryPath as NSString).appendingPathComponent("Scanner.swift"),
+                encoding: .utf8)) ?? ""
+            guard src.count > 4000 else {
+                print("      读不到 Scanner.swift 正文（\(src.count) 字符）")
+                return false
+            }
+            var bad: [String] = []
+            if !src.contains("modificationDate: verdict.lastUsed") {
+                bad.append("T2 不再把判据用到的日期交给条目")
+            }
+            if !src.contains("note: big ? \"超过 500MB\" : \"超过 180 天未修改\"") {
+                bad.append("T2 的 note 文案不再是「未修改」口径")
+            }
+            if src.contains("\"超过 180 天未访问\"") {
+                bad.append("T2 的 note 里还留着「未访问」")
+            }
+            guard let rule = CleanupRules.rule("T2") else { return false }
+            if rule.summary.contains("未访问") || !rule.summary.contains("未修改") {
+                bad.append("规则 summary 仍是「未访问」口径：\(rule.summary)")
+            }
+            // T2 是纯大小/时间判据，必须留在「空间审计」而不是清理页
+            if !(rule.auditOnly && CleanupRules.isAuditOnly("T2")) {
+                bad.append("T2 不在只报告（auditOnly）之列")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        check("CleanItem 把显式传入的 modificationDate 当作面板日期（Models 侧透传）") {
+            let fm = FileManager.default
+            let root = "/private/tmp/macclean_t2note_\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: root) }
+            let day: TimeInterval = 86400
+            let now = Date()
+            let p = root + "/stale.iso"
+            try? Data(repeating: 0x42, count: 4096).write(to: URL(fileURLWithPath: p))
+            try? fm.setAttributes([.modificationDate: now.addingTimeInterval(-200 * day)], ofItemAtPath: p)
+            let verdict = Scanner.staleDownloadsVerdict(at: p, now: now, olderThan: 180 * day)
+            guard verdict.isStale, let last = verdict.lastUsed else { return false }
+            let item = CleanItem(name: "stale.iso", path: p, size: 4096, rule: "T2",
+                                 category: .largeFiles, note: "超过 180 天未修改",
+                                 modificationDate: verdict.lastUsed)
+            guard let shown = item.lastUsed, abs(shown.timeIntervalSince(last)) < 2 else { return false }
+            // 而且那个日期必须就是 200 天前的 **mtime**——只断言"带着某个日期"的话，
+            // 判据换成 atime 或 distantPast 都能混过去（实测就是这样漏掉一次变异）
+            guard abs(now.timeIntervalSince(shown) - 200 * day) < 600 else { return false }
+            return true
+        }
+
+        check("判据不变量：产品源码不得再用访问时间（atime）做任何判定") {
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
+            // 撞红要一眼分清"范围没铺开"和"项目变小了"：先钉几个必然存在的文件，
+            // 计数只留一个宽松下界当兜底（原先的 110 离实测 117 太近，删几个文件就误红）。
+            let mustBeThere: Set<String> = ["AppState.swift", "FileSystem.swift",
+                                            "Scanner.swift", "History.swift"]
+            let missing = mustBeThere.subtracting(Set(files)).sorted()
+            guard missing.isEmpty else {
+                print("      扫描范围缺了必然存在的文件：\(missing)")
+                return false
+            }
+            guard files.count > 80 else {
+                print("      源码文件数异常（读到 \(files.count) 个），扫描范围没铺开")
+                return false
+            }
+            var offenders: [String] = []
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    offenders.append("\(rel):<不可读>")
+                    continue
+                }
+                for (idx, line) in src.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                    let t = line.trimmingCharacters(in: .whitespaces)
+                    if t.hasPrefix("//") || t.hasPrefix("///") { continue }
+                    if t.contains("accessDate") || t.contains("st_atimespec")
+                        || t.contains("contentAccessDateKey") {
+                        offenders.append("\(rel):\(idx + 1)")
+                    }
+                }
+            }
+            if !offenders.isEmpty { print("      atime 又回到判据里: \(offenders.prefix(5))") }
+            return offenders.isEmpty
+        }
+
+        // 无人值守入口的 TCC 守卫：默认必须是"关"。
+        // 真机实测：`--scan` 停在 `scanC6SandboxContainerCaches` 的 `open()` 上，
+        // 0% CPU 永不返回——macOS 的「想访问其他 App 的数据」是模态框，无头路径没人点。
+        check("TCC 盲区主动探测：默认关，无头入口不依赖上一轮留下的值") {
+            let sourceDir = Selftest.sourceDirectoryPath
+            guard let fs = try? String(
+                contentsOfFile: (sourceDir as NSString).appendingPathComponent("FileSystem.swift"),
+                encoding: .utf8),
+                let app = try? String(
+                    contentsOfFile: (sourceDir as NSString).appendingPathComponent("MacCleanApp.swift"),
+                    encoding: .utf8) else {
+                print("      读不到 FileSystem.swift / MacCleanApp.swift")
+                return false
+            }
+            var bad: [String] = []
+            // ① 默认值必须是 false：忘记设置只能退化成"少报几个盲区"，不能是"整轮挂死"
+            if !fs.contains("private static var _proactiveBlindSpotProbe = false") {
+                bad.append("默认值不再是 fail-closed")
+            }
+            // ② `--scan` 分支内部必须显式关掉。原先断的是"该字面量之后直到文件结尾"，
+            //    把那行挪进后面任何分支都照样绿——这里把范围切成这一个分支自己。
+            if let scanRange = app.range(of: "CommandLine.arguments.contains(\"--scan\")") {
+                let tail = app[scanRange.lowerBound...]
+                let branch = tail.range(of: "exit(0)").map {
+                    tail[..<tail.index($0.lowerBound, offsetBy: 6)]
+                } ?? tail
+                if !branch.contains("proactiveBlindSpotProbe = false") {
+                    bad.append("--scan 分支内部没有显式关闭主动探测")
+                }
+            } else {
+                bad.append("找不到 --scan 分支")
+            }
+            // ③ 整个无头入口文件里只许出现这一处赋值，且必须是 false：
+            //    `--aitest` / `--aireview` 同样走 `Scanner.scan`，逐个分支去断言迟早漏一个。
+            let assignments = app.components(separatedBy: "proactiveBlindSpotProbe =").dropFirst()
+            if assignments.count != 1 || !assignments.first!.starts(with: " false") {
+                bad.append("无头文件里对探测开关的赋值不是恰好一处 false：\(assignments.map { $0.prefix(12) })")
+            }
+            // ④ 只有交互入口才允许打开它
+            if let stateSrc = try? String(
+                contentsOfFile: (sourceDir as NSString).appendingPathComponent("AppState.swift"),
+                encoding: .utf8) {
+                if !stateSrc.contains("FileSystem.proactiveBlindSpotProbe = true")
+                    || !stateSrc.contains("FileSystem.proactiveBlindSpotProbe = !unattended") {
+                    bad.append("AppState 不再显式打开交互探测")
+                }
+            } else {
+                bad.append("读不到 AppState.swift")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
     }
 }

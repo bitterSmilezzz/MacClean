@@ -413,6 +413,8 @@ public struct ScreenshotsOrganizerCard: View {
                 if res.errorCount > 0 { text += "；\(res.errorCount) 项未移动：\(res.firstFailure ?? "被安全护栏拦下")" }
                 self.bannerFeedback = text
                 self.loadData()
+                // 同 Downloads 卡片：归档也写了历史，界面要追上盘。
+                self.onTriggerClean?()
             }
         }
     }

@@ -143,7 +143,14 @@ enum FileSystem {
     /// 整条盲区记账在真机上一条都不会成立——这条是自检先红出来的。
     static func recordDeniedAccess(_ url: URL, error: Error) {
         guard isPermissionError(error) else { return }
-        let path = normalizePath(url.path)
+        noteDeniedRoot(normalizePath(url.path))
+    }
+
+    /// 盲区记账本体（调用方负责不持 `deniedLock`）。
+    ///
+    /// 单独拆出来是因为超时那条路径手上没有 `Error`：`isPermissionError` 那道
+    /// 过滤器对它天然不成立，而"授权请求未决"和"授权被拒"对用户是同一件事。
+    private static func noteDeniedRoot(_ path: String) {
         guard !path.isEmpty else { return }
         deniedLock.lock()
         defer { deniedLock.unlock() }
@@ -194,6 +201,154 @@ enum FileSystem {
         deniedLock.lock()
         deniedRoots.removeAll()
         deniedLock.unlock()
+        // 注意：**不清** `wedgedReads`。它按扫描轮清空的话，每轮都会对每个仍然卡死的
+        // 目录重新 dispatch 一条永不返回的 block——死线程就是这么攒出来的。
+        // 那份状态靠 TTL 自己过期，见 `wedgedRetryInterval`。
+    }
+
+    /// 清空"卡过的目录"记录。**只给自检用**。
+    ///
+    /// 生产路径上这个集合是**故意跨轮**的（见上面 `resetDeniedAccess` 的注释），
+    /// 所以测试要一个确定起点时只能显式清，不能指望每轮自动清。
+    static func resetWedgedReadsForSelftest() {
+        wedgedLock.lock()
+        wedgedReads.removeAll()
+        inFlightReads.removeAll()
+        wedgedLock.unlock()
+    }
+
+    // MARK: - 读取可能被 TCC 拦住的目录：必须带截止时间
+
+    /// 出厂值。自检钉的是这个常量，不是运行时可能被测试改小的当前值。
+    static let defaultGatedReadDeadline: TimeInterval = 5
+
+    /// 打开一个目录**最多**等多久。
+    ///
+    /// 授权请求处于"未决"时，`opendir` 与 `contentsOfDirectory` 不是返回错误，而是
+    /// 停在内核的 `__open` 上永不返回。实测本机 `~/Downloads` 挂着一个再没人应答的
+    /// TCC 请求（屏幕上并没有等着点的对话框——对话框已经成了孤儿），于是
+    /// `--scan`、`--selftest` 和 GUI 里点「扫描」全部 0% CPU 卡死在同一条栈：
+    /// `FileSystem.children → contentsOfDirectory → __open`（2335/2335 次采样都在那一帧）。
+    ///
+    /// 没有截止时间时，代价不是"这一处看不见"，而是"整个应用没有响应"——
+    /// 而后者会让用户以为工具坏了，再也不看它的任何结论。
+    static var gatedReadDeadline: TimeInterval {
+        get { deadlineLock.lock(); defer { deadlineLock.unlock() }; return _gatedReadDeadline }
+        set { deadlineLock.lock(); defer { deadlineLock.unlock() }; _gatedReadDeadline = newValue }
+    }
+    private static let deadlineLock = NSLock()
+    private static var _gatedReadDeadline: TimeInterval = defaultGatedReadDeadline
+
+    private static let gatedReadQueue = DispatchQueue(label: "com.macclean.gated-read",
+                                                     attributes: .concurrent)
+
+    /// 同时在途的门禁读取上限。
+    ///
+    /// 超时那条 block 仍卡在内核里，用户态收不回来，而 GCD 同一 QoS 只有约 64 条
+    /// 工作线程。不设上限的话攒满之后**所有**门禁读取都排不上队、一律超时，
+    /// 于是可读的目录被成片报成盲区——谎报比漏报糟，本项目把这条排在第一位。
+    /// 有了上限，最坏情况是"这一轮少看几处"，且立刻发生而不是拖垮整轮。
+    private static let gatedReadSlots = DispatchSemaphore(value: 4)
+
+    /// 卡过的目录 -> 记下的时刻。TTL 内不再重试（重试只会再多漏一条死线程）；
+    /// TTL 之后给一次机会，因为授权可能在这期间被补上。
+    private static let wedgedLock = NSLock()
+    private static var wedgedReads: [String: Date] = [:]
+    /// 正在途的目录。与上面的查询**必须在同一次临界区里**读写：6 个分类并发扫描时
+    /// `Application Support` 同时属于 `.appResidue` 与 `.browserAndSystem`，
+    /// 先查后占会让同一个目录放行两次，各漏一条永不返回的线程。
+    private static var inFlightReads: Set<String> = []
+    static let wedgedRetryInterval: TimeInterval = 600
+
+    private final class BoundedReadBox<T> { var value: T? }
+
+    /// 截止时间到之前完成就返回值；超时则记盲区并返回 nil。
+    ///
+    /// nil 与"读到了空结果"必须能区分开，所以调用方拿到 nil 时只能跳过，
+    /// 不能把这里当成"0 项 / 很干净"。
+    ///
+    /// 两种 nil 不是一回事：**真的等过、超时**才记盲区；**令牌满了根本没试**不记——
+    /// 对我们没碰过的目录声称"读不到"，就是凭空造一条权限告警。
+    ///
+    /// internal 是给自检留的缝：自检传一个**真的永不返回**的 body 进来，就能在没有
+    /// 卡死卷宗的开发机上复现这条路径——不去伪造 `opendir` 的行为，只替换被包住的那次读取。
+    static func readWithinDeadline<T>(_ path: String, _ body: @escaping () -> T) -> T? {
+        let key = normalizePath(path)
+        let now = Date()
+        wedgedLock.lock()
+        if let at = wedgedReads[key], now.timeIntervalSince(at) < wedgedRetryInterval {
+            wedgedLock.unlock()
+            return nil
+        }
+        if inFlightReads.contains(key) {
+            wedgedLock.unlock()
+            return nil
+        }
+        inFlightReads.insert(key)
+        wedgedLock.unlock()
+
+        guard gatedReadSlots.wait(timeout: .now()) == .success else {
+            wedgedLock.lock(); inFlightReads.remove(key); wedgedLock.unlock()
+            return nil
+        }
+
+        let done = DispatchSemaphore(value: 0)
+        let box = BoundedReadBox<T>()
+        gatedReadQueue.async {
+            box.value = body()
+            gatedReadSlots.signal()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + gatedReadDeadline) == .timedOut {
+            wedgedLock.lock()
+            inFlightReads.remove(key)
+            wedgedReads[key] = Date()      // 占位改记成"卡过"：那条 block 还在内核里
+            wedgedLock.unlock()
+            noteDeniedRoot(key)
+            return nil
+        }
+        wedgedLock.lock()
+        inFlightReads.remove(key)
+        wedgedReads.removeValue(forKey: key)   // 读通了，别再当它卡过
+        wedgedLock.unlock()
+        return box.value
+    }
+
+    /// 扫描**本来就要读**某个可能被 TCC 拦住的目录时，先用带截止的探测过一遍：
+    /// 打不开或卡住就整项跳过，并已记入盲区。
+    ///
+    /// 与 `proactiveBlindSpotProbe` 无关，而且刻意不受它管：那个开关管的是"要不要
+    /// **额外**多开一次去记账"（那一次才是无人值守会撞上模态授权框的东西），
+    /// 而这里这次开本来就要发生——把它关掉不会省掉那次 `open`，只会把无截止的那次
+    /// 留给紧随其后的 `size(at:)`。有了截止时间，无人值守才敢照开不误。
+    static func isReadableWithDeadline(_ path: String) -> Bool {
+        canOpenDirectoryBounded(path) == true
+    }
+
+    /// 带截止时间的目录列举，**只**用在可能被 TCC 拦住的家目录根
+    /// （下载 / 文稿 / 桌面 / 影片）。
+    ///
+    /// 不给 `children(of:)` 整体加截止时间是刻意的：它在递归遍历里被调用成千上万次，
+    /// 每次都跳一次线程、等一次信号量，会把扫描本身变成瓶颈。TCC 拦的是"打开容器目录"
+    /// 那一刻，所以只要在根上守住就够了。
+    ///
+    /// 返回 nil = 这一轮没能看清这里（已记入盲区）；返回 `[]` = 这里确实是空的。
+    static func childrenBounded(of path: String, keepHidden: Bool = false) -> [String]? {
+        readWithinDeadline(path) { children(of: path, keepHidden: keepHidden) }
+    }
+
+    /// 带截止时间的"开不开得了"探测。返回 nil = 超时（授权未决）。
+    ///
+    /// 三种结果里只有 `true` 不是盲区，所以 `false`（被拒）和 nil（卡住）都记进盲区清单：
+    /// 这条探测正是"存在但读不到"的判定本身，放过其中一种就等于把它报成"干净"。
+    static func canOpenDirectoryBounded(_ path: String) -> Bool? {
+        switch readWithinDeadline(path, { canOpenDirectory(path) }) {
+        case .some(true): return true
+        case .some(false):
+            noteDeniedRoot(normalizePath(path))
+            return false
+        case nil: return nil
+        }
     }
 
     /// 显式问一次"这个目录读得到吗"，读不到就记进盲区清单并返回 true。
@@ -208,25 +363,36 @@ enum FileSystem {
         guard proactiveBlindSpotProbe else { return false }
         var st = stat()
         guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else { return false }
-        guard !canOpenDirectory(path) else { return false }
+        switch canOpenDirectoryBounded(path) {
+        case true: return false                       // 读得到，不是盲区
+        case nil:  return true                        // 没等到：盲区已记下
+        case false: break
+        }
         recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true),
                            error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES)))
         return true
     }
 
     private static let probeModeLock = NSLock()
-    private static var _proactiveBlindSpotProbe = true
+    private static var _proactiveBlindSpotProbe = false
 
-    /// 本轮扫描要不要**主动打开**可能被 TCC 拒掉的目录。默认要。
+    /// 本轮扫描要不要**额外**打开可能被 TCC 拒掉的目录去做盲区记账。**默认关**。
     ///
     /// 真机实测：打开别的 App 的容器/缓存会让 macOS 弹出
     /// "「MacClean」想访问其他 App 的数据"——那是个**模态**对话框。
-    /// 用户亲手点扫描时弹得正好（他正想找授权入口）；但 `DiskMonitor` 每 3 小时
-    /// 无人值守扫一轮，弹出来没人点，扫描就挂在那儿了。
-    /// 所以无人值守路径必须关掉它：盲区少报一轮，比整轮扫描卡死好。
+    /// 用户亲手点扫描时弹得正好（他正想找授权入口）；无人值守路径弹出来没人点。
     ///
-    /// **约定**：每个扫描入口都要在开工时显式设一次（`AppState.scan`/`scanAll`、
-    /// `Scanner.scan`），不要依赖上一轮留下的值。
+    /// **这个开关不保证"不卡死"，也从来没保证过。** 关掉它只是不做那次*额外*的记账探测：
+    /// 扫描本来就要 `size(at:)` 同一个目录，那一次 `open` 照样发生，所以"少弹一个框"
+    /// 之外它什么也没省掉。真正兜住卡死的是 `gatedReadDeadline`
+    /// （见 `isReadableWithDeadline` 与 `Scanner` 里 C1/C6/A1 那三处补的有截止跳过）。
+    ///
+    /// **为什么默认仍是 false**：`Scanner.scan` 是所有无头入口的必经之地，而它从来没设过
+    /// 这个开关（注释却写着设了）。默认关之后，"忘记设"的代价退化成"这一轮盲区少报几个"，
+    /// 而不是"多弹一批没人点的模态框"——失败要往轻的方向倒。
+    ///
+    /// **约定**：只有人在屏幕前亲手触发的交互扫描才显式打开
+    /// （`AppState.scan(_:)`、`AppState.scanAll(unattended: false)`）；无头入口保持默认关。
     static var proactiveBlindSpotProbe: Bool {
         get {
             probeModeLock.lock()
@@ -481,12 +647,6 @@ enum FileSystem {
         (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
     }
 
-    /// 文件/目录访问时间
-    static func accessDate(_ path: String) -> Date? {
-        let url = URL(fileURLWithPath: path)
-        return (try? url.resourceValues(forKeys: [.contentAccessDateKey]).contentAccessDate)
-    }
-
     // MARK: - 归属与时间证据（规则 v2 判据的底座）
 
     /// 一趟 `lstat` 拿到的归属、时间与类型事实。
@@ -497,7 +657,6 @@ enum FileSystem {
     struct ItemEvidence {
         let ownerUID: UInt32
         let modificationDate: Date
-        let accessDate: Date
         let isDirectory: Bool
         let isRegularFile: Bool
         let isSymlink: Bool
@@ -514,7 +673,6 @@ enum FileSystem {
         }
         return ItemEvidence(ownerUID: st.st_uid,
                             modificationDate: date(st.st_mtimespec),
-                            accessDate: date(st.st_atimespec),
                             isDirectory: type == S_IFDIR,
                             isRegularFile: type == S_IFREG,
                             isSymlink: type == S_IFLNK,
@@ -575,7 +733,7 @@ enum FileSystem {
 
     /// 轻量使用检测结果
     struct UsageInfo {
-        var lastUsed: Date?      // 最近使用时间（文件 accessDate/mtime 较新者；目录为样本内最新）
+        var lastUsed: Date?      // 最近使用时间（**只看修改时间**；目录取样本内最新 mtime）
         var level: UsageLevel    // 使用频率分级
     }
 
@@ -610,7 +768,7 @@ enum FileSystem {
     }
 
     /// 检测路径最近使用情况。
-    /// - 单文件：取 accessDate 与 mtime 较新者，按距今天数分级。
+    /// - 单文件：只看 mtime，按距今天数分级（atime 不参与任何判据，见 `usage` 内的说明）。
     /// - 目录：先看目录自身 mtime（快速路径）；较旧时抽样枚举内部文件（限深度 3、样本 2000，
     ///   找到近期修改文件即提前终止），统计最新修改时间与近期文件数来分级。
     /// 性能约束：最坏情况枚举 2000 个文件元数据，远轻于 directorySize 的 20 万上限。
@@ -714,7 +872,11 @@ enum FileSystem {
         return true
     }
 
-    /// 能不能打开这个目录（一次 `opendir` 即返回，不读条目）。
+    /// 能不能打开这个目录（一次 `opendir`，不读条目）。
+    ///
+    /// **注意：本函数没有截止时间**，授权未决时会永不返回。判定用
+    /// `canOpenDirectoryBounded` / `isPermissionDenied`，别直接用这个——下面两条
+    /// "为什么不用别的"只解释了选哪个 API，并不保证它会返回。
     ///
     /// 为什么不用 `access(path, R_OK)`：TCC 是在**打开**那一刻拒绝的，`access` 只看
     /// Unix 权限位——`~/Library/Caches/CloudKit` 的权限位是允许的，`access` 会答"可以"，
@@ -730,13 +892,16 @@ enum FileSystem {
     /// G9：区分「因权限读不到」与「真的空目录」。
     /// 教训来源（v1.1）：`ls xxx 2>/dev/null | wc -l` 在权限不足时 stdout 为空、
     /// 被 `wc` 计成 `0`，于是「权限被拒」被误读为「空目录」——务必用本函数显式判定。
+    ///
+    /// 走带截止时间的探测：授权**未决**时 `opendir` 永不返回，判成"读不到"是对的
+    /// （这一轮确实没看到内容），但为它一直等下去就把一处盲区换成了整轮无响应。
     static func isPermissionDenied(_ path: String) -> Bool {
         var st = stat()
         guard lstat(path, &st) == 0 else { return false }
         if (st.st_mode & S_IFMT) != S_IFDIR {
             return !FileManager.default.isReadableFile(atPath: path)
         }
-        return !canOpenDirectory(path)
+        return canOpenDirectoryBounded(path) != true
     }
 
     /// G8：系统级硬保护判定（文档 §7：SIP restricted / sunlnk / 系统必需）。

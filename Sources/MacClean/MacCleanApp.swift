@@ -148,6 +148,8 @@ struct MacCleanApp: App {
         }
         if CommandLine.arguments.contains("--scan") {
             print("MacClean headless scan")
+            // 无头路径没有窗口能应答 TCC 的模态授权框，主动盲区探测必须关着
+            FileSystem.proactiveBlindSpotProbe = false
             // 逐分类计时：扫描是这套工具最慢的一步，没有分段耗时就只能靠猜
             let results = CleanCategory.allCases.map { cat -> (String, [CleanItem], Double) in
                 let t0 = Date()

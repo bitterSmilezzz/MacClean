@@ -205,8 +205,15 @@ extension Selftest {
                 $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/")
                     && $0 != "History.swift" && $0 != "UndoSnapshot.swift"
             }.sorted()
-            // 实测命中 117 个文件；下界留余量，但撞红时要能一眼看出是范围问题还是余量问题
-            guard files.count > 110 else {
+            // 同上：先钉必然存在的文件，计数只留宽松下界（原 110 离实测 117 太近）。
+            let mustBeThere: Set<String> = ["AppState.swift", "FileSystem.swift",
+                                            "Scanner.swift", "ResidueDeletionGate.swift"]
+            let missing = mustBeThere.subtracting(Set(files)).sorted()
+            guard missing.isEmpty else {
+                print("      扫描范围缺了必然存在的文件：\(missing)")
+                return false
+            }
+            guard files.count > 80 else {
                 print("      源码文件数异常（读到 \(files.count) 个），扫描范围没铺开")
                 return false
             }
@@ -371,6 +378,34 @@ extension Selftest {
             _ = try distCard.inspect()
 
             return true
+        }
+
+        check("归档写入口也要刷新界面：两张 organize 卡片的 executeArchive 不许只 loadData") {
+            // 症状：点「智能归档」→ 记录已经落盘（mode「归档移动」）→ `AppState.history`
+            // 停在旧值 → 清理历史页与侧栏计数看不到这一条，直到下一次别的清理或重启。
+            // 盘上是全的，所以不是丢数据，但"你刚做的事在界面上没发生"一样是错的。
+            let dir = Selftest.sourceDirectoryPath
+            var bad: [String] = []
+            for file in ["DownloadsOrganizerCard.swift", "ScreenshotsOrganizerCard.swift"] {
+                let path = (dir as NSString).appendingPathComponent(file)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    bad.append("\(file):<不可读>")
+                    continue
+                }
+                guard let head = src.range(of: "func executeArchive()") else {
+                    bad.append("\(file):<没有 executeArchive，这条自检失去目标>")
+                    continue
+                }
+                // 只圈这一个函数体：撞到下一个 func 就收口，否则会被同文件别处的
+                // `onTriggerClean?()`（executeClean 里那一次）蒙过去。
+                let after = src[head.upperBound...]
+                let scope: Substring = after.range(of: "func ").map { after[..<$0.lowerBound] } ?? after
+                if !scope.contains("onTriggerClean?()") {
+                    bad.append("\(file): executeArchive 写了历史却没触发刷新")
+                }
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
         }
 
     }

@@ -327,7 +327,13 @@ extension Selftest {
             let fm = FileManager.default
             let root = "/private/tmp/macclean_s6_perf_\(UUID().uuidString)"
             try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            // 主动探测默认关（无人值守开着会被模态授权框挂死），而本条量的就是**探测本身**
+            // 的开销与能力：不显式打开的话 150 次调用全部在 guard 里直接返回，
+            // 分子恒为 0，比值怎么量都"通过"——那是一条只会点头的假绿断言。
+            let savedProbe = FileSystem.proactiveBlindSpotProbe
+            FileSystem.proactiveBlindSpotProbe = true
             defer {
+                FileSystem.proactiveBlindSpotProbe = savedProbe
                 try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root + "/locked")
                 try? fm.removeItem(atPath: root)
             }

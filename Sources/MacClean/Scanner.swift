@@ -449,7 +449,13 @@ final class Scanner {
                 || CleanPaths.runningAppAliases.contains(CleanPaths.normalize(bundle)) { continue }
             // 读不到的缓存目录要显式记成盲区（本机实测 `~/Library/Caches/CloudKit` 就是 EPERM）：
             // 否则它和"这个缓存是空的"在结果上一模一样。
+            //
+            // 上面那道探测受 `proactiveBlindSpotProbe` 管，**关掉时它直接返回 false**，
+            // 于是 `continue` 永不发生——跳过语义一起没了，紧接着的 `size(at:)` 会去开
+            // 同一个目录，而且**没有截止时间**。这里补一道不受该开关管的有截止判定：
+            // 关掉探测省不掉那次 `open`，只会把它交给无截止的那一次。
             guard !FileSystem.recordBlindSpotIfNeeded(at: dir) else { continue }
+            guard FileSystem.isReadableWithDeadline(dir) else { continue }
             let size = FileSystem.size(at: dir)
             if size > 0 {
                 items.append(CleanItem(
@@ -584,6 +590,7 @@ final class Scanner {
             guard FileSystem.isDir(cacheDir), FileSystem.isSafeToClean(cacheDir) else { continue }
             // 沙盒容器的缓存是 FDA 缺失时最常"整片消失"的一类，逐个记账
             guard !FileSystem.recordBlindSpotIfNeeded(at: cacheDir) else { continue }
+            guard FileSystem.isReadableWithDeadline(cacheDir) else { continue }   // 同上：探测关掉时仍要有截止地跳过
             let size = FileSystem.size(at: cacheDir)
             if size > 0 {
                 items.append(CleanItem(
@@ -1446,6 +1453,7 @@ final class Scanner {
             // 走到这里说明"本来要判它是不是残留"，此时读不到才需要报出来；
             // 放在 G17/共享目录跳过之前，会把本来就不该碰的位置也报成盲区。
             guard !FileSystem.recordBlindSpotIfNeeded(at: dir) else { continue }
+            guard FileSystem.isReadableWithDeadline(dir) else { continue }   // 同上：探测关掉时仍要有截止地跳过
             // 活跃度：180 天内有更新 → 在用数据，不列为残留（与 A2 同门槛）
             if let mdate = FileSystem.modificationDate(dir), mdate > residueCutoff { continue }
             // 兼容 bundle-id 形式目录名（com.qoder.app.stable → 各段与 app 名比对）
@@ -1651,7 +1659,8 @@ final class Scanner {
         }
 
         // T1: 废纸篓（清理 = 彻底删除）
-        for child in FileSystem.children(of: CleanPaths.expand(CleanPaths.trash)) {
+        // `~/.Trash` 在 `CleanPaths.tccProtected` 在册，列举同样要带截止。
+        for child in FileSystem.childrenBounded(of: CleanPaths.expand(CleanPaths.trash)) ?? [] {
             let size = FileSystem.size(at: child)
             if size > 0 {
                 add(CleanItem(
@@ -1661,16 +1670,22 @@ final class Scanner {
             }
         }
 
-        // T2: Downloads 中 >500MB 或 >180 天未访问
+        // T2: Downloads 中 >500MB 或 >180 天未修改
+        //
+        // 必须走带截止时间的列举：`~/Downloads` 是 TCC 的门禁目录，授权请求未决时
+        // `children(of:)` 会停在内核里永不返回（实测整轮扫描 0% CPU 卡死在这一行）。
+        // 拿到 nil 时盲区已记下，跳过这一类即可，不能把"没等到"读成"没东西"。
         let downloads = CleanPaths.expand(CleanPaths.downloads)
-        for child in FileSystem.children(of: downloads) {
+        for child in FileSystem.childrenBounded(of: downloads) ?? [] {
             let size = FileSystem.size(at: child)
-            let old = (FileSystem.accessDate(child) ?? .distantPast) < Date().addingTimeInterval(-180 * day)
-            if size > 500 * 1024 * 1024 || (old && size > 0) {
+            let big = size > 500 * 1024 * 1024
+            let verdict = staleDownloadsVerdict(at: child, now: Date(), olderThan: 180 * day)
+            if big || (verdict.isStale && size > 0) {
                 add(CleanItem(
                     name: (child as NSString).lastPathComponent,
                     path: child, size: size, rule: "T2", category: .largeFiles,
-                    note: size > 500 * 1024 * 1024 ? "超过 500MB" : "超过 180 天未访问"))
+                    note: big ? "超过 500MB" : "超过 180 天未修改",
+                    modificationDate: verdict.lastUsed))
             }
         }
 
@@ -1678,6 +1693,9 @@ final class Scanner {
         for root in CleanPaths.bigFileRoots {
             let rootPath = CleanPaths.expand(root)
             guard FileSystem.isRealDir(rootPath) else { continue }
+            // 这四个根全是 TCC 门禁目录，先在带截止时间的探测上过一遍：卡住或被拒都
+            // 跳过整棵子树（盲区已记），别让一次遍历把整个分类的扫描钉死在根上。
+            guard FileSystem.canOpenDirectoryBounded(rootPath) == true else { continue }
             scanBigFiles(in: rootPath, depth: 0, maxDepth: 2, into: &items, seen: &seen)
         }
 
@@ -1692,7 +1710,7 @@ final class Scanner {
                     items.append(CleanItem(
                         name: (dir as NSString).lastPathComponent,
                         path: dir, size: size, rule: "T4", category: .largeFiles,
-                        note: "超过 90 天未使用的模拟器"))
+                        note: "超过 90 天未更新的模拟器"))
                 }
             }
         }
@@ -1715,6 +1733,26 @@ final class Scanner {
         }
 
         return items.sorted { $0.size > $1.size }
+    }
+
+    /// T2（~/Downloads 闲置大件）的"闲置"判据。
+    ///
+    /// 旧写法是 `FileSystem.accessDate(child) ?? .distantPast`，三处都不成立：
+    /// ① atime 在 macOS 默认 lazy 更新——本仓库自己的 `FileSystem.usage(of:)` 就写着
+    ///    "以修改时间为主判据（macOS atime 默认 lazy 更新，不可靠）"。拿它说"180 天未访问"
+    ///    是一句没有证据支撑的断言，而这句话还会经 `AIState` 喂进 AI 二次判断。
+    /// ② `?? .distantPast` 把**读不到**当成**无限旧**：一次 lstat 失败就让文件被判闲置，
+    ///    属于"把读不到讲成确定结论"。现在读不到就明确不判闲置。
+    /// ③ 顺序上 `FileSystem.size(at:)` 就排在这行之前，它会 opendir 整棵树；在**会**更新
+    ///    atime 的卷上，这等于扫描自己把证据刷成"刚访问过"，那些项永远清不掉。
+    /// 统一走 `usage(of:)`：mtime 为主、目录走有界抽样；并把用到的日期回传给条目。
+    /// 那一步与 `annotateUsage` 是**冗余**的（随后 `scan` 会用同一个 `usage(of:)` 覆盖同一个字段），
+    /// 显式带上只为了让"面板显示的日期 == 判据用的日期"不依赖调用顺序。
+    static func staleDownloadsVerdict(at path: String, now: Date,
+                                      olderThan: TimeInterval) -> (lastUsed: Date?, isStale: Bool) {
+        let last = FileSystem.usage(of: path).lastUsed
+        guard let last else { return (nil, false) }
+        return (last, now.timeIntervalSince(last) > olderThan)
     }
 
     private static func scanBigFiles(in dir: String, depth: Int, maxDepth: Int,
