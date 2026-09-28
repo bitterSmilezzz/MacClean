@@ -709,8 +709,13 @@ extension Selftest {
         }
 
         check("步骤4 反证：菜单「快速安全清理」不得把预勾项顺带删掉") {
-            // 预勾的 garbage 项如果近期还有写入，过不了 quickClean 自己的第二道门槛；
+            // 预勾的 garbage 项如果"太新鲜"，本来就过不了结论层的门槛；
             // 只要那段逻辑是"补勾"而不是"重算"，它就会顺着"清理所有已选"被删掉。
+            //
+            // 注意这里拦住它的**不再是** quickClean 自己的第二道门槛，而是结论层：
+            // 夹具里的 `level: .active` 配上"测不到写入时间"，会被 `isTooFreshToDecide`
+            // 判为太新鲜 → 「需确认」→ 不是 `isSafe` → 重算时自然落选。
+            // 所以这条测试守的性质是"重算而不是补勾"，实现机制可以换。
             func item(_ rule: String, level: UsageLevel) -> CleanItem {
                 var made = CleanItem(name: rule, path: "/private/tmp/s4-\(rule)", size: 10,
                                      nature: .losslessCache, category: .userCaches,

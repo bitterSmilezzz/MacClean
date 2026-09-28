@@ -88,10 +88,17 @@ struct DashboardView: View {
 
                 incompleteScanNotice
 
-                // 可清理项的构成。这行是安全相关的：用户动手前应当知道待清理总量里
-                // 有多少是"直接可清"、多少正在被使用、多少需要先看一眼。
-                if app.totalCleanable > 0 {
+                // 构成说明。这一行是安全相关的：用户动手前应当知道**能清多少、
+                // 以及剩下的是什么**。
+                //
+                // 注意两个数的关系：上面大字是 `totalCleanable`（只含「可清理 / 确定是垃圾」），
+                // 下面这排 chip 是 `verdictTotals`（含全部四类，即 totalScannedSize 的构成）。
+                // 所以这里必须先把口径写在前面，否则用户会以为 chip 的总和就是大字那个数。
+                if app.totalScannedSize > 0 {
                     HStack(spacing: Space.sm) {
+                        Text("本次共扫描到 \(app.totalScannedSize.byteStringCN)")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.tertiary)
                         verdictChip("可清理", app.verdictTotals[.safe, default: 0], Signal.tint(for: .safe))
                         verdictChip("使用中", app.verdictTotals[.inUse, default: 0], Signal.tint(for: .inUse))
                         verdictChip("需确认", app.verdictTotals[.review, default: 0], Signal.tint(for: .review))
@@ -316,6 +323,10 @@ struct DashboardView: View {
     // MARK: - 分类
 
     private var categoryGroup: some View {
+        // 分母用 `totalCleanable`（只含可清理项），因此分子必须也是**本分类的可清理量**。
+        // 早先分子写的是 `st.totalSize`（本分类扫到的全部），而分母在 totalCleanable 还等于
+        // "扫到的全部"时恰好自洽；一旦分母改成"真的能清的量"，混用两个口径就会让
+        // 占比之和既不等于 1、也没有任何可解释的含义。
         let total = max(1, app.totalCleanable)
 
         return GroupBox(title: "分类") {
@@ -324,7 +335,7 @@ struct DashboardView: View {
                 CategoryTableRow(
                     category: cat,
                     state: st,
-                    share: st.isScanned ? Double(st.totalSize) / Double(total) : 0,
+                    share: st.isScanned ? Double(st.safeSize) / Double(total) : 0,
                     isLast: idx == CleanCategory.allCases.count - 1
                 ) {
                     withAnimation(Motion.micro) { app.destination = .category(cat) }

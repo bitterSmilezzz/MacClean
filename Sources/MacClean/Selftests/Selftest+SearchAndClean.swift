@@ -49,11 +49,28 @@ extension Selftest {
             let app = AppState()
             let st = app.state(for: .userCaches)
             st.isScanned = true
+            // 这个夹具的用途是**聚合统计**（scannedCount / totalCleanable / verdictTotals），
+            // 不是结论判据。所以每一项都必须带上明确的占用证据：
+            // 裸构造 `CleanItem(...)` 的 `use` 默认是 `.unknown`（没有任何证据），
+            // 而"没有证据"按新契约不许判「可清理」——它会正确地落到「需确认」，
+            // 让 100/50 这个分布断言失去意义（它原先恰好依赖了那个错误行为）。
+            // 40 天前写过、归属未运行 → 既非 `.active`，也不是"零证据"，稳定落在「可清理」。
+            let idle = UseState(ownerIsRunning: false, ownerName: "某应用",
+                                lastUsed: Date().addingTimeInterval(-40 * 86400),
+                                level: .occasional)
             st.items = [
-                CleanItem(name: "A", path: "/tmp/a", size: 100, rule: "C1", category: .userCaches),
-                CleanItem(name: "B", path: "/tmp/b", size: 50, rule: "A1", category: .userCaches),
+                CleanItem(name: "A", path: "/tmp/a", size: 100, rule: "C1",
+                          category: .userCaches, use: idle),
+                CleanItem(name: "B", path: "/tmp/b", size: 50, rule: "A1",
+                          category: .userCaches, use: idle),
             ]
-            guard app.scannedCount == 1, app.totalCleanable == 150 else { return false }
+            guard app.scannedCount == 1 else { return false }
+            // 两个口径必须分开：A(100) 是可清理，B(50) 是需确认。
+            //   totalScannedSize  = 150（扫到多少）
+            //   totalCleanable    = 100（真的能清多少）
+            // 早先 totalCleanable 取的是"所有项之和"（150），与描述性文案
+            // 「可清理」不符——这里同时钉住两个数，任何一边被改回去都会红。
+            guard app.totalScannedSize == 150, app.totalCleanable == 100 else { return false }
             let totals = app.verdictTotals
             return totals[.safe] == 100 && totals[.review] == 50
         }

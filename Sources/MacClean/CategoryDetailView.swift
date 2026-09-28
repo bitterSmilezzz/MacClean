@@ -26,6 +26,7 @@ struct CategoryDetailView: View {
     @State private var showSpotlightOptimizer = false
     @State private var showAudioHALOptimizer = false
     @State private var showPrinterDriverOptimizer = false
+    @State private var showAndroidEmulatorOptimizer = false
     /// 系统底层存储洞察面板（APFS 快照 / 休眠镜像）。
     /// 与其余治理面板一致：**默认收起**。原先它是无条件挂载的，473 行 UI 又没有内部
     /// 滚动与高度上限，于是它 + 另外两张卡片会把列表挤到窗口之外——分类页的标题栏、
@@ -38,6 +39,8 @@ struct CategoryDetailView: View {
     @State private var showHud = false
     @State private var hudMessage = ""
     @State private var quickLookURL: URL?
+    /// 右键「粉碎…」的点名路径（非 nil 即弹粉碎确认流程，见 ShredderSheetHost）
+    @State private var shredCandidatePath: String? = nil
     /// 媒体元数据预热完成计数：解析已从 body 里挪到 `.task` 后台跑，
     /// 靠它把"缓存填好了"这一事件变成一次重绘，否则徽标要等用户动一下才出现。
     @State private var mediaMetaRevision = 0
@@ -177,6 +180,15 @@ struct CategoryDetailView: View {
         }
         .sheet(isPresented: $showDirectoryTreeSheet) {
             directoryTreeSheet
+        }
+        // 粉碎确认流程（v1.73.14）：present 挂在有尺寸的根容器上，不能用 EmptyView 承接
+        .sheet(isPresented: Binding(
+            get: { shredCandidatePath != nil },
+            set: { if !$0 { shredCandidatePath = nil } }
+        )) {
+            if let shredCandidatePath {
+                ShredderSheetHost(seedPath: shredCandidatePath)
+            }
         }
     }
 
@@ -332,7 +344,7 @@ struct CategoryDetailView: View {
             || showFontCacheInspector || showColorSyncOptimizer || showSpotlightOptimizer
             || showAudioHALOptimizer || showPrinterDriverOptimizer || showCLICacheOptimizer
             || showQuickLookPurger || showDeepStorageInspector || showCrashReportInspector
-            || showProjectInspector
+            || showProjectInspector || showAndroidEmulatorOptimizer
     }
 
     /// 分类细分筛选条（大文件、应用残留与日志临时）
@@ -502,6 +514,22 @@ struct CategoryDetailView: View {
                         onClose: {
                             withAnimation(Motion.standard) {
                                 showCLICacheOptimizer = false
+                            }
+                        },
+                        onTriggerClean: {
+                            app.refreshDisk()
+                        }
+                    )
+                    .padding(.horizontal, Space.gutter)
+                    .padding(.vertical, Space.xs)
+                    .background(Surface.window)
+                    .motionSafeTransition(.opacity.combined(with: .move(edge: .top)))
+                }
+                if showAndroidEmulatorOptimizer {
+                    AndroidEmulatorOptimizerCard(
+                        onClose: {
+                            withAnimation(Motion.standard) {
+                                showAndroidEmulatorOptimizer = false
                             }
                         },
                         onTriggerClean: {
@@ -949,7 +977,8 @@ struct CategoryDetailView: View {
                             aiReview: app.aiReview.review(for: item),
                             onAddToWhitelist: { app.addPathToWhitelist(item.path, comment: item.name) },
                             onAddExtensionToWhitelist: { ext in app.addExtensionToWhitelist(ext, comment: "排除 .\(ext) 文件") },
-                            onPreview: { url in quickLookURL = url }
+                            onPreview: { url in quickLookURL = url },
+                            onShred: { shredCandidatePath = item.path }
                         )
                     }
                 }
@@ -1146,6 +1175,8 @@ struct ItemRowView: View {
     var onAddToWhitelist: (() -> Void)? = nil
     var onAddExtensionToWhitelist: ((String) -> Void)? = nil
     var onPreview: ((URL) -> Void)? = nil
+    /// 右键「粉碎…」（v1.73.14）：把该项 path 预填进粉碎确认流程。nil 则不出现该入口
+    var onShred: (() -> Void)? = nil
 
     @State private var isExpanded = false
 
@@ -1405,6 +1436,17 @@ struct ItemRowView: View {
                 onAddExtensionToWhitelist(ext)
             } label: {
                 Label("排除所有 .\(ext) 格式（不再扫描）", systemImage: "doc.badge.gearshape")
+            }
+        }
+
+        // 粉碎入口（v1.73.14）：把该清理项的 path 预填进粉碎确认流程。
+        // 放在最后并加分隔线——它是全菜单唯一"不可恢复"的动作，视觉上要离常规操作远一点。
+        if let onShred {
+            Divider()
+            Button {
+                onShred()
+            } label: {
+                Label("粉碎…（不可恢复）", systemImage: "flame")
             }
         }
     }
@@ -2102,6 +2144,8 @@ extension CategoryDetailView {
                 projectInspectorChip
 
                 cliCacheOptimizerChip
+
+                androidEmulatorOptimizerChip
             }
             .padding(.trailing, Space.gutter)
         }
@@ -2241,6 +2285,16 @@ extension CategoryDetailView {
                        identifier: "printerDriverOptimizerToggle",
                        isOn: showPrinterDriverOptimizer) {
             showPrinterDriverOptimizer.toggle()
+        }
+    }
+
+    /// Android 模拟器 AVD 与 SDK 镜像孤儿治理开关胶囊
+    private var androidEmulatorOptimizerChip: some View {
+        governanceChip(icon: "iphone.genesis", title: "Android 模拟器",
+                       help: "展开/收起 Android 模拟器孤儿 AVD 与已删系统镜像治理面板",
+                       identifier: "androidEmulatorOptimizerToggle",
+                       isOn: showAndroidEmulatorOptimizer) {
+            showAndroidEmulatorOptimizer.toggle()
         }
     }
 

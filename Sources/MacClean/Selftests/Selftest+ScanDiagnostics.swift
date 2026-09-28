@@ -620,8 +620,19 @@ extension Selftest {
             let sourceDir = Selftest.sourceDirectoryPath
             let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
             let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
-            let mustBeThere: Set<String> = ["FileSystem.swift", "AudioHALScanner.swift",
-                                            "PrinterDriverScanner.swift", "ColorSyncScanner.swift"]
+            // v1.73.13 walker 收编后的哨兵名单：模块级求体积 walker 已统一进
+            // `FileSystem.directoryStats`（R2-P2-11），AudioHAL/PrinterDriver/CLICache/
+            // Spotlight/AndroidEmulator 五份重复循环删除——前两个从名单摘掉（否则对
+            // 已不存在的模式哨兵恒红），其余**仍持有非 atPath 遍历**的文件全部登记进来
+            // （v1.73.14 的 ShredderService 起也登记）：任何一个的匹配归零都说明该文件
+            // 的 lint 覆盖失效或 walker 被顺手删了，都应当场看清，不许静默。
+            let mustBeThere: Set<String> = ["FileSystem.swift", "ColorSyncScanner.swift",
+                                            "AndroidEmulatorScanner.swift", "Scanner.swift",
+                                            "AppLocalizationScanner.swift",
+                                            "DownloadsOrganizerScanner.swift",
+                                            "ScreenshotsOrganizerScanner.swift",
+                                            "DuplicateScanner.swift", "ShredderService.swift",
+                                            "MailAttachmentsScanner.swift"]
             let missingTargets = mustBeThere.subtracting(Set(files)).sorted()
             guard missingTargets.isEmpty else {
                 print("      扫描范围缺了必然存在的文件：\(missingTargets)")
@@ -633,6 +644,7 @@ extension Selftest {
             }
             var offenders: [String] = []
             var matchedCalls = 0
+            var handlersChecked = 0
             var matchedByFile: [String: Int] = [:]
             for rel in files {
                 let path = (sourceDir as NSString).appendingPathComponent(rel)
@@ -640,9 +652,18 @@ extension Selftest {
                     offenders.append("\(rel):<不可读>")
                     continue
                 }
-                let raw = src.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-                // 保留物理行号（`idx`），但注释行在后面的每一步都被排除：文档注释里出现
-                // `recordDeniedAccess` / `errorHandler:` 不该让一次漏网遍历被误判合格。
+                let srcLines = src.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                // 窗口内容一律取自**剥过注释且行号对齐**的版本：只按 `hasPrefix("//")` 过滤
+                // 挡不住行尾注释（二次复审实测：把 `recordDeniedAccess(url, error: error)` 改成
+                // 行尾注释 `// FileSystem.recordDeniedAccess(...)`，上一版两处判据都照样绿）。
+                let stripped = Selftest.stripSwiftComments(src)
+                    .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+                if stripped.count != srcLines.count {
+                    offenders.append("\(rel):<注释剥离后行数不匹配，本文件判据不可信>")
+                    continue
+                }
+                let raw = stripped
+                // 保留物理行号（`idx`），供 offender 位置锚点使用。
                 let lines = raw.enumerated().map { (idx: $0.offset, text: $0.element) }
                 // 调用是**多行**的：`fm.enumerator(` 在一行、`at: URL(...)` 在下一行。
                 // 第一版按单行找 `.enumerator(at:`，一条都没匹配上——lint 在空集上恒真通过，
@@ -684,15 +705,53 @@ extension Selftest {
                         || squeezed.contains("errorHandler:{_,_infalse}") {
                         offenders.append("\(rel):\(entry.idx + 1)<空 handler>")
                     }
+                    // 上面那条 `squeezed.contains("recordDeniedAccess")` 的窗口是"到下一处
+                    // `.enumerator(` 之前"，同一函数里 **nil-else 分支**的记账会落在窗口内替
+                    // errorHandler 免检（v1.73.10 变异 M2b 实测：把体积 walker errorHandler 里的
+                    // `recordDeniedAccess` 摘掉，全仓 641 条自检仍全绿——被挡子树不再进盲区账，
+                    // 只剩 `blocked.set()` 撑着的 `readable=false`）。这里改成**只截 handler 自己的
+                    // 闭包体**（大括号深度，与「卡片全选必须走 readable」同一手法）再判。
+                    if let hRng = squeezed.range(of: "errorHandler:") {
+                        var body = ""
+                        if let brace = squeezed[hRng.upperBound...].firstIndex(of: "{") {
+                            var depth = 0
+                            var i = brace
+                            while i < squeezed.endIndex {
+                                let c = squeezed[i]
+                                if c == "{" { depth += 1 }
+                                else if c == "}" {
+                                    depth -= 1
+                                    if depth == 0 { body = String(squeezed[brace...i]); break }
+                                }
+                                i = squeezed.index(after: i)
+                            }
+                        }
+                        if !body.contains("recordDeniedAccess") {
+                            offenders.append("\(rel):\(entry.idx + 1)<errorHandler 闭包体内没记账>")
+                        }
+                        handlersChecked += 1
+                    }
                 }
             }
             // 只钉"扫到多少文件"是不够的：匹配逻辑若退化到 0 处调用，offenders 依然为空、
             // 灯照样绿。这一族假绿已经在 v1.73.6 第一版踩过一次——加"命中数下界"和
             // "每条必存在的文件各自至少命中 1 处"两道活性证据，把"整片没扫到"和
-            // "扫到了但都合规"这两种状态分开。当前产品源码 11 处非 atPath 的 `.enumerator(`。
+            // "扫到了但都合规"这两种状态分开。下界取**当时实际数量减若干余量**，
+            // 具体数字会随模块增减，所以这里不写死"当前共 N 处"那种一改就过期的话。
+            // 下界不写死"当前共 N 处"（一收编一新增就过期）：v1.73.13 收编后 10 处、
+            // v1.73.14 粉碎器加入后 11 处，留余量取 8——只挡"匹配逻辑整体退化到空集"，
+            // 允许未来的合法增删再下调并写明缘由。
             if matchedCalls < 8 {
                 print("      lint 只匹配到 \(matchedCalls) 处非 atPath 的 `.enumerator(` 调用——"
                       + "匹配逻辑可能已退化，绿灯不可信")
+                return false
+            }
+            // 新加的"只截 handler 闭包体"判据同样要有活性证据：截闭包的手法若退化到 0 处，
+            // offenders 依然为空、灯照样绿。
+            // 与 matchedCalls 下界同族：v1.73.13 收编后实际 10 处，留余量取 8。
+            if handlersChecked < 8 {
+                print("      只截到 \(handlersChecked) 个 errorHandler 闭包体（matchedCalls=\(matchedCalls)），"
+                      + "闭包截取逻辑可能已失效")
                 return false
             }
             for must in mustBeThere {
@@ -866,7 +925,7 @@ extension Selftest {
             return offenders.isEmpty
         }
 
-        check("三张卡片的全选必须走 readable（v1.73.7 复审 P1-1）") {
+        check("卡片全选必须走 readable（v1.73.7 复审 P1-1，v1.73.10 起 4 张卡片）") {
             // scan 阶段把 isSelected 关到 readable 上只完成了一半：卡片顶部的
             // `selectAll(true)` / `toggleSelectAll()` 若还是 `for i in 0..<count { items[i].isSelected = true }`
             // 的老形状，用户点一次全选就把残缺项重新默认勾上——本轮 lint #2 与行为断言
@@ -875,13 +934,18 @@ extension Selftest {
             // 变异里我把 `summary.items[i].isSelected = target && items[i].readable`
             // 换成 `= target`，`selectableCount` 计算属性还在文件里，那版判据照样绿。
             let sourceDir = Selftest.sourceDirectoryPath
-            let cards: [(String, [String])] = [
-                ("CLICacheOptimizerCard.swift", ["toggleSelectAll"]),
-                ("QuickLookThumbnailPurgerCard.swift", ["toggleSelectAll"]),
-                ("SpotlightOptimizerCard.swift", ["selectAll"]),
+            // 第三列是**该卡片额外必须在全选函数体里出现的字面**。Android 卡片必须有：它的
+            // 选中态是 @State、`.tap()` 读不回来，所以"全选只能勾孤儿"这半边契约在行为侧
+            // 无法证伪（v1.73.10 复审 P2-6：只判 `readable` 的话，把
+            // `where items[i].status.isProvenOrphan` 整段删掉——全选连健康 AVD 一起勾——lint 仍绿）。
+            let cards: [(String, [String], [String])] = [
+                ("CLICacheOptimizerCard.swift", ["toggleSelectAll"], []),
+                ("QuickLookThumbnailPurgerCard.swift", ["toggleSelectAll"], []),
+                ("SpotlightOptimizerCard.swift", ["selectAll"], []),
+                ("AndroidEmulatorOptimizerCard.swift", ["selectAll"], ["isProvenOrphan"]),
             ]
             var offenders: [String] = []
-            for (name, funcs) in cards {
+            for (name, funcs, extraNeedles) in cards {
                 let path = (sourceDir as NSString).appendingPathComponent(name)
                 guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
                     offenders.append("\(name):<不可读>")
@@ -889,22 +953,15 @@ extension Selftest {
                 }
                 let code = Selftest.stripSwiftComments(src)
                     .filter { !$0.isWhitespace }
-                for fn in funcs {
-                    let key = "func\(fn)("
-                    guard let rng = code.range(of: key) else {
-                        offenders.append("\(name)<找不到 \(fn) 定义>")
-                        continue
-                    }
-                    // 用**大括号深度**精确截出这一个方法的函数体——上一版按"下一处 `func` 之前"
-                    // 或"往后 400 字符"取窗，被同文件里的 `selectableCount: Int {
-                    //   items.filter(\.readable).count }` 蹭到了 readable 而免检
-                    // （变异验证：把全选里的 `&& readable` 摘掉，判据必须变红；
-                    //  如果还是绿的，就是窗口太宽，见 RELEASE-CHECKLIST §"活性证据"）。
-                    let after = rng.upperBound
-                    guard let braceIdx = code[after...].firstIndex(of: "{") else {
-                        offenders.append("\(name)<\(fn) 找不到方法体>")
-                        continue
-                    }
+                // 按**大括号深度**截出某个 key 起头的那一处方法体（同一份逻辑要取两次：
+                // 全选本身、以及它委托出去的纯判据），所以抽成局部函数而不是复制粘贴。
+                // 为什么必须是深度而不是取窗：上一版按"下一处 `func` 之前"或"往后 400 字符"
+                // 取窗，被同文件里的 `selectableCount: Int { items.filter(\.readable).count }`
+                // 蹭到了 readable 而免检（变异验证：摘掉全选里的 `&& readable` 判据必须变红，
+                // 还绿就是窗口太宽，见 RELEASE-CHECKLIST §"活性证据"）。
+                func body(of key: String) -> String? {
+                    guard let rng = code.range(of: key) else { return nil }
+                    guard let braceIdx = code[rng.upperBound...].firstIndex(of: "{") else { return nil }
                     var depth = 0
                     var endIdx = code.endIndex
                     var i = braceIdx
@@ -920,9 +977,38 @@ extension Selftest {
                         }
                         i = code.index(after: i)
                     }
-                    let body = String(code[braceIdx..<endIdx])
-                    if !body.contains("readable") {
-                        offenders.append("\(name)<\(fn) 方法体没按 readable 过滤>")
+                    return String(code[braceIdx..<endIdx])
+                }
+                for fn in funcs {
+                    let key = "func\(fn)("
+                    guard let rawBody = body(of: key) else {
+                        offenders.append("\(name)<找不到 \(fn) 定义>")
+                        continue
+                    }
+                    // 判据可能不再抄在全选里，而是委托给同文件某个 `Self.<纯函数>`（v1.73.10
+                    // 把「确证孤儿∧读全」抽成单点判据，因为发版机上 ViewInspector 枚举不到按钮，
+                    // 禁用契约只能在纯函数那侧执法，见 RELEASE-CHECKLIST §0.2）。
+                    // 顺着这层间接把纯函数的体也收进来：**要求读全闸在可达路径上**，
+                    // 而不是要求每个消费点各抄一份——后者正是单点判据要消掉的东西。
+                    var bodyText = rawBody
+                    var refs: [String] = []
+                    var scan = rawBody[...]
+                    while let r = scan.range(of: "Self.") {
+                        let tail = scan[r.upperBound...]
+                        let ident = tail.prefix { $0.isLetter || $0.isNumber || $0 == "_" }
+                        if ident.isEmpty == false, refs.contains(String(ident)) == false {
+                            refs.append(String(ident))
+                        }
+                        scan = tail
+                    }
+                    for ref in refs {
+                        if let inner = body(of: "staticfunc\(ref)(") { bodyText += inner }
+                    }
+                    if !bodyText.contains("readable") {
+                        offenders.append("\(name)<\(fn) 方法体（含其委托的判据）没按 readable 过滤>")
+                    }
+                    for needle in extraNeedles where !bodyText.contains(needle) {
+                        offenders.append("\(name)<\(fn) 方法体缺孤儿闸 \(needle)>")
                     }
                 }
             }
@@ -1301,6 +1387,92 @@ extension Selftest {
             let d = FileSystem.defaultGatedReadDeadline
             guard d > 0, d <= 30 else {
                 print("      defaultGatedReadDeadline = \(d)，不在 (0, 30] 内")
+                return false
+            }
+            return true
+        }
+
+        // MARK: - QuickLook 的 G8 前置只挂 customDirectories（v1.73.8 复审 P2 转下一轮的补票）
+
+        check("QuickLook 注入缝：darwinUserCacheDirOverride 喂进来的根会走默认候选链路") {
+            // 默认候选是内部拿 `getDarwinUserCacheDir()` 拼的，没有注入缝就没有任何自检
+            // 能不碰真机环境把这半边链路跑起来。夹具放临时目录（不是 systemProtected），
+            // 断言三件事：候选真被列出来、体积来自真实遍历、默认勾选（readable 契约）。
+            let dir = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("macclean-qlseam-\(UUID().uuidString)")
+            let thumb = (dir as NSString).appendingPathComponent("com.apple.QuickLook.thumbnailcache")
+            try? FileManager.default.createDirectory(atPath: thumb, withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: (thumb as NSString).appendingPathComponent("index.level1"),
+                                           contents: Data(repeating: 7, count: 4096))
+            defer {
+                QuickLookThumbnailPurger.darwinUserCacheDirOverride = nil
+                try? FileManager.default.removeItem(atPath: dir)
+            }
+            QuickLookThumbnailPurger.darwinUserCacheDirOverride = .some(dir)
+            let summary = QuickLookThumbnailPurger.shared.scan()   // 不传 customDirectories：走默认链路
+            guard let item = summary.items.first(where: { $0.path == thumb }) else {
+                print("      注入根下的 thumbnailcache 没进候选——默认链路没吃到注入缝")
+                return false
+            }
+            return item.readable && item.isSelected && item.size > 0
+        }
+
+        check("QuickLook G8 前置：用户喂进来的 systemProtected 自定义根不进候选") {
+            // 前置的另一条腿：isCustom 分支里的 G8 拦截必须真的拦。样本用 /private/var/db——
+            // 它在 systemProtected 清单的非 /System 前缀四条里（先验前置条件，清单变了这里
+            // 要红而不是静默变绿）。喂进去必须 0 项，而不是撞一次权限错误后假装扫完。
+            guard FileSystem.isSystemProtected("/private/var/db") else {
+                print("      前置条件失效：/private/var/db 不在 systemProtected 清单里，样本不再判别")
+                return false
+            }
+            let summary = QuickLookThumbnailPurger.shared.scan(customDirectories: ["/private/var/db"])
+            return summary.items.isEmpty
+        }
+
+        check("QuickLook 的 G8 前置只许挂在 customDirectories 分支内（源码形状）") {
+            // 「默认链路不许被 G8 吞」这半边行为侧造不出夹具：要复现回归，得有一个
+            // **存在、可读且受 SIP 保护**的 darwinUserCacheDir，而 /private/var/folders/zz
+            // 不可写。所以钉形状：全文件 `isSystemProtected(` 只允许出现一次（单点判据），
+            // 且必须落在 `if candidate.isCustom {` 的块体内部（大括号深度截体，
+            // 邻居代码不背书）。把前置挪出分支 → 块体里不再有 needle，红；
+            // 把前置整个删掉 → 命中数 0 ≠ 1，红。
+            let path = (Selftest.sourceDirectoryPath as NSString)
+                .appendingPathComponent("QuickLookThumbnailPurger.swift")
+            guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                print("      QuickLookThumbnailPurger.swift 不可读")
+                return false
+            }
+            let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+            let needle = "isSystemProtected("
+            var hits = 0
+            var cursor = code.startIndex
+            while let rng = code.range(of: needle, range: cursor..<code.endIndex) {
+                hits += 1
+                cursor = rng.upperBound
+            }
+            guard hits == 1 else {
+                print("      isSystemProtected( 出现 \(hits) 次——G8 前置必须是单点判据")
+                return false
+            }
+            guard let block = code.range(of: "ifcandidate.isCustom{") else {
+                print("      找不到 if candidate.isCustom 块——判据被挪走了？")
+                return false
+            }
+            var depth = 1
+            var i = block.upperBound
+            var endIdx = code.endIndex
+            while i < code.endIndex {
+                let c = code[i]
+                if c == "{" { depth += 1 }
+                else if c == "}" {
+                    depth -= 1
+                    if depth == 0 { endIdx = i; break }
+                }
+                i = code.index(after: i)
+            }
+            let body = String(code[block.upperBound..<endIdx])
+            guard body.contains(needle) else {
+                print("      isSystemProtected( 不在 isCustom 块体内——G8 前置罩到默认候选链路上了")
                 return false
             }
             return true

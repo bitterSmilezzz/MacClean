@@ -247,57 +247,20 @@ public final class CLICacheScanner {
 
     /// 统计目录内文件大小与文件数。
     ///
+    /// **口径已统一到 `FileSystem.directoryStats`**（v1.73.10 复审待议 R2-P2-11 收编，
+    /// 本函数的递归 enumerator 循环已删除，只剩薄委托）：体积用 allocated
+    /// （`totalFileAllocatedSize ?? fileSize`），软链不计（0 字节、不计 fileCount、不进
+    /// mtime 账），隐藏文件跳过，目录本身不累计；`readable` 由共享实现用**本次遍历自带**
+    /// 的 `WalkBlockFlag` 翻假（不查那份 64 条封顶、每轮清空的全局盲区清单）。
+    /// nil 分支的 `isPermissionDenied` 预筛 + EACCES 形状记账也由共享实现承担，
+    /// 这里不再保留第二份记账——两套判据并存只会再次漂移。
+    ///
     /// `readable == false` 意味着本次遍历被权限掐断过——返回的 `size` 是"至少这么多"
     /// 而非"就这么大"。消费方（`isSelected`、`totalSize`）必须把它当成不可信的证据，
     /// 否则一次只读到一半的缓存会被报成"小而自信"并默认勾选删除。
-    /// 判定用**本次遍历自带**的 `WalkBlockFlag`，不查进程级全局盲区清单
-    /// （那份账 64 条封顶、会父子合并、每轮清空，见 `FileSystem.WalkBlockFlag`）。
+    /// 签名与返回形状被 QuickLookThumbnailPurger 依赖，原样保留。
     public static func calculateDirectoryStats(at path: String) -> (size: Int64, fileCount: Int, readable: Bool) {
-        let fm = FileManager.default
-        let blocked = FileSystem.WalkBlockFlag()
-        let url = URL(fileURLWithPath: path, isDirectory: true)
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles],
-            errorHandler: { url, error in
-                // 被权限挡掉的子目录必须留痕。不写 errorHandler 时 Foundation 的语义是
-                // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」给出
-                // 同一个数，而这个偏小的值会被一路当权威体积用。
-                FileSystem.recordDeniedAccess(url, error: error)
-                blocked.set()
-                return true
-            }
-        ) else {
-            // 与 `FileSystem.measureDirectory` 的 nil 分支同族处理：先过一遍
-            // `isPermissionDenied` 预筛，命中才用 `NSPOSIXErrorDomain/EACCES` 记账。
-            // **不能传自造 domain** —— `recordDeniedAccess` 的 `isPermissionError` 过滤器
-            // 会把 domain/code 不匹配的 error 整段吞掉，v1.73.7 二次复审 P1-A 实测过：
-            // 传 `domain: "MacClean.FileSystem", code: ENOENT` 时盲区一条都没落。
-            if FileSystem.isPermissionDenied(path) {
-                FileSystem.recordDeniedAccess(
-                    url,
-                    error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES),
-                                   userInfo: [NSFilePathErrorKey: path]))
-            }
-            return (0, 0, false)
-        }
-
-        var totalSize: Int64 = 0
-        var count = 0
-
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey, .isDirectoryKey]) else {
-                continue
-            }
-            if values.isDirectory == true {
-                continue
-            }
-            let s = Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
-            totalSize += s
-            count += 1
-        }
-
-        return (totalSize, count, !blocked.value)
+        let stats = FileSystem.directoryStats(at: path)
+        return (stats.size, stats.fileCount, stats.readable)
     }
 }

@@ -156,19 +156,196 @@ struct MacCleanApp: App {
                 let items = (try? Scanner.scan(cat)) ?? []
                 return (cat.title, items, Date().timeIntervalSince(t0))
             }
-            var total: Int64 = 0
+            var scanned: Int64 = 0
+            var cleanable: Int64 = 0
             for (title, items, elapsed) in results {
                 let sum = items.reduce(Int64(0)) { $0 + $1.size }
-                total += sum
-                print("== \(title): \(items.count) 项, \(sum.byteString)  [\(String(format: "%.2f", elapsed))s]")
+                // "扫到多少"与"能清多少"是两个量，必须分开报。早先这里只打一个
+                // 汇总并写成「总计可清理」，而它是**所有项之和**——含「勿删 / 使用中 /
+                // 需确认」。真机实测该数字比"全选"实际能勾掉的量虚高 55%。
+                let safe = items.filter { $0.recommendation.isSafe }
+                    .reduce(Int64(0)) { $0 + $1.size }
+                scanned += sum
+                cleanable += safe
+                print("== \(title): \(items.count) 项, 扫到 \(sum.byteStringCN), 其中可清理 \(safe.byteStringCN)  [\(String(format: "%.2f", elapsed))s]")
                 for item in items.prefix(10) {
-                    let usage = item.lastUsed.map { "\($0.relativeUsage) · \(item.usage.label)" } ?? item.usage.label
+                    // 只打**精确**的"距今多久"。早先这里还拼了 `usage.label`（"7 天内有写入"
+                    // 这种粗档位），而门槛是 3 天——一个 5 天前写过的项旁边印着
+                    // "最近 7 天内有写入"，读起来像是自相矛盾。依据那一行已经给了绝对时间。
+                    let usage = item.lastUsed.map { $0.relativeUsage } ?? "写入时间未知"
                     let recommendation = item.recommendation
-                    print("   [\(recommendation.label)] \(item.name) — \(item.size.byteString) — \(item.path) — 使用:\(usage) — 依据:\(recommendation.reason)")
+                    print("   [\(recommendation.label)] \(item.name) — \(item.size.byteStringCN) — \(item.path) — 使用:\(usage) — 依据:\(recommendation.reason)")
                 }
             }
-            print("== 总计可清理: \(total.byteString)")
+            print("== 共扫描到: \(scanned.byteStringCN)")
+            print("== 可清理（只含结论为「可清理 / 确定是垃圾」的项）: \(cleanable.byteStringCN)")
             exit(0)
+        }
+        if CommandLine.arguments.contains("--permission-check") {
+            // 权限体检：只读，不改任何东西。
+            // 存在的理由有两个：
+            //   ① 用户不用开 GUI 就能问"我到底缺不缺权限、缺了会少看到哪些位置"；
+            //   ② 让"缺 FDA"这条分支能被端到端验证——真实探针 + 真实可读性探测，
+            //      而不是只靠自检里的探针覆盖。
+            print("MacClean 权限体检（只读）")
+            let has = FileSystem.hasFullDiskAccess()
+            print("== 完全磁盘访问权限（FDA）：\(has ? "已授权 ✅" : "未授权 ❌")")
+
+            let interactive = PermissionGuide.scanGate(unattended: false,
+                                                       hasFullDiskAccess: has,
+                                                       acknowledgedWithoutFDA: false)
+            print("== 交互式扫描：\(interactive == .needsFullDiskAccess ? "会先提示授权再扫" : "直接开始扫描")")
+            let unattended = PermissionGuide.scanGate(unattended: true,
+                                                      hasFullDiskAccess: has,
+                                                      acknowledgedWithoutFDA: false)
+            print("== 无人值守扫描：\(unattended == .proceed ? "不拦截（有意：没人应答模态框）" : "被拦截（异常）")")
+
+            print("== 逐个扫描根的可读性：")
+            var denied: [(String, String)] = []
+            for cat in CleanCategory.allCases {
+                for root in Scanner.scanRoots(for: cat) {
+                    let path = CleanPaths.expand(root.path)
+                    var isDir: ObjCBool = false
+                    guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else { continue }
+                    if FileSystem.isPermissionDenied(path) { denied.append((root.label, path)) }
+                }
+            }
+            if denied.isEmpty {
+                print("   现状：全部可读，或该位置不存在（不存在不算问题）")
+            } else {
+                for (label, path) in denied { print("   [读不到] \(label) — \(path)") }
+                print("   ↑ 这 \(denied.count) 个位置的内容没有计入扫描结果——是「没看到」，不是「没有东西」")
+            }
+            if !has {
+                print("== 下一步：系统设置 → 隐私与安全性 → 完全磁盘访问权限，勾选 MacClean")
+                print("   \(PermissionGuide.settingsURLString)")
+            }
+            exit(0)
+        }
+        if CommandLine.arguments.contains("--prefs-check") {
+            // 系统体验优化**体检**。
+            //
+            // **只读**：这个命令不写任何偏好、不重启任何进程。它是"看清现状"的那一步；
+            // 真去改设置必须在 GUI 里逐条确认（每改一条都会先落一条撤销记录）。
+            // 之所以单独给一个只读入口：用户应该能在被"建议"之前先看清现状，
+            // 而不是点一下按钮就被改了系统。
+            print("MacClean 系统体验优化体检（只读，不改任何设置）")
+            let findings = SystemTweakStore.inspect()
+            var currentGroup: SystemTweakGroup?
+            for finding in findings {
+                if currentGroup != finding.tweak.group {
+                    currentGroup = finding.tweak.group
+                    print("\n== \(finding.tweak.group.title)")
+                }
+                let mark: String
+                switch finding.status {
+                case .alreadyOptimal: mark = "✅ 已是推荐值"
+                case .deviates:       mark = "○  可优化"
+                case .unreadable:     mark = "⚠️  读不到"
+                }
+                print("  [\(mark)] \(finding.tweak.title)")
+                print("       现状：\(finding.current?.display ?? "读不到")    推荐：\(finding.tweak.recommended.display)")
+                print("       收益：\(finding.tweak.benefit)")
+                print("       代价：\(finding.tweak.tradeoff)")
+                if let process = finding.tweak.restartProcess {
+                    print("       生效：需重启 \(process)")
+                }
+                if finding.tweak.needsRelogin {
+                    print("       生效：部分应用需重新登录后才读取")
+                }
+            }
+            let deviates = findings.filter { $0.status == .deviates }.count
+            let unreadable = findings.filter { $0.status == .unreadable }.count
+            print("\n== 可优化 \(deviates) 项 / 共 \(findings.count) 项"
+                  + (unreadable > 0 ? "（另有 \(unreadable) 项读不到，未计入）" : ""))
+
+            // 只读的系统状态：SIP / 门禁 / 加密 / 防火墙 / 备份 / 索引。
+            // 这些**工具不会改**（需要管理员权限，或动的是安全边界），所以只报现状与去哪儿改。
+            print("\n== 系统状态（只读，工具不改这些）")
+            for finding in SystemStatusStore.inspect() {
+                print("  [\(finding.reading.label)] \(finding.check.title)")
+                print("       证据：\(finding.reading.evidence)")
+                if let detail = finding.detail { print("       \(detail)") }
+                print("       去哪儿改：\(finding.check.whereToChange)")
+            }
+
+            print("\n== 本命令**只读**：没有写入任何偏好，也没有重启任何进程。")
+            print("   关于「未设置」：defaults 只告诉我们键在不在，不告诉我们各 App 的默认值，")
+            print("   所以这里按「与推荐值不一致」呈现，而不是替系统断言它已经是默认值。")
+            exit(0)
+        }
+        if CommandLine.arguments.contains("--prefs-roundtrip") {
+            // 偏好读写删的**真机往返**自验。
+            //
+            // 为什么必须真机跑：`defaults write` 的参数拼法（`-bool true` / `-int 2` /
+            // `-string x`）与"删键才算还原成没设过"这两件事，只有真的调一次系统命令才验得到；
+            // 自检里那些注入假 runner 的用例证明的是**逻辑**，不是**机制**。
+            //
+            // 安全性：全程只用我们自己的临时域 `com.macclean.selftest.roundtrip`，
+            // 结束时把整个域删掉，**不碰任何系统偏好**。
+            print("MacClean 偏好读写往返自验（只用临时域 com.macclean.selftest.roundtrip）")
+            let domain = "com.macclean.selftest.roundtrip"
+            let key = "probe"
+            var problems: [String] = []
+            func expect(_ condition: Bool, _ what: String) {
+                if condition { print("   ✅ \(what)") } else { problems.append(what); print("   ❌ \(what)") }
+            }
+
+            // 起点：先清干净
+            _ = SystemTweakStore.writeRaw(domain: domain, key: key, value: .unset)
+            expect(SystemTweakStore.readRaw(domain: domain, key: key, kind: .bool) == .unset,
+                   "起点是「未设置」而不是读不到")
+
+            expect(SystemTweakStore.writeRaw(domain: domain, key: key, value: .bool(true)),
+                   "写入 bool 成功")
+            expect(SystemTweakStore.readRaw(domain: domain, key: key, kind: .bool) == .bool(true),
+                   "bool 能原样读回")
+
+            expect(SystemTweakStore.writeRaw(domain: domain, key: key, value: .int(2)),
+                   "写入 int 成功")
+            expect(SystemTweakStore.readRaw(domain: domain, key: key, kind: .int) == .int(2),
+                   "int 能原样读回")
+
+            expect(SystemTweakStore.writeRaw(domain: domain, key: key, value: .string("scale")),
+                   "写入 string 成功")
+            expect(SystemTweakStore.readRaw(domain: domain, key: key, kind: .string) == .string("scale"),
+                   "string 能原样读回")
+
+            // 关键一条：还原"原本没设过"= 删键
+            expect(SystemTweakStore.writeRaw(domain: domain, key: key, value: .unset),
+                   "删键（还原成『没设过』）成功")
+            expect(SystemTweakStore.readRaw(domain: domain, key: key, kind: .bool) == .unset,
+                   "删键之后确实读不到了")
+
+            // 收尾：清理临时域。
+            //
+            // 踩到的坑：`defaults delete <域>` 对一个只剩空字典的 plist **会失败**
+            // （它报 `Domain '...' not found.`），于是那个 42 字节的 `{}` plist 留在
+            // `~/Library/Preferences/` 里——第一次跑这条自验时它就是这么留下来的。
+            // 所以除了 `defaults delete`，还要把属于**这个固定临时域**的 plist 文件删掉。
+            //
+            // 安全性：文件名由常量拼出、并且断言它就是那个临时域，别的一概不碰。
+            _ = SafeProcess.run(SystemTweakStore.defaultsPath, ["delete", domain], timeout: 8)
+            assert(domain == "com.macclean.selftest.roundtrip", "只允许清理这个临时域")
+            let scratchPlist = ("~/Library/Preferences/\(domain).plist" as NSString).expandingTildeInPath
+            if FileManager.default.fileExists(atPath: scratchPlist) {
+                do {
+                    try FileManager.default.removeItem(atPath: scratchPlist)
+                } catch {
+                    problems.append("临时域 plist 删不掉：\(scratchPlist)")
+                }
+            }
+            let leftover = SystemTweakStore.readRaw(domain: domain, key: key, kind: .bool)
+            expect(leftover == .unset || leftover == nil, "临时域已清理干净")
+            expect(!FileManager.default.fileExists(atPath: scratchPlist), "临时域 plist 文件已删除")
+
+            if problems.isEmpty {
+                print("== 全部通过：真实 defaults 的读 / 写 / 删都可用，且没有残留 ✅")
+                exit(0)
+            }
+            print("== 有 \(problems.count) 项未通过：")
+            for problem in problems { print("   - \(problem)") }
+            exit(1)
         }
     }
 
@@ -373,6 +550,13 @@ struct ContentView: View {
                 }
             }
         }
+        // 扫描前的权限门。挂在顶层（ContentView）而不是各页各自挂：
+        // Dashboard / 侧边栏 / 菜单栏 / 快速清理 / 空间审计 / 检索页 / ⌘R 都会走到
+        // `AppState.scan` 或 `AppState.scanAll`，那一层已经把门设好，这里只负责呈现。
+        .sheet(item: $app.permissionGate) { gate in
+            PermissionGateSheet(gate: gate)
+                .environmentObject(app)
+        }
     }
 
     /// AI 对话抽屉：贴右覆盖，左缘分隔线 + 投影
@@ -459,6 +643,18 @@ struct ContentView: View {
                 SpaceAuditView()
             case .startupItems:
                 StartupItemManagerView()
+            case .systemOptimize:
+                SystemOptimizeView()
+            case .shredder:
+                ShredderView()
+            case .appUpdate:
+                AppUpdateView()
+            case .maintenance:
+                MaintenanceView()
+            case .browserPrivacy:
+                BrowserPrivacyView()
+            case .mailAttachments:
+                MailAttachmentsView()
             }
         }
         .motionSafeTransition(.opacity)

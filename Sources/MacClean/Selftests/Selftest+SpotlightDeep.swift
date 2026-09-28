@@ -540,5 +540,60 @@ extension Selftest {
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
         }
+
+        // ── v1.73.13 求体积口径统一（R2-P2-11 收编）──────────────────────────
+
+        check("Spotlight: 扫描条目体积与 FileSystem.directoryStats 同源（口径收编 c/d/e）") {
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            FileSystem.resetDeniedAccess()
+            let root = statsFixtureTree("spot")
+            defer {
+                removeStatsFixtureTree(root)
+                FileSystem.resetDeniedAccess()
+            }
+            // c) 走公开扫描入口：夹具根作为 customCacheDir，必须出条目
+            let summary = SpotlightScanner.shared.scan(
+                customCoreSpotlightDir: root + "/no-core",
+                customCacheDir: root,
+                customVolumeDirs: [],
+                inventory: selftestInventory())
+            guard let item = summary.items.first(where: { $0.path == root }) else {
+                print("      夹具根没有出条目：\(summary.items.map(\.path))")
+                return false
+            }
+            let stats = FileSystem.directoryStats(at: item.path)
+            guard item.size == stats.size, item.fileCount == stats.fileCount else {
+                print("      条目(\(item.size),\(item.fileCount)) ≠ directoryStats"
+                    + "(\(stats.size),\(stats.fileCount))——scan 与共享 walker 不是同一口径")
+                return false
+            }
+            // d) 夹具含 mode-000 子目录 → readable=false 且不默认勾选
+            guard item.readable == false, !item.isSelected else {
+                print("      残缺树被当成完整事实：readable=\(item.readable) selected=\(item.isSelected)")
+                return false
+            }
+            // d) 000 内 secret.bin / 隐藏 / 软链都不计入 → 恰好 4 个普通文件
+            let totals = statsFixtureTotals(root: root)
+            guard item.fileCount == 4, item.fileCount == totals.fileCount else {
+                print("      fileCount=\(item.fileCount) ≠ 4（000 内文件/隐藏文件/软链被计入了）")
+                return false
+            }
+            // e) 稀疏文件按 allocated 计（变异②判红锚点）：远小于逻辑合计
+            guard item.size == totals.allocated, item.size >= 20_000,
+                  totals.logical > 1_000_000, item.size < 512_000 else {
+                print("      size=\(item.size) 实占合计=\(totals.allocated) 逻辑合计=\(totals.logical)"
+                    + "——allocated 口径没生效或实数据没算到")
+                return false
+            }
+            // 软链不进 mtime 账（变异①判红锚点：link-to-file 自身 mtime 钉在 2030）
+            guard item.modificationDate < statsFixtureFutureMtime else {
+                print("      modificationDate=\(item.modificationDate) ≥ 2030 锚点——软链被计入了 mtime 账")
+                return false
+            }
+            return true
+        }
     }
 }

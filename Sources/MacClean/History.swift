@@ -156,6 +156,28 @@ enum Destination: Hashable, Identifiable {
     /// 而**两者都不给删除按钮**——判据是大小和年龄时，工具没有资格替你决定删不删。
     case spaceAudit
     case startupItems
+    /// 系统使用体验优化：**改偏好**，不是删文件。
+    ///
+    /// 与"清理"刻意分开放在导航里：它不产出任何"可清理项"，也没有"全选"，
+    /// 判据是"改了会不会更顺手"，而不是"能不能删"。每一条都要求先读到旧值、
+    /// 落一条撤销记录，才可以改——它是这个应用里唯一一种"非删除类副作用"。
+    case systemOptimize
+    /// 文件粉碎器：对用户**逐条点名**的路径做多遍覆写后删除（不可恢复、无撤销快照）。
+    /// 它是删除语义的极端档，只从工具页与右键入口进，永远不出现在任何扫描结果的
+    /// 默认勾选里；路径合法性照旧由统一删除网关裁决。
+    case shredder
+    /// App 更新检查：读已装应用**自己声明**的更新源（Sparkle `SUFeedURL` / App Store 收据）。
+    /// 默认关闭，显式开启后才访问网络；只列示与跳转，不代下载不代装。
+    case appUpdate
+    /// 维护面板（v1.73.15，对标 CleanMyMac Maintenance）：磁盘 First Aid（`diskutil verifyVolume`）、
+    /// DNS 缓存刷新与 Spotlight 索引重建的聚合入口。全部动作逐条确认、外部命令一律走 `SafeProcess`。
+    case maintenance
+    /// 浏览器隐私痕迹（v1.73.15，BleachBit 式 (浏览器 × 数据类) 粒度）：每个数据类一格、
+    /// 默认全不选、危险格带警示文案；删除走统一网关，Safari 侧 TCC 读不到时按 G9/G13 明示。
+    case browserPrivacy
+    /// Mail 附件清理（v1.73.15，对标 CleanMyMail Attachments）：附件本体是用户数据，
+    /// 只列示体积与年龄、全部「需确认」零默认勾选；TCC 读不到时 G9/G13 明示并给授权引导。
+    case mailAttachments
 
     var id: String {
         switch self {
@@ -169,6 +191,12 @@ enum Destination: Hashable, Identifiable {
         case .spaceTreemap: return "spaceTreemap"
         case .spaceAudit: return "spaceAudit"
         case .startupItems: return "startupItems"
+        case .systemOptimize: return "systemOptimize"
+        case .shredder: return "shredder"
+        case .appUpdate: return "appUpdate"
+        case .maintenance: return "maintenance"
+        case .browserPrivacy: return "browserPrivacy"
+        case .mailAttachments: return "mailAttachments"
         }
     }
 }

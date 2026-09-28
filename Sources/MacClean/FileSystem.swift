@@ -492,6 +492,13 @@ enum FileSystem {
         // 应用）。但"刚启动的 App 要能被看见"这条 G5 保证不该被那个缓存跨扫描拖住：
         // 用户先开了 Xcode、再点扫描，这次扫描就必须看到 Xcode 在跑。
         CleanPaths.invalidateRunningSnapshot()
+
+        // 占用事实与扫描同寿命：一轮扫描取一次 lsof 转储，之后所有清理项共用它。
+        // 放在这里而不是 `annotateUsage` 里，是为了让"进程占用"的观测时刻与"写入时间"
+        // 的观测时刻属于同一轮，避免两项证据来自相差几分钟的两个世界。
+        // 成本实测 0.15 秒（约 1.7 万行），相对整轮扫描（数秒）可忽略。
+        // 调用方都是后台队列（AppState 的 `DispatchQueue.global`）或 CLI，不占主线程。
+        ProcessOccupancy.refresh()
     }
 
     /// 让若干路径的缓存失效。
@@ -722,6 +729,111 @@ enum FileSystem {
                 result.size += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
             }
         }
+        return result
+    }
+
+    // MARK: - 模块级目录统计的唯一 walker
+
+    /// 治理模块逐条目求体积/清点文件用的统一返回值。**不是** `Measurement`：
+    /// 那个类型经 `IncrementalCache` 持久化（Codable），给它加字段会踩
+    /// 「Swift 合成 Codable 不用属性默认值 → 老缓存解码必炸」的坑（RELEASE-CHECKLIST）；
+    /// 本结构只活在单轮扫描里，不落盘。
+    struct DirectoryStats: Equatable {
+        /// 磁盘块口径（`totalFileAllocatedSize ?? fileSize`）——删除后 `df` 的实际变化跟着这个走。
+        /// 稀疏文件上它远小于逻辑大小，这是**正确**的：删一个稀疏文件释放的就是块数。
+        var size: Int64 = 0
+        /// 普通文件数（目录与软链不计）。
+        var fileCount: Int = 0
+        /// 树内最新 mtime（软链不计）。无条目时为 nil。
+        var newestModification: Date?
+        /// false = 根读不到 / 枚举器建不起来 / 遍历被权限掐断过 / 条目数超防御上限——
+        /// 此时 `size`/`fileCount` 是**下限**，消费方不得据此默认勾选（v1.73.7 四侧契约）。
+        var readable: Bool = true
+    }
+
+    /// 模块级目录统计的**唯一**实现（收口 v1.73.10 复审待议 R2-P2-11：此前 CLICache /
+    /// Spotlight / AudioHAL / PrinterDriver / AndroidEmulator 五个模块各写一份递归 walker，
+    /// `fileSize` vs `totalFileAllocatedSize`、跳不跳软链两处口径不一致——同一棵树、
+    /// 五个面板五个数，而删除侧实测释放量只会是其中一种）。
+    ///
+    /// 口径与 `computeMeasurement` 对齐，**同一棵树两个入口必须给出同一个数**：
+    /// 体积用 allocated；软链不计（删掉一条软链释放 0 字节）；目录本身不累计；
+    /// 被权限掐断的子树照常 `recordDeniedAccess`，且 `readable` 用**本次遍历自带的**
+    /// `WalkBlockFlag` 翻假（不查那份 64 条封顶、每轮清空的全局盲区清单）。
+    /// 与 `measure(at:)` 的两处刻意差别：① 不写两级缓存——调用方每轮逐条目调一次，
+    /// 条目随清理消失，缓存收益低而失效风险高；② **不下钻 .app 包**——治理面板列的是
+    /// 缓存目录与工程产物，包内口径是 `bundleSize` 那条链的专属，别把两个口径搅在一起。
+    /// - Parameter skipHidden: 现有五处调用方全部 `.skipsHiddenFiles`，默认保持 true；
+    ///   谁的领域里隐藏文件是合法条目（目前没有），谁显式传 false 并自证口径。
+    static func directoryStats(at path: String, skipHidden: Bool = true) -> DirectoryStats {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+                                      .totalFileAllocatedSizeKey, .contentModificationDateKey]
+        var st = stat()
+        guard lstat(path, &st) == 0 else {
+            return DirectoryStats(readable: false)
+        }
+        let mode = st.st_mode & S_IFMT
+        if mode == S_IFLNK { return DirectoryStats() }   // 软链：0 字节，删了也不释放
+        guard mode == S_IFDIR else {
+            let mtime = Date(timeIntervalSince1970: TimeInterval(st.st_mtimespec.tv_sec))
+            return DirectoryStats(size: Int64(st.st_size), fileCount: 1,
+                                  newestModification: mtime, readable: true)
+        }
+
+        var result = DirectoryStats()
+        let blocked = WalkBlockFlag()
+        guard let enumerator = FileManager.default.enumerator(
+            at: URL(fileURLWithPath: path, isDirectory: true),
+            includingPropertiesForKeys: keys,
+            options: skipHidden ? [.skipsHiddenFiles] : [],
+            errorHandler: { url, error in
+                // 被权限挡掉的子目录必须留痕。不写 errorHandler 时 Foundation 的语义是
+                // **第一个错误就停止遍历且不报告**——「只读到一半」和「就这么大」给出同一个数。
+                recordDeniedAccess(url, error: error)
+                blocked.set()
+                return true
+            }
+        ) else {
+            // 枚举器建不起来：先 `noteDeniedRoot` **无条件**记账（枚举器 nil 本身就是一手
+            // 失败证据；`isPermissionDenied` 在「在途额度满、根本没去 open」时会漏报，
+            // v1.73.5 的教训），权限命中再补一条 EACCES 形状的明细
+            // （`recordDeniedAccess` 吞自造 domain 的 error，v1.73.7 P1-A 的教训）。
+            noteDeniedRoot(normalizePath(path))
+            if isPermissionDenied(path) {
+                recordDeniedAccess(URL(fileURLWithPath: path, isDirectory: true),
+                                   error: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES),
+                                                  userInfo: [NSFilePathErrorKey: path]))
+            }
+            return DirectoryStats(readable: false)
+        }
+
+        var count = 0
+        for case let fileURL as URL in enumerator {
+            count += 1
+            if count > 200_000 {          // 防御：超大树只算下限，与 computeMeasurement 同一档
+                result.readable = false
+                break
+            }
+            let values = autoreleasepool { () -> URLResourceValues? in
+                try? fileURL.resourceValues(forKeys: Set(keys))
+            }
+            // 单个条目 resourceValues 解析失败按跳过处理、**不**翻 readable——
+            // 与收编前 CLICache/Spotlight 的口径一致（旧 AudioHAL/PrinterDriver 的
+            // walker 在这一支翻 readable，收编时刻意取了宽松侧：该分支没有稳定的
+            // 触发形态，翻假反而会让一次正常遍历背上"残缺"的名字，见复审 #6）。
+            guard let values else { continue }
+            if values.isSymbolicLink == true { continue }
+            if let m = values.contentModificationDate {
+                if result.newestModification == nil || m > result.newestModification! {
+                    result.newestModification = m
+                }
+            }
+            if values.isRegularFile == true {
+                result.size += Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0)
+                result.fileCount += 1
+            }
+        }
+        if blocked.value { result.readable = false }
         return result
     }
 
@@ -1051,6 +1163,26 @@ enum FileSystem {
     private static func guardNormalized(_ normalized: String, in list: [GuardPath]) -> Bool {
         for g in list where g.matches(normalized) { return true }
         return false
+    }
+
+    /// 「这个路径在主目录内吗」的唯一判据。治理模块需要据此提前说明"这一根下的条目只列示、
+    /// 删除会被护栏拒掉"时**必须调这里**，不要各自写 `hasPrefix(home + "/")`——
+    /// 少一个分隔符就会把 `/Users/testa` 判进 `/Users/test`（v1.72 真在 DevProject 上踩过）。
+    /// 入参必须已 `normalizePath`。
+    static func isWithinHome(_ normalizedPath: String) -> Bool {
+        guardHome.matches(normalizedPath)
+    }
+
+    /// 常规放行根（主目录 + `/tmp` + `/var/tmp`）是否覆盖这个路径。
+    ///
+    /// 用的是网关 `isSafeToClean` **同一张表**（`guardAllowedRoots`）：治理模块据此决定
+    /// 「这根下的条目能不能进可删面 / 界面该怎么承诺」。别在模块里手抄一份
+    /// `hasPrefix("/tmp")`——表改了模块不会跟着改，于是界面把"其实会被网关逐条判"的根
+    /// 说成"删除一定会被拒"，或反过来把该拒的根默勾上（v1.73.10 三次复审 P1-2）。
+    /// 这里只回答"有没有机会被放行"，最终仍由网关逐条判（含 SIP/禁区表）。
+    /// 入参必须已 `normalizePath`。
+    static func isWithinGuardedRoot(_ normalizedPath: String) -> Bool {
+        guardNormalized(normalizedPath, in: guardAllowedRoots)
     }
 
     /// 确定性路径归一化（G1/G6/G8/D12/D15 判定专用）。

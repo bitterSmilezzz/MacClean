@@ -93,6 +93,23 @@ struct MenuBarView: View {
         } message: {
             Text("将把 \(danglingStartupItems.count) 个宿主已卸载的自启配置移入废纸篓，可随时放回。全局 /Library 下的项由 root 管理，本工具不提权、不会尝试删除。")
         }
+        // 一键速清的二次确认。与快速清理面板绑同一个 `pendingQuickClean`：
+        // 两条入口最终都走 `AppState.requestQuickClean` → 确认 → 执行，
+        // 所以"从这里点"和"从面板点"的判据与代价说明完全一致。
+        .confirmationDialog(
+            app.pendingQuickClean.map { "确认速清 \($0.count) 项（\($0.bytes.byteStringCN)）" }
+                ?? "确认速清",
+            isPresented: Binding(get: { app.pendingQuickClean != nil },
+                                 set: { if !$0 { app.cancelQuickClean() } }),
+            titleVisibility: .visible
+        ) {
+            Button("移入废纸篓（可恢复）", role: .destructive) { app.confirmQuickClean() }
+            Button("取消", role: .cancel) { app.cancelQuickClean() }
+        } message: {
+            if let preview = app.pendingQuickClean {
+                Text(QuickCleanConfirmText.message(preview))
+            }
+        }
         .onAppear {
             app.refreshDisk()
             sysMonitor.refresh()
@@ -527,9 +544,11 @@ struct MenuBarView: View {
                     if app.totalSelected > 0 {
                         app.cleanSelectedAcrossCategories(permanently: false)
                     } else if app.smartRecommendedCount > 0 {
-                        app.quickCleanSmartRecommendations()
+                        // 与快速清理面板同一条路径：**先预览再确认**，不直接动手。
+                        // 一键速清没有逐项勾选，所以确认这一步不能省。
+                        app.requestQuickClean(.smart)
                     } else {
-                        app.quickCleanSafeItems()
+                        app.requestQuickClean(.safe)
                     }
                 } label: {
                     HStack(spacing: 5) {

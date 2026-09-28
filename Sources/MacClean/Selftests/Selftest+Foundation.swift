@@ -438,5 +438,321 @@ extension Selftest {
             return app.ai.context == nil
         }
 
+        // MARK: - App 更新检查（v1.73.14）
+        // 网络相关的断言全部走注入 fetcher，绝不发真网络。
+
+        check("compareVersions 逐段数值比较（1.2.10 > 1.2.9，字符串比较会判反）") {
+            func lt(_ a: String, _ b: String) -> Bool { compareVersions(a, b) == .orderedAscending }
+            func eq(_ a: String, _ b: String) -> Bool { compareVersions(a, b) == .orderedSame }
+            func gt(_ a: String, _ b: String) -> Bool { compareVersions(a, b) == .orderedDescending }
+            // 逐段数值：这是变异验证的目标断言（把数值比较改成字符串比较必须红）
+            guard lt("1.2.9", "1.2.10"), gt("1.2.10", "1.2.9"),
+                  lt("1.9", "1.10"), lt("2.0", "10.0") else { return false }
+            // 缺段按 0 补齐
+            guard eq("1.2", "1.2.0"), lt("1.2", "1.2.1"), gt("1.2.3.1", "1.2.3") else { return false }
+            // 相等、v 前缀、首尾空白
+            guard eq("1.2.3", "1.2.3"), eq("v1.2.3", "1.2.3"), eq("  1.2.3  ", "1.2.3") else { return false }
+            // 括号 build 后缀：主版本分胜负优先；主版本相同才比 build；缺 build 按 0
+            guard lt("1.2.3 (917)", "1.2.3 (918)"), gt("1.2.3 (917)", "1.2.3"),
+                  lt("1.2.3", "1.2.4 (100)"), lt("1.2.3 (999)", "1.3.0"),
+                  eq("1.2.3 (917)", "1.2.3+917") else { return false }
+            // 非数字段：预发布 < 正式；两侧都有按字母序；大小写不敏感
+            guard lt("1.0.0-beta", "1.0.0"), lt("1.2.3b2", "1.2.3"),
+                  lt("1.0.0-alpha", "1.0.0-beta"), eq("1.0.Beta", "1.0.beta") else { return false }
+            return true
+        }
+        check("Appcast 解析：第一条 item 即最新；enclosure 属性与 sparkle 元素两种写法") {
+            // 两种写法混在一条 feed 里：元素写法（Sparkle 2 常见）
+            let elementXML = """
+            <?xml version="1.0" standalone="yes"?>
+            <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+            <channel><title>Foo</title>
+            <item>
+              <title>Version 1.2.10</title>
+              <sparkle:shortVersionString>1.2.10</sparkle:shortVersionString>
+              <sparkle:version>920</sparkle:version>
+              <enclosure url="https://example.com/Foo-1.2.10.zip" length="1234" type="application/octet-stream" />
+            </item>
+            <item>
+              <title>Version 1.2.9</title>
+              <sparkle:shortVersionString>1.2.9</sparkle:shortVersionString>
+              <sparkle:version>919</sparkle:version>
+              <enclosure url="https://example.com/Foo-1.2.9.zip" length="1200" type="application/octet-stream" />
+            </item>
+            </channel></rss>
+            """
+            // 正向样本断言：输入真有版本号与 enclosure，解析结果必须非空且取第一条（最新）
+            guard let item = AppcastParser.parse(Data(elementXML.utf8)) else { return false }
+            guard item.shortVersion == "1.2.10", item.buildVersion == "920",
+                  item.downloadURL == "https://example.com/Foo-1.2.10.zip" else { return false }
+            // 属性写法（Sparkle 1.x 常见：版本直接挂在 enclosure 上）
+            let attrXML = """
+            <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+            <channel><item>
+              <enclosure url="https://example.com/Foo-1.3.zip" sparkle:version="921" sparkle:shortVersionString="1.3.0" />
+            </item></channel></rss>
+            """
+            guard let attrItem = AppcastParser.parse(Data(attrXML.utf8)) else { return false }
+            guard attrItem.buildVersion == "921", attrItem.shortVersion == "1.3.0",
+                  attrItem.downloadURL == "https://example.com/Foo-1.3.zip" else { return false }
+            // 反证：非 XML、空数据、没有 item 的 RSS → nil（不许编出结果）
+            guard AppcastParser.parse(Data("这不是 XML".utf8)) == nil else { return false }
+            guard AppcastParser.parse(Data()) == nil else { return false }
+            guard AppcastParser.parse(Data("<rss><channel><title>无条目</title></channel></rss>".utf8)) == nil else { return false }
+            return true
+        }
+        check("AppUpdate 默认关 = 零网络零解析（开关从未设置必须是关）") {
+            let suiteName = "macclean-selftest-appupdate-\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let scanner = AppUpdateScanner(defaults: defaults)
+            // 默认关：从没写过这个键
+            guard !scanner.isEnabled else { return false }
+            var fetchCalls: [URL] = []
+            let sparkle = AppUpdateEntry(path: "/tmp/Foo.app", name: "Foo", bundleID: "com.example.foo",
+                                         shortVersion: "1.0", buildVersion: "1",
+                                         source: .sparkle(appcastURL: "https://updates.example.com/foo.xml"))
+            let out = scanner.checkUpdates(entries: [sparkle]) { url in
+                fetchCalls.append(url)
+                return Data()
+            }
+            // 关闭态：fetcher 一次都不被调，结果原样（不是 unreachable、更不是 upToDate）
+            return fetchCalls.isEmpty && out == [sparkle]
+        }
+        check("AppUpdate 开启后才发请求：只对 sparkle 来源，App Store / 无机制不发") {
+            let suiteName = "macclean-selftest-appupdate-\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let scanner = AppUpdateScanner(defaults: defaults)
+            scanner.setEnabled(true)
+            let sparkle = AppUpdateEntry(path: "/tmp/Foo.app", name: "Foo", bundleID: "com.example.foo",
+                                         shortVersion: "1.2.3", buildVersion: "917",
+                                         source: .sparkle(appcastURL: "https://updates.example.com/foo.xml"))
+            let store = AppUpdateEntry(path: "/tmp/Bar.app", name: "Bar", bundleID: "com.example.bar",
+                                       shortVersion: "1.0", buildVersion: "1", source: .appStore)
+            let bare = AppUpdateEntry(path: "/tmp/Baz.app", name: "Baz", bundleID: "com.example.baz",
+                                      shortVersion: "1.0", buildVersion: "1", source: .none)
+            var fetchCalls: [URL] = []
+            let appcast = """
+            <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+            <channel><item>
+              <enclosure url="https://example.com/Foo-1.2.10.zip" sparkle:version="920" sparkle:shortVersionString="1.2.10" />
+            </item></channel></rss>
+            """
+            let out = scanner.checkUpdates(entries: [sparkle, store, bare]) { url in
+                fetchCalls.append(url)
+                return Data(appcast.utf8)
+            }
+            // 三个来源只有 sparkle 发了请求
+            guard fetchCalls == [URL(string: "https://updates.example.com/foo.xml")!] else { return false }
+            // sparkle 条目得出「有更新」，其余保持 notChecked（不许被顺手标成 upToDate）
+            guard out[0].result == .available(latestVersion: "1.2.10"),
+                  out[1].result == .notChecked, out[2].result == .notChecked else { return false }
+            return true
+        }
+        check("AppUpdate：Info.plist 来源判别（SUFeedURL / 收据 / 双无 / plist 读不到）") {
+            let root = "/private/tmp/macclean-appupdate-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: root) }
+            func makeApp(_ name: String, info: [String: Any]?, receipt: Bool) -> String {
+                let appPath = (root as NSString).appendingPathComponent("\(name).app")
+                let contents = (appPath as NSString).appendingPathComponent("Contents")
+                try? FileManager.default.createDirectory(atPath: (contents as NSString)
+                    .appendingPathComponent("_MASReceipt"), withIntermediateDirectories: true)
+                if let info {
+                    NSDictionary(dictionary: info).write(toFile: (contents as NSString)
+                        .appendingPathComponent("Info.plist"), atomically: true)
+                }
+                if receipt {
+                    FileManager.default.createFile(atPath: (contents as NSString)
+                        .appendingPathComponent("_MASReceipt/receipt"), contents: Data("x".utf8))
+                }
+                return appPath
+            }
+            let sparklePath = makeApp("SparkleApp",
+                                      info: ["CFBundleIdentifier": "Com.Example.SparkleApp",
+                                             "CFBundleDisplayName": "Sparkle 应用",
+                                             "CFBundleShortVersionString": "1.2.3",
+                                             "CFBundleVersion": "917",
+                                             "SUFeedURL": "https://updates.example.com/sparkleapp.xml"],
+                                      receipt: false)
+            let storePath = makeApp("StoreApp",
+                                    info: ["CFBundleIdentifier": "com.example.storeapp"], receipt: true)
+            let barePath = makeApp("BareApp",
+                                   info: ["CFBundleIdentifier": "com.example.bareapp"], receipt: false)
+            // Info.plist 读不到：必须如实列示，不许静默跳过
+            let unreadPath = makeApp("UnreadApp", info: nil, receipt: false)
+
+            AppInventory.snapshotOverride = AppInventory.Snapshot(
+                bundleIDs: [], bundlePrefixes: [], normalizedNames: [], executableNames: [],
+                runningBundleIDs: [], appPaths: [sparklePath, storePath, barePath, unreadPath],
+                unreadableRoots: [])
+            defer { AppInventory.snapshotOverride = nil }
+
+            let suiteName = "macclean-selftest-appupdate-\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let summary = AppUpdateScanner(defaults: defaults).scanInstalledSources()
+            guard summary.entries.count == 4 else { return false }
+            let byPath = Dictionary(uniqueKeysWithValues: summary.entries.map { ($0.path, $0) })
+            // sparkle：URL 用 Info.plist 原值；bundle id 归一小写；版本号取到
+            guard let sparkleEntry = byPath[sparklePath],
+                  case .sparkle(let feed) = sparkleEntry.source,
+                  feed == "https://updates.example.com/sparkleapp.xml",
+                  sparkleEntry.bundleID == "com.example.sparkleapp",
+                  sparkleEntry.shortVersion == "1.2.3", sparkleEntry.buildVersion == "917",
+                  sparkleEntry.name == "Sparkle 应用" else { return false }
+            guard byPath[storePath]?.source == AppUpdateEntry.Source.appStore else { return false }
+            // 注意写全类型：`?.source == .none` 会把 .none 解析成 Optional.none（比较 nil），判据就假了
+            guard byPath[barePath]?.source == AppUpdateEntry.Source.none else { return false }
+            guard let unreadEntry = byPath[unreadPath],
+                  unreadEntry.source == AppUpdateEntry.Source.none,
+                  unreadEntry.displayVersion == "未知" else { return false }
+            return true
+        }
+        check("AppUpdate G16：清单不可信必须降级明示，不许渲染成「全部最新」") {
+            let root = "/private/tmp/macclean-appupdate-g16-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(atPath: root + "/Real.app/Contents", withIntermediateDirectories: true)
+            NSDictionary(dictionary: ["CFBundleIdentifier": "com.example.real"]).write(
+                toFile: (root as NSString).appendingPathComponent("Real.app/Contents/Info.plist"),
+                atomically: true)
+            defer { try? FileManager.default.removeItem(atPath: root) }
+
+            // ① 根目录读取失败（unreadableRoots 非空）→ 必须带降级说明，且点名失败的根
+            AppInventory.snapshotOverride = AppInventory.Snapshot(
+                bundleIDs: [], bundlePrefixes: [], normalizedNames: [], executableNames: [],
+                runningBundleIDs: [], appPaths: [root + "/Real.app"],
+                unreadableRoots: ["/private/tmp/fake-unreadable-root"])
+            let degraded = AppUpdateScanner().scanInstalledSources()
+            guard !degraded.inventoryComplete else { return false }
+            guard let notice = degraded.degradationNotice,
+                  notice.contains("已安装应用清单不完整"),
+                  notice.contains("漏项"),
+                  notice.contains("fake-unreadable-root") else { return false }
+
+            // ② 一个应用都没枚举到（bundleIDs 空）同样是不完整
+            AppInventory.snapshotOverride = AppInventory.Snapshot(
+                bundleIDs: [], bundlePrefixes: [], normalizedNames: [], executableNames: [],
+                runningBundleIDs: [], appPaths: [], unreadableRoots: [])
+            guard !AppInventory.current().isComplete,
+                  AppUpdateScanner().scanInstalledSources().degradationNotice != nil else { return false }
+
+            // ③ 反证：清单完整时必须没有降级说明
+            AppInventory.snapshotOverride = AppInventory.Snapshot(
+                bundleIDs: ["com.example.real"], bundlePrefixes: [], normalizedNames: [], executableNames: [],
+                runningBundleIDs: [], appPaths: [root + "/Real.app"], unreadableRoots: [])
+            let complete = AppUpdateScanner().scanInstalledSources()
+            AppInventory.snapshotOverride = nil
+            return complete.inventoryComplete && complete.degradationNotice == nil
+        }
+        check("AppUpdate 隐私边界：请求 URL 与 Info.plist 声明值逐字符一致，不含本机路径") {
+            // 路径里带随机串：只要实现把本机路径拼进请求，这条必红
+            let token = UUID().uuidString
+            let root = "/private/tmp/macclean-priv-\(token)"
+            let appPath = (root as NSString).appendingPathComponent("PrivateApp.app")
+            let contents = (appPath as NSString).appendingPathComponent("Contents")
+            try FileManager.default.createDirectory(atPath: contents, withIntermediateDirectories: true)
+            let declared = "https://updates.example-fixed.org/appcast.xml"
+            NSDictionary(dictionary: ["CFBundleIdentifier": "com.example.privateapp",
+                                      "CFBundleShortVersionString": "1.0.0",
+                                      "SUFeedURL": declared]).write(
+                toFile: (contents as NSString).appendingPathComponent("Info.plist"), atomically: true)
+            defer { try? FileManager.default.removeItem(atPath: root) }
+
+            let suiteName = "macclean-selftest-appupdate-\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let scanner = AppUpdateScanner(defaults: defaults)
+            scanner.setEnabled(true)
+            AppInventory.snapshotOverride = AppInventory.Snapshot(
+                bundleIDs: [], bundlePrefixes: [], normalizedNames: [], executableNames: [],
+                runningBundleIDs: [], appPaths: [appPath], unreadableRoots: [])
+            defer { AppInventory.snapshotOverride = nil }
+
+            var received: [URL] = []
+            let appcast = """
+            <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+            <channel><item>
+              <enclosure url="https://example.com/PrivateApp-1.1.zip" sparkle:shortVersionString="1.1.0" />
+            </item></channel></rss>
+            """
+            let out = scanner.checkUpdates(entries: scanner.scanInstalledSources().entries) { url in
+                received.append(url)
+                return Data(appcast.utf8)
+            }
+            // 恰好一条请求，URL 与声明的原值逐字符一致（没有查询串、没有路径拼接）
+            guard received.count == 1, received[0].absoluteString == declared else { return false }
+            // 本机路径段（随机 token、/private/tmp、主目录）绝不允许出现在任何请求 URL 里
+            let allURLs = received.map { $0.absoluteString }
+            guard !allURLs.contains(where: { $0.contains(token) || $0.contains("/private/tmp")
+                                              || $0.contains(NSHomeDirectory()) }) else { return false }
+            // 整条链路跑通：远端 1.1.0 > 本地 1.0.0 → available
+            return out.first?.result == .available(latestVersion: "1.1.0")
+        }
+        check("AppUpdate decideResult：查不出结论必须如实报 unreachable，不许说成已最新") {
+            func entry(short: String, build: String) -> AppUpdateEntry {
+                AppUpdateEntry(path: "/tmp/X.app", name: "X", bundleID: "com.example.x",
+                               shortVersion: short, buildVersion: build,
+                               source: .sparkle(appcastURL: "https://updates.example.com/x.xml"))
+            }
+            func remote(short: String?, build: String?) -> AppcastParser.Item {
+                AppcastParser.Item(shortVersion: short, buildVersion: build, downloadURL: nil)
+            }
+            // 远端更高 / 更低
+            guard AppUpdateScanner.decideResult(local: entry(short: "1.2.3", build: "917"),
+                                                remote: remote(short: "1.2.10", build: "920"))
+                == .available(latestVersion: "1.2.10") else { return false }
+            guard AppUpdateScanner.decideResult(local: entry(short: "2.0", build: "50"),
+                                                remote: remote(short: "1.9.9", build: "49"))
+                == .upToDate else { return false }
+            // short 相同 → build 定胜负
+            guard case .available = AppUpdateScanner.decideResult(local: entry(short: "1.0", build: "100"),
+                                                                  remote: remote(short: "1.0", build: "101")) else { return false }
+            guard AppUpdateScanner.decideResult(local: entry(short: "1.0", build: "101"),
+                                                remote: remote(short: "1.0", build: "100")) == .upToDate else { return false }
+            // 只有 build 号可比（远端只有 sparkle:version 的 feed）
+            guard case .available = AppUpdateScanner.decideResult(local: entry(short: "", build: "100"),
+                                                                  remote: remote(short: nil, build: "101")) else { return false }
+            // 远端没有版本号 → unreachable
+            guard case .unreachable = AppUpdateScanner.decideResult(local: entry(short: "1.0", build: "1"),
+                                                                    remote: remote(short: nil, build: nil)) else { return false }
+            // 本机没版本号 → unreachable
+            guard case .unreachable = AppUpdateScanner.decideResult(local: entry(short: "", build: ""),
+                                                                    remote: remote(short: "1.0", build: "1")) else { return false }
+            // 版本信息错位（本地只有 build、远端只有 short）→ unreachable，不许判 upToDate
+            guard case .unreachable = AppUpdateScanner.decideResult(local: entry(short: "", build: "917"),
+                                                                    remote: remote(short: "2.0", build: nil)) else { return false }
+            return true
+        }
+
+        // MARK: - v1.73.14 复审补票（v1.73.13-14-zcode-subagent #1/#2）
+
+        check("AppUpdateScanner：系统 App 过滤走 isSystemProtected 单一判据（G18 回归锁）") {
+            // 集成自检曾抓到 `hasPrefix("/System/")` 字符串护栏（G18 立禁族：漏 SIP 清单里
+            // 非 /System 前缀的位置、与删除侧两套标准），当时改成了 isSystemProtected。
+            // 这条钉住它不再长回来：既有正向 needle，也有违规字面禁令。
+            guard FileSystem.isSystemProtected("/System/Applications") else {
+                print("      前置条件失效：/System/Applications 不在 systemProtected 清单")
+                return false
+            }
+            let path = (Selftest.sourceDirectoryPath as NSString)
+                .appendingPathComponent("AppUpdateScanner.swift")
+            guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                print("      AppUpdateScanner.swift 不可读")
+                return false
+            }
+            let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+            guard code.contains("FileSystem.isSystemProtected(path)") else {
+                print("      过滤判据不再走 isSystemProtected——字符串护栏回来了？")
+                return false
+            }
+            if code.contains("hasPrefix(\"/System") || code.contains("contains(\"/System")
+                || code.contains("==\"/System") {
+                print("      出现 /System 字符串护栏字面（G18 违规族）")
+                return false
+            }
+            return true
+        }
+
     }
 }

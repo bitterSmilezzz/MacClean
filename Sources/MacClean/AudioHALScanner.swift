@@ -636,58 +636,20 @@ public final class AudioHALScanner {
         let readable: Bool
     }
 
+    /// 目录统计薄适配层：**口径已统一到 `FileSystem.directoryStats`**（v1.73.10 复审待议
+    /// R2-P2-11 收编，本函数的递归 enumerator 循环已删除，只剩薄委托）——体积用 allocated
+    /// （`totalFileAllocatedSize ?? fileSize`），软链不计（0 字节、不计 fileCount、不进
+    /// mtime 账），隐藏文件跳过；`readable` 由共享实现用**本次遍历自带**的 `WalkBlockFlag`
+    /// 翻假（不查那份 64 条封顶、会父子合并、每轮清空的全局盲区清单），nil 分支的
+    /// `isPermissionDenied` 预筛 + EACCES 形状记账也由共享实现承担，这里不再保留第二份记账。
+    ///
+    /// `mtime = newestModification ?? Date.distantPast` 是本模块旧契约，原样映射。
+    /// 消费方（`guard metrics.readable, metrics.size > 0`）拿 `readable == false` 的结果
+    /// 跳过条目，而不是拿着一个偏小的数去断言这个插件占多少空间。
     static func calculateDirectoryMetrics(at path: String) -> Metrics {
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: path, isDirectory: &isDir) else {
-            return Metrics(size: 0, fileCount: 0, mtime: Date.distantPast, readable: false)
-        }
-        if !isDir.boolValue {
-            guard let attr = try? fm.attributesOfItem(atPath: path) else {
-                return Metrics(size: 0, fileCount: 0, mtime: Date.distantPast, readable: false)
-            }
-            return Metrics(size: Int64(attr[.size] as? UInt64 ?? 0), fileCount: 1,
-                           mtime: attr[.modificationDate] as? Date ?? Date.distantPast, readable: true)
-        }
-        var totalSize: Int64 = 0
-        var fileCount = 0
-        var latestMTime = Date.distantPast
-        var readable = true
-        let blocked = FileSystem.WalkBlockFlag()
-        guard let enumerator = fm.enumerator(
-            at: URL(fileURLWithPath: path),
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles],
-            errorHandler: { url, error in
-                // 被权限挡掉的子目录必须留痕。不写 errorHandler 时 Foundation 的语义是
-                // **第一个错误就停止遍历且不报告**——于是「只读到一半」和「就这么大」
-                // 给出同一个数。blocked 是**本次遍历自己的**标记：不能用全局盲区清单反查，
-                // 那份账 64 条封顶、会父子合并、每轮被清空（见 FileSystem.WalkBlockFlag）。
-                FileSystem.recordDeniedAccess(url, error: error)
-                blocked.set()
-                return true
-            }
-        ) else {
-            return Metrics(size: 0, fileCount: 0, mtime: latestMTime, readable: false)
-        }
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(
-                forKeys: [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]) else {
-                readable = false
-                continue
-            }
-            if values.isDirectory == false {
-                totalSize += Int64(values.fileSize ?? 0)
-                fileCount += 1
-            }
-            if let mtime = values.contentModificationDate, mtime > latestMTime {
-                latestMTime = mtime
-            }
-        }
-        // 遍历被权限掐断过 → 这份统计不完整，readable 必须跟着翻成 false。
-        // 消费方（`guard metrics.readable, metrics.size > 0`）会因此跳过它，而不是拿着
-        // 一个偏小的数去断言这个插件占多少空间。
-        if blocked.value { readable = false }
-        return Metrics(size: totalSize, fileCount: fileCount, mtime: latestMTime, readable: readable)
+        let stats = FileSystem.directoryStats(at: path)
+        return Metrics(size: stats.size, fileCount: stats.fileCount,
+                       mtime: stats.newestModification ?? Date.distantPast,
+                       readable: stats.readable)
     }
 }

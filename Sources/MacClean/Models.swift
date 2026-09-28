@@ -132,10 +132,33 @@ enum ItemNature: String, Codable {
 
 // MARK: - 占用状态
 
+/// 归属应用此刻的占用状态。
+///
+/// **为什么必须是三态，不能用 `Bool`**：`Bool` 把"查不到归属"（未知）和
+/// "确定没在运行"（事实）压成了同一个 `false`。判定引擎随后把 `false` 当作
+/// "没在用"的证据，于是"不知道"变成了"可以删"。
+///
+/// 这是本项目最贵的一个建模错误：它让每一条单独的规则都自洽，
+/// 却让整条链路在真实机器上系统性偏乐观——`~/Library/Developer`、`~/.gradle`、
+/// `~/.npm`、`/var/folders` 这些不在 `CleanPaths.ownerApp` 归属表覆盖范围内的路径，
+/// 无论有没有进程正在写它们，拿到的都是"没在用"。
+///
+/// 修法不是把 `false` 一律改成"更保守"，而是**把方向信息留住**：
+/// 认出来且确实没在跑 = 有证据的"没在用"（可以据此判可清理）；
+/// 认不出来 = 没有证据（不得据此判可清理）。
+enum OwnerState: Equatable {
+    /// 有进程正在运行/持有它：名字匹配命中，或 `ProcessOccupancy` 查出真实占用者。
+    case running
+    /// 认出了归属、此刻确实没在运行，也没有进程持有 → **有证据**的"没在用"。
+    case notRunning
+    /// **没有证据**：既认不出归属，也没有占用者。这不等于"没在用"。
+    case unknown
+}
+
 /// 扫描时观测到的"当前是否在被使用"。这是**事实**，不是结论。
 struct UseState: Equatable {
-    /// 所属 App 此刻是否在运行
-    var ownerIsRunning: Bool = false
+    /// 归属应用此刻的占用状态（三态）。默认 `.unknown` = 没有证据。
+    var ownerState: OwnerState = .unknown
     /// 所属 App 的显示名（用于文案；未知则 nil）
     var ownerName: String?
     /// 最近一次写入时间
@@ -144,6 +167,44 @@ struct UseState: Equatable {
     var level: UsageLevel = .unknown
     /// 观测时刻（用于计算"刚刚"这类细粒度信号）
     var observedAt: Date = Date()
+    /// 实测持有者进程名（`ProcessOccupancy` 的 lsof 结果）。用于文案与二次判定。
+    var holders: [String] = []
+
+    init(ownerState: OwnerState = .unknown,
+         ownerName: String? = nil,
+         lastUsed: Date? = nil,
+         level: UsageLevel = .unknown,
+         observedAt: Date = Date(),
+         holders: [String] = []) {
+        self.ownerState = ownerState
+        self.ownerName = ownerName
+        self.lastUsed = lastUsed
+        self.level = level
+        self.observedAt = observedAt
+        self.holders = holders
+    }
+
+    /// 兼容既有调用点：显式传 `Bool` 表示"**已经查明**在不在跑"。
+    /// 新代码请直接用 `ownerState:`——`false` 在这里的含义是
+    /// 「查过了，确实没在跑」，而不是「没查到」。
+    init(ownerIsRunning: Bool,
+         ownerName: String? = nil,
+         lastUsed: Date? = nil,
+         level: UsageLevel = .unknown,
+         observedAt: Date = Date(),
+         holders: [String] = []) {
+        self.init(ownerState: ownerIsRunning ? .running : .notRunning,
+                  ownerName: ownerName,
+                  lastUsed: lastUsed,
+                  level: level,
+                  observedAt: observedAt,
+                  holders: holders)
+    }
+
+    var ownerIsRunning: Bool { ownerState == .running }
+
+    /// 是否拿到了占用证据（无论方向）。`false` 意味着"不知道"，不是"没在用"。
+    var ownerIsKnown: Bool { ownerState != .unknown }
 
     static let unknown = UseState()
 
@@ -159,6 +220,47 @@ struct UseState: Equatable {
     var isBeingWrittenNow: Bool {
         guard let lastUsed else { return false }
         return observedAt.timeIntervalSince(lastUsed) < Self.liveWindow
+    }
+
+    /// 「工具可以直接判『可清理』」的闲置门槛。
+    ///
+    /// **3 天是实测选出来的，不是拍的。** 真机全量扫描按"最近一次写入距今"分档后，
+    /// 体积几乎全部压在 3 天以内，而 ≥7 天那档几乎为空：
+    ///
+    /// | 距今 | 项数 | 体积 |
+    /// |---|---|---|
+    /// | <1 天 | 44 | 2.70 GB |
+    /// | 1–3 天 | 23 | 3.13 GB |
+    /// | 3–7 天 | 52 | 2.47 GB |
+    /// | 7–30 天 | 10 | 0.13 GB |
+    /// | >30 天 | 13 | ≈0 |
+    ///
+    /// 门槛留在 7 天，一台活跃的开发机上"可清理"就只剩 0.13 GB——那不是清理软件，
+    /// 是个摆设；而放到 3 天可以放出 2.59 GB，**且一天内动过的 2.70 GB 仍然要人确认**。
+    /// 3 天同时与 Apple 自己清理临时文件的阈值一致（T0 的 `.tempDir` 契约早就在用这个数）。
+    ///
+    /// 注意这是**交互式**门槛：无人值守 / 一键速清那两条"没人逐个看"的路径另有 30 天闸
+    /// （见 `UsageLevel.isRecentlyUsed` 与 `AppState.isQuickCleanable`），不要混为一谈。
+    static let cleanableIdleWindow: TimeInterval = 3 * 86400
+
+    /// 距今是否在 `window` 之内被写过。
+    /// `lastUsed` 缺失时返回 false——那是"没有证据说它新鲜"，
+    /// "完全没有证据"由 `deriveRecommendation` 里的 `noEvidence` 单独处理。
+    func isWrittenWithin(_ window: TimeInterval) -> Bool {
+        guard let lastUsed else { return false }
+        return observedAt.timeIntervalSince(lastUsed) < window
+    }
+
+    /// 距现在**太近**，近到"删还是不删"不该由工具替你定：太近只能说"你最近还在用它"，
+    /// 不足以说"现在删了没损失"。
+    ///
+    /// 两条件取或：
+    ///  · 能量到时间 → 直接按 `cleanableIdleWindow` 比；
+    ///  · 量不到时间、但粗档位说"7 天内有写入" → 尊重那个粗档位
+    ///    （没有精确证据时往保守方向倒，不许因为"没测到"就放行）。
+    var isTooFreshToDecide: Bool {
+        if isWrittenWithin(Self.cleanableIdleWindow) { return true }
+        return lastUsed == nil && level == .active
     }
 
     /// 供文案使用的"刚刚"描述
@@ -287,6 +389,59 @@ struct CleanItem: Identifiable, Equatable {
         let owner = use.ownerName ?? "所属应用"
         let running = use.ownerIsRunning
 
+        /// 三种强度，三种结论（口径见下表，**不要只看档位**）：
+        ///
+        /// | 证据 | 强度 | 结论 | 谁会动手 |
+        /// |---|---|---|---|
+        /// | 有进程持有它 / 10 分钟内还在写 | **事实** | `.inUse`（使用中） | 谁都不许 |
+        /// | 距今 < `cleanableIdleWindow`（3 天） | **弱信号** | `.review`（需确认） | 你（手动勾选） |
+        /// | 距今 ≥ 3 天 + 有归属证据 | — | `.safe` / `.garbage` | 你（全选、有确认弹窗） |
+        ///
+        /// 再往上还有一档 30 天的闸（`isRecentlyUsed`），只管**没人逐个看**的两条自动路径
+        /// ——「一键安全速清」与无人值守删除。那两条没有二次确认，必须比交互式更保守。
+        ///
+        /// **为什么弱信号不能判 `.inUse`**：那会把 `.gradle/daemon` 这种"规则自己写着
+        /// 『守护进程 3 天内没有再写入』（已 5 天没写 = 进程已死）"的项，用一句更含糊的话
+        /// 盖掉规则自带的精确判据；`.gradle/caches`（D7，T2）也会从
+        /// 「需确认：重建要重下 GB 级内容」退化成一句"使用中"，信息反而变少。
+        ///
+        /// **为什么弱信号也不能判 `.safe`**：那正是用户抱怨的那一行——
+        /// `~/Library/Caches/@deepseek-aidsh-desktop-updater`（1 小时前刚被写过）挂着绿色
+        /// 「可清理」徽标。同一个事实推出两个相反结论，用户唯一理性的反应是两个都不信。
+        /// 现在这条线的位置是**实测选的**（见 `UseState.cleanableIdleWindow`）：3 天以内
+        /// 交给人判断，3 天以上工具才敢替你下结论——否则一台活跃机器上什么都清不掉。
+        let tooFreshToDecide = use.isTooFreshToDecide
+
+        /// 既认不出归属应用、又量不到最近写入时间 = **没有任何占用证据**。
+        /// 这种项不许判「可清理」——那不是结论，是猜测。
+        let noEvidence = (use.ownerState == .unknown) && (use.level == .unknown)
+
+        /// 弱信号（太新鲜 / 零证据）的分界闸门。nil = 交给下面按 nature 与档位正常出结论。
+        func recentWriteGate() -> Recommendation? {
+            guard tooFreshToDecide || noEvidence else { return nil }
+            // T2/T3 的规则自带更具体的降级说明（"重建要重下 GB 级内容，而本工具不探测
+            // 网络可达性"这类），交给 `verdict()` 去讲，别用一句更含糊的话盖掉它。
+            // 它们本来就落在「需确认 / 勿删」，不会给出可删结论，所以放行是安全的。
+            //
+            // T0 **不能**放行：`verdict()` 会把 `.safe` 升级成「确定是垃圾」，
+            // 而「确定是垃圾」是唯一会被默认勾选的档——那正好会把这条闸门的目的抵消掉。
+            switch CleanupRules.tier(forRule: rule) {
+            case .t2, .t3:
+                return nil
+            case .t0, .t1, .none:
+                break
+            }
+            // 说清"凭什么觉得它新鲜"：能量到时间就说绝对时间；量不到就说明是粗档位在兜底。
+            let freshness = idleSpan(use).map { "距今 \($0)前还写过" }
+                ?? "粗档位显示 7 天内有写入（测不到精确时间）"
+            let why = tooFreshToDecide
+                ? "\(freshness)，说明最近还在用它；但此刻没有进程持有它，"
+                    + "所以不判「可清理」也不替你自动勾选。确认不再需要时再清理。"
+                : "既没认出归属应用是否在运行，也测不到最近写入时间——"
+                    + "没有依据支持「放心删」，请自己确认。"
+            return Recommendation(kind: .review, reason: why + consequence)
+        }
+
         /// 运行时事实永远压过档位：宿主在跑、正在被写的项，绝不会被算成"确定是垃圾"。
         /// T0 只是"这类东西的依据够硬"，不是"现在就能删"。
         ///
@@ -367,7 +522,8 @@ struct CleanItem: Identifiable, Equatable {
                         ? "\(owner) 正在运行；现在删除可能影响它，建议退出后再清理。\(consequence)"
                         : "\(use.liveEvidenceText)，说明仍在被使用。\(consequence)")
             }
-            return verdict(.safe, consequence)
+            if let blocked = recentWriteGate() { return blocked }
+            return verdict(.safe, consequence + safeEvidenceText(use))
 
         case .inferredUnused:
             // "看起来没用了"是推断而非事实，所以永远不自动给安全结论
@@ -387,7 +543,10 @@ struct CleanItem: Identifiable, Equatable {
                     kind: .inUse,
                     reason: "\(use.liveEvidenceText)——有进程正在使用它；现在删除会立刻重建，建议稍后再清理")
             }
-            return verdict(.safe, "\(consequence)（\(writeAgeText(use.level))）")
+            // 这一道是本次修复的核心：`.losslessCache` 此前只认"10 分钟内还在写"，
+            // 于是"1 小时前刚写过、7 天内一直在用"的缓存挂着绿色「可清理」徽标。
+            if let blocked = recentWriteGate() { return blocked }
+            return verdict(.safe, consequence + safeEvidenceText(use))
 
         case .rebuildable:
             // 重建有代价（重编译 / 重新生成），所以"最近还在动"也一并提示
@@ -401,24 +560,33 @@ struct CleanItem: Identifiable, Equatable {
                     kind: .inUse,
                     reason: "\(use.liveEvidenceText)，说明正在被使用。\(consequence)")
             }
-            if use.level == .active {
-                return Recommendation(
-                    kind: .inUse,
-                    reason: "最近 7 天内还有写入，可能正在被使用。\(consequence)")
-            }
-            return verdict(.safe, "\(consequence)（\(writeAgeText(use.level))）")
+            // 与 `.losslessCache` / `.staleArtifact` 走**同一道**闸门。
+            // 历史上这里单独写死 `.active → 使用中`，而缓存那边只认 10 分钟——
+            // 同一个时间证据只因为 nature 不同就推翻结论，是无法向用户解释的。
+            if let blocked = recentWriteGate() { return blocked }
+            return verdict(.safe, consequence + safeEvidenceText(use))
         }
     }
 
-    /// 把"最近写入时间"如实讲出来，取代历史上那个会与结论打架的频率徽标。
-    private static func writeAgeText(_ level: UsageLevel) -> String {
-        switch level {
-        case .active: return "最近 7 天内有过写入"
-        case .recent: return "最近 30 天内有过写入"
-        case .occasional: return "超过 30 天没有写入"
-        case .dormant: return "超过 90 天没有写入"
-        case .unknown: return "无法判定最近写入时间"
+    /// 距今多久（人类可读的**绝对时间**，不是"7 天内"这种档位桶）。`nil` = 测不到。
+    ///
+    /// 为什么不用档位文案：档位是"7 天内有写入"这种粗桶，而门槛是 3 天。
+    /// 一个 5 天前写过的项判「可清理」时，旁边印着「最近 7 天内有过写入」，
+    /// 读起来仍然像自相矛盾（这正是用户最初抱怨的那一行）。绝对时间不会歧义。
+    private static func idleSpan(_ use: UseState) -> String? {
+        guard let lastUsed = use.lastUsed else { return nil }
+        let secs = max(0, use.observedAt.timeIntervalSince(lastUsed))
+        if secs < 3600 { return "不到 1 小时" }
+        if secs < 86400 { return "约 \(Int(secs / 3600)) 小时" }
+        return "\(Int(secs / 86400)) 天"
+    }
+
+    /// 「可清理」的运行时依据：说清**凭什么**敢判放心删——距今够久、且此刻没人持有它。
+    private static func safeEvidenceText(_ use: UseState) -> String {
+        guard let span = idleSpan(use) else {
+            return "（未测到最近写入时间，但归属已确认且此刻没有进程持有它）"
         }
+        return "（\(span)没有写入，且此刻没有进程持有它）"
     }
 }
 
@@ -515,6 +683,18 @@ final class CategoryState: ObservableObject, Identifiable {
     }
 
     var totalSize: Int64 { items.reduce(0) { $0 + $1.size } }
+    /// 本分类里**结论为「可清理 / 确定是垃圾」**的体积之和。
+    ///
+    /// 与 `totalSize` 是两个不同的量，不许混用：
+    ///   · `totalSize`     = 这一页扫到了多少（含"使用中 / 需确认 / 勿删"）
+    ///   · `safeSize`      = 其中**真的建议你清掉**的那部分
+    ///
+    /// 历史缺陷：仪表盘那个大字「可清理」取的是 `totalSize`
+    /// （[AppState.totalCleanable] 早先写的是 `categories.reduce { $0 + $1.totalSize }`），
+    /// 于是它把标着「勿删」「使用中」「需确认」的项也算进"可清理"里。
+    /// 真机实测：大字显示 8.91 GB，而点"全选"实际只勾得动 5.75 GB，
+    /// 其中还含一个 0.62 GB 明确标着「勿删」的文件——数字比事实虚高 55%。
+    var safeSize: Int64 { items.filter { $0.recommendation.isSafe }.reduce(0) { $0 + $1.size } }
     var selectedCount: Int { items.filter { $0.isSelected }.count }
     var selectedSize: Int64 { items.filter { $0.isSelected }.reduce(0) { $0 + $1.size } }
     var allSelected: Bool { !items.isEmpty && items.allSatisfy { $0.isSelected } }

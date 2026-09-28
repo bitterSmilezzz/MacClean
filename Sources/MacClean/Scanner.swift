@@ -372,12 +372,45 @@ final class Scanner {
         return applyDefaultSelection(filtered.map { annotateUsage($0) })
     }
 
-    /// 标注占用状态（最近写入时间 + 所属 App 是否正在运行）。
+    /// 把"名字匹配"与"lsof 实测"两条独立证据合成三态占用状态。
+    ///
+    /// 抽成纯函数（而不是塞在 `annotateUsage` 里）：三态的正确性必须能被**穷举**钉住，
+    /// 而 `annotateUsage` 要碰真实文件系统，穷举不了——这正是这条 bug 活了这么久的原因。
+    ///
+    /// 真值表（`holders` 非空一律 `.running`：实测优先于任何名字匹配）：
+    ///   owner 认出 + 在跑              → `.running`
+    ///   owner 认出 + 没在跑 + 有持有者   → `.running`
+    ///   owner 认出 + 没在跑 + 无持有者   → `.notRunning`  ← **唯一**能得出"没在用"的组合
+    ///   owner 没认出 + 有持有者         → `.running`
+    ///   owner 没认出 + 无持有者         → `.unknown`     ← 老代码在这里返回 false（"没在用"）
+    static func deriveOwnerState(ownerKnown: Bool,
+                                 ownerRunning: Bool,
+                                 holders: [String]) -> OwnerState {
+        if ownerRunning { return .running }
+        if !holders.isEmpty { return .running }
+        return ownerKnown ? .notRunning : .unknown
+    }
+
+    /// 标注占用状态（最近写入时间 + 归属应用是否正在运行/被持有）。
     ///
     /// 历史缺陷：这里原本只盖一个"使用频率"，而风险等级早在构造 CleanItem 时就定死了，
     /// 两条轴各自独立、从不调和——于是**结构性必然**出现
     /// `[安全] … 使用:12 天前 · 近期使用` 这种自相矛盾的标注。
-    /// 现在把"所属 App 是否在运行"一并采集，交给 `CleanItem.recommendation` 统一出结论。
+    /// 现在把"是否正在被使用"一并采集，交给 `CleanItem.recommendation` 统一出结论。
+    ///
+    /// **本次修复的核心**：原先写的是 `ownerIsRunning: owner?.isRunning ?? false`——
+    /// 把"查不到归属"（nil，未知）折叠成了"确定没在运行"（false，事实）。
+    /// 而 `CleanPaths.ownerApp` 只在 7 个硬编码根目录（Caches / Containers /
+    /// Application Support / Logs / Preferences / Saved Application State /
+    /// Group Containers）下才认得出归属，`~/Library/Developer`、`~/.gradle`、
+    /// `~/.npm`、`~/Library/Android`、`/var/folders` 全在覆盖范围之外，
+    /// 于是这些位置上**有没有进程正在写它们，判定引擎根本无从得知却照样判"没在用"**。
+    ///
+    /// 现在改为两条独立证据，且方向信息不再丢失：
+    ///   ① 名字匹配命中运行中的 App → `.running`（快，但有漏判）；
+    ///   ② `ProcessOccupancy` 用 lsof 实测有没有进程持有它或它下面的文件 → 命中则 `.running`；
+    ///   ③ 认出了归属且没在跑、也没人持有 → `.notRunning`（**有证据**的"没在用"）；
+    ///   ④ 认不出归属、也没有占用者 → `.unknown`（**没有证据**，不得据此判"可清理"）。
     ///
     /// 对主路径检测；**聚合项**（`paths` 多条、主路径是父目录）改为直接量自己要删的那些路径。
     ///
@@ -390,13 +423,29 @@ final class Scanner {
             ? FileSystem.usage(ofPaths: item.paths)
             : FileSystem.usage(of: item.path)
         let owner = CleanPaths.ownerApp(of: item.path)
+        // 实测占用者。整轮扫描共用一份 lsof 转储（见 ProcessOccupancy.ensureFresh），
+        // 不是每个清理项 fork 一次。
+        let holders = ProcessOccupancy.holders(ofPaths: item.paths)
+
+        let ownerState = deriveOwnerState(ownerKnown: owner != nil,
+                                          ownerRunning: owner?.isRunning == true,
+                                          holders: holders)
+
+        // 文案用的名字：实测持有者优先于"认出来但没在跑"的归属名。
+        let ownerName: String? = {
+            if owner?.isRunning == true { return owner?.displayName ?? owner?.identifier }
+            if let first = holders.first { return first }
+            return owner?.displayName ?? owner?.identifier
+        }()
+
         var copy = item
         copy.use = UseState(
-            ownerIsRunning: owner?.isRunning ?? false,
-            ownerName: owner?.displayName ?? owner?.identifier,
+            ownerState: ownerState,
+            ownerName: ownerName,
             lastUsed: info.lastUsed,
             level: info.level,
-            observedAt: Date()
+            observedAt: Date(),
+            holders: holders
         )
         return copy
     }

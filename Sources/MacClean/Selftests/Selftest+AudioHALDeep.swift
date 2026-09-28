@@ -552,6 +552,59 @@ extension Selftest {
             // 清理期间不许并发重启 coreaudiod
             return try button("audioRestartButton", in: busy).isDisabled()
         }
+
+        // ── v1.73.13 求体积口径统一（R2-P2-11 收编）──────────────────────────
+
+        check("AudioHAL: Metrics 与 FileSystem.directoryStats 同树逐项相等（口径收编 b/d/e）") {
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            FileSystem.resetDeniedAccess()
+            let root = statsFixtureTree("hal")
+            defer {
+                removeStatsFixtureTree(root)
+                FileSystem.resetDeniedAccess()
+            }
+            let metrics = AudioHALScanner.calculateDirectoryMetrics(at: root)
+            let stats = FileSystem.directoryStats(at: root)
+            // b) size/fileCount/readable/mtime 逐项相等（mtime 走 `?? distantPast` 映射）
+            guard metrics.size == stats.size, metrics.fileCount == stats.fileCount,
+                  metrics.readable == stats.readable,
+                  metrics.mtime == (stats.newestModification ?? Date.distantPast) else {
+                print("      薄委托与共享实现不等：metrics=(\(metrics.size),\(metrics.fileCount),\(metrics.readable)) "
+                    + "stats=(\(stats.size),\(stats.fileCount),\(stats.readable))")
+                return false
+            }
+            // 样本断言：`?? Date.distantPast` 兜底不能吞掉真实 mtime（checklist §1）
+            guard metrics.mtime != Date.distantPast else {
+                print("      mtime 兜底成 distantPast——newestModification 丢了")
+                return false
+            }
+            // d) mode-000 子目录在场 → readable=false；000 内 secret.bin 不计入
+            guard metrics.readable == false else {
+                print("      夹具含 mode-000 子目录却仍 readable=true")
+                return false
+            }
+            let totals = statsFixtureTotals(root: root)
+            guard metrics.fileCount == 4, metrics.fileCount == totals.fileCount else {
+                print("      fileCount=\(metrics.fileCount) ≠ 4（000 内文件/隐藏文件/软链被计入了）")
+                return false
+            }
+            // e) 稀疏文件按 allocated 计：远小于逻辑大小；可见实数据不许全变 0
+            guard metrics.size == totals.allocated, metrics.size >= 20_000,
+                  totals.logical > 1_000_000, metrics.size < totals.logical / 8 else {
+                print("      size=\(metrics.size) 实占合计=\(totals.allocated) 逻辑合计=\(totals.logical)"
+                    + "——allocated 口径没生效或实数据没算到")
+                return false
+            }
+            // 软链不进 mtime 账（变异①判红锚点：link-to-file 自身 mtime 钉在 2030）
+            guard metrics.mtime < statsFixtureFutureMtime else {
+                print("      mtime=\(metrics.mtime) ≥ 2030 锚点——软链被计入了 mtime 账")
+                return false
+            }
+            return true
+        }
     }
 }
 

@@ -58,6 +58,35 @@ struct SidebarView: View {
                     navRow(.startupItems, title: "启动项管理", icon: "bolt.horizontal.circle")
                         .accessibilityIdentifier("toolRow_启动项管理")
 
+                    // 文件粉碎器：不可恢复删除的极端档。只对用户逐条点名的路径，
+                    // 永远不出现在任何扫描结果的默认勾选里。
+                    navRow(.shredder, title: "文件粉碎器", icon: "flame")
+                        .accessibilityIdentifier("toolRow_文件粉碎器")
+
+                    // 系统体验优化：改偏好（可还原），不是删文件。放在「工具」里而不是
+                    // 「清理」里，是因为它一条可清理项都不产出。
+                    navRow(.systemOptimize, title: "体验优化", icon: "slider.horizontal.3")
+                        .accessibilityIdentifier("toolRow_体验优化")
+
+                    // App 更新检查：默认关闭；开启后只访问 App 自己声明的更新源，
+                    // 只列示与跳转，不代下载不代装。
+                    navRow(.appUpdate, title: "App 更新检查", icon: "arrow.triangle.2.circlepath")
+                        .accessibilityIdentifier("toolRow_App 更新检查")
+
+                    // 维护面板（v1.73.15）：磁盘 First Aid / DNS 刷新 / Spotlight 索引重建，
+                    // 全部逐条确认，外部命令走 SafeProcess。
+                    navRow(.maintenance, title: "系统维护", icon: "wrench.and.screwdriver")
+                        .accessibilityIdentifier("toolRow_系统维护")
+
+                    // 浏览器隐私痕迹（v1.73.15）：按 (浏览器 × 数据类) 一格一判据，
+                    // 默认全不选、危险格带警示；Safari 侧 TCC 读不到时明示。
+                    navRow(.browserPrivacy, title: "浏览器隐私", icon: "globe")
+                        .accessibilityIdentifier("toolRow_浏览器隐私")
+
+                    // Mail 附件清理（v1.73.15）：附件本体是用户数据，只列示、零默认勾选。
+                    navRow(.mailAttachments, title: "邮件附件", icon: "envelope")
+                        .accessibilityIdentifier("toolRow_邮件附件")
+
                     navRow(.history, title: "清理历史", icon: "clock.arrow.circlepath",
                            trailing: app.history.isEmpty ? nil : "\(app.history.count)")
                         .accessibilityIdentifier("toolRow_清理历史")

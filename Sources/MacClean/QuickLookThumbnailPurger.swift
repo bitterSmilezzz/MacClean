@@ -39,11 +39,29 @@ public final class QuickLookThumbnailPurger {
     /// qlmanage 可执行文件路径。**自检注入点**：指向不存在的路径即可演练"工具不可用"分支。
     static var qlmanagePath = "/usr/bin/qlmanage"
 
+    /// `getDarwinUserCacheDir()` 的**自检注入点**（三态）：`nil` = 不干预（照常走 `confstr`）；
+    /// `.some(nil)` = 强制「拿不到」；`.some(.some(x))` = 强制返回 `x`。
+    /// v1.73.8 复审 P2 转下一轮补的缺口：QuickLook 的 G8 前置**只对 `customDirectories`
+    /// 生效**这条改动当年没有自检覆盖——默认候选是内部拿 `getDarwinUserCacheDir()` 拼的，
+    /// uid 0 档位下它是 `/private/var/folders/zz/…`（`isSystemProtected` 的 zz 条目命中区），
+    /// 谁把 G8 前置挪出 `isCustom` 分支，root 档位下面板就会把用户自己的缩略图缓存
+    /// 报成「这里没缓存」。有这条缝，自检才能喂任意根把默认链路整条跑起来。
+    /// 用锁保护：`scan` 会在扫描队列上读，自检在主线程写，不能靠时序。
+    private static let darwinOverrideLock = NSLock()
+    private static var _darwinUserCacheDirOverride: String?? = nil
+    static var darwinUserCacheDirOverride: String?? {
+        get { darwinOverrideLock.lock(); defer { darwinOverrideLock.unlock() }; return _darwinUserCacheDirOverride }
+        set { darwinOverrideLock.lock(); defer { darwinOverrideLock.unlock() }; _darwinUserCacheDirOverride = newValue }
+    }
+
     /// 重置系统缩略图缓存所需的两条命令（顺序执行，全部成功才算重置成功）
     static let qlmanageResetCommands: [[String]] = [["-r", "cache"], ["-r"]]
 
     /// 获取当前 macOS 系统用户的 Darwin 缓存根目录
     public static func getDarwinUserCacheDir() -> String? {
+        // 自检注入缝优先（见属性 doc comment）；生产代码不许赋值，
+        // 形状 lint 会盯着 `isSystemProtected(` 只出现在 isCustom 分支内。
+        if let overridden = darwinUserCacheDirOverride { return overridden }
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
         let len = confstr(_CS_DARWIN_USER_CACHE_DIR, &buffer, buffer.count)
         if len > 0 {

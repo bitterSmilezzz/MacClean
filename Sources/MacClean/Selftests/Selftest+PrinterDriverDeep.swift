@@ -547,6 +547,68 @@ extension Selftest {
             // 重入时"重新扫描"也要一起禁用，否则并发扫盘会覆盖清理结果
             return try button("printerReloadButton", in: busy).isDisabled()
         }
+
+        // ── v1.73.13 求体积口径统一（R2-P2-11 收编）──────────────────────────
+
+        check("PrinterDriver: 扫描条目体积与 FileSystem.directoryStats 同源（口径收编 c/d/e）") {
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            FileSystem.resetDeniedAccess()
+            let dir = printerFixtureDir("stats-unify")
+            let printers = (dir as NSString).appendingPathComponent("Printers")
+            try? FileManager.default.createDirectory(atPath: printers, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            // 夹具树直接长在扫描根的一个条目位置上（条目名不以 . 开头）
+            let entry = (printers as NSString).appendingPathComponent("LegacyVendor")
+            try? FileManager.default.createDirectory(atPath: entry, withIntermediateDirectories: true)
+            let root = buildStatsFixtureTree(at: entry)
+            defer {
+                removeStatsFixtureTree(root)
+                FileSystem.resetDeniedAccess()
+            }
+            // c) 走公开扫描入口（证据显式注入，不碰真实 /etc/cups）
+            let summary = PrinterDriverScanner.shared.scan(
+                customPrinterDirs: [printers], customUserPrinterDirs: [],
+                customCupsDir: nil,
+                evidence: PrinterEvidence(keywords: [], sourcesReadable: true))
+            guard let item = summary.items.first(where: { $0.path == entry }) else {
+                print("      夹具根没有出条目：\(summary.items.map(\.path))")
+                return false
+            }
+            let stats = FileSystem.directoryStats(at: item.path)
+            guard item.size == stats.size, item.fileCount == stats.fileCount else {
+                print("      条目(\(item.size),\(item.fileCount)) ≠ directoryStats"
+                    + "(\(stats.size),\(stats.fileCount))——scan 与共享 walker 不是同一口径")
+                return false
+            }
+            // d) 夹具含 mode-000 子目录 → 条目降级为需确认且不默认勾选
+            guard item.status == .needsConfirmation, !item.isSelected,
+                  item.evidenceNote?.contains("无法读取") == true else {
+                print("      残缺树没走需确认降级：status=\(item.status.rawValue) selected=\(item.isSelected)")
+                return false
+            }
+            // d) 000 内 secret.bin / 隐藏 / 软链都不计入 → 恰好 4 个普通文件
+            let totals = statsFixtureTotals(root: root)
+            guard item.fileCount == 4, item.fileCount == totals.fileCount else {
+                print("      fileCount=\(item.fileCount) ≠ 4（000 内文件/隐藏文件/软链被计入了）")
+                return false
+            }
+            // e) 稀疏文件按 allocated 计（变异②判红锚点）：远小于逻辑合计
+            guard item.size == totals.allocated, item.size >= 20_000,
+                  totals.logical > 1_000_000, item.size < 512_000 else {
+                print("      size=\(item.size) 实占合计=\(totals.allocated) 逻辑合计=\(totals.logical)"
+                    + "——allocated 口径没生效或实数据没算到")
+                return false
+            }
+            // 软链不进 mtime 账（变异①判红锚点：link-to-file 自身 mtime 钉在 2030）
+            guard item.modificationDate < statsFixtureFutureMtime else {
+                print("      modificationDate=\(item.modificationDate) ≥ 2030 锚点——软链被计入了 mtime 账")
+                return false
+            }
+            return true
+        }
     }
 }
 
@@ -593,10 +655,18 @@ func printerFixtureDir(_ name: String) -> String {
 /// 读源码做文案级断言（沿用 `Selftest+Accessibility` 的既有做法）。
 /// 用 `#filePath` 定位模块目录，因此**不依赖运行时的工作目录**。
 enum SelftestSource {
+    /// 读产品源码文件。**不依赖运行时 CWD**：`#filePath` 是编译期锚点，产品源码就在
+    /// 本文件所在 `Selftests/` 的上一级。
+    /// 上一版先探同目录（必然落空），再回落到相对路径 `Sources/MacClean/…`——那条只在
+    /// CWD = 仓库根时成立，从别处跑 `--selftest` 会让 6 条源码接线自检以"源码不可读"红掉
+    /// （v1.73.10 二次复审 P2-8：门禁信号被 CWD 吃掉时，真缺陷就藏在这种噪音里）。
     static func read(_ file: String, from here: String = #filePath) -> String? {
         let dir = (here as NSString).deletingLastPathComponent
-        let probe = (dir as NSString).appendingPathComponent("\(file).swift")
+        let parent = (dir as NSString).deletingLastPathComponent
+        let probe = (parent as NSString).appendingPathComponent("\(file).swift")
         if let src = try? String(contentsOfFile: probe, encoding: .utf8) { return src }
-        return try? String(contentsOfFile: "Sources/MacClean/\(file).swift", encoding: .utf8)
+        // 兜底：子目录里的产品文件（`Rules/` 等），按调用方给的相对写法直接拼。
+        return try? String(contentsOfFile: (parent as NSString).appendingPathComponent(file + ".swift"),
+                           encoding: .utf8)
     }
 }

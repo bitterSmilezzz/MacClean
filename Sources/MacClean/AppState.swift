@@ -21,6 +21,15 @@ final class AppState: ObservableObject {
     @Published var lastCleanSummary: String?
     @Published var lastCleanResult: CleanResultSnapshot?
     @Published var showCleanResultSheet: Bool = false
+    /// 扫描前的权限门。非 nil = 有一个待用户处理的"缺 FDA"提示，且**该次扫描尚未启动**。
+    @Published var permissionGate: PermissionGate?
+    /// 用户在本会话里是否已明确选过"仍然扫描（不授权）"。
+    ///
+    /// 只存内存、不落盘：缺权限是**这一次**的事，下次启动该再问一遍。
+    /// 落盘会把"上次我点了算了"变成永久静音，那正好丢掉这个功能的意义。
+    private var fdaAcknowledgedWithoutAccess = false
+    /// 打开系统设置失败（老系统没有该 URL scheme）→ 界面上要给出"去哪儿点"而不是静默。
+    @Published var permissionSettingsOpenFailed = false
     @Published var history: [CleanRecord] = []
     let uninstaller = UninstallerState()
     var ai = AIState()   // 需为 var：Binding（$app.ai.xxx）不能穿过 let 属性
@@ -32,6 +41,9 @@ final class AppState: ObservableObject {
     var whitelist = WhitelistManager.shared
     /// 重复文件扫描与清理状态
     var duplicateState = DuplicateState()
+    /// 系统使用体验优化（改偏好，可还原）——唯一一种"非删除类副作用"的状态。
+    /// 放在 AppState 里而不是页面里，是为了让 ⌘R 在当前页也能重新读取现状。
+    let tweaks = SystemTweakState()
 
     // MARK: - 风险检查（电脑风险提醒）
     @Published var riskItems: [RiskItem] = []
@@ -134,7 +146,22 @@ final class AppState: ObservableObject {
 
     /// 侧边栏统计：已扫描分类数 / 可清理总量
     var scannedCount: Int { categories.filter { $0.isScanned }.count }
-    var totalCleanable: Int64 { categories.reduce(0) { $0 + $1.totalSize } }
+
+    /// **真的可以清理**的体积之和（只算结论为「可清理 / 确定是垃圾」的项）。
+    ///
+    /// 这是界面上所有"可清理"字样的**唯一**口径：仪表盘大字、侧边栏、菜单栏、
+    /// 存储占比条、逐分类占比。
+    ///
+    /// 历史缺陷：这里原本是 `reduce { $0 + $1.totalSize }`，即"扫到多少"而不是
+    /// "能清多少"，把「勿删」「使用中」「需确认」全部算进了"可清理"。
+    /// 真机实测：大字 8.91 GB，而"全选"实际只勾得动 5.75 GB，差额里含一个
+    /// 0.62 GB 明确标着「勿删」的文件。用户在动手前看到的数字必须是他能清掉的量，
+    /// 否则那个数字不是信息，是误导。要看"扫到多少"请用 `totalScannedSize`。
+    var totalCleanable: Int64 { categories.reduce(0) { $0 + $1.safeSize } }
+
+    /// 本次扫描一共看到了多少体积（含不可清理的部分）。给"构成"类展示用。
+    var totalScannedSize: Int64 { categories.reduce(0) { $0 + $1.totalSize } }
+
     var totalSelected: Int64 { categories.reduce(0) { $0 + $1.selectedSize } }
     var totalSelectedCount: Int { categories.reduce(0) { $0 + $1.selectedCount } }
 
@@ -207,10 +234,85 @@ final class AppState: ObservableObject {
     }
 
     func scan(_ cat: CleanCategory) {
+        // 权限门：缺 FDA 时**先问再扫**，而不是扫完安静地少报一批位置。
+        // 放在这里（所有交互式单类扫描的唯一入口）而不是各个 View 里，
+        // 是为了让 Dashboard / 侧边栏 / 快捷键 / 检索页 / 空间审计页
+        // 这几条路径不可能有一条漏掉这道门。
+        guard passPermissionGate(unattended: false, category: cat) else { return }
         // 用户在屏幕前亲手点的扫描：允许主动打开可能被 TCC 拒掉的目录（真机实测会弹出
         // "想访问其他 App 的数据"的模态框，这正是人不在时不能弹的东西）。
         FileSystem.proactiveBlindSpotProbe = true
         scan(cat, resetMeasurementSession: true)
+    }
+
+    // MARK: - 扫描前的权限门
+
+    /// 过权限门。返回 false = 已被拦下（`permissionGate` 已就位，等待用户在弹窗里选），
+    /// 调用方**不得**继续启动扫描。
+    private func passPermissionGate(unattended: Bool, category: CleanCategory?) -> Bool {
+        let gate = PermissionGuide.scanGate(
+            unattended: unattended,
+            hasFullDiskAccess: PermissionGuide.hasFullDiskAccess,
+            acknowledgedWithoutFDA: fdaAcknowledgedWithoutAccess)
+        switch gate {
+        case .proceed:
+            return true
+        case .needsFullDiskAccess:
+            permissionGate = PermissionGate(category: category)
+            return false
+        }
+    }
+
+    /// 弹窗里选「仍然扫描」：记住本会话的选择，并把刚才被拦下的那一次扫描补上。
+    func proceedScanWithoutFullDiskAccess() {
+        let pending = permissionGate
+        permissionGate = nil
+        fdaAcknowledgedWithoutAccess = true
+        replayScan(pending)
+    }
+
+    /// 被拦下的那一次扫描怎么重放。抽出来是为了让自检能验证
+    /// "确认之后不再拦截"这条性质，而不必真的起一轮扫描。
+    func replayScan(_ pending: PermissionGate?) {
+        switch pending?.category {
+        case .some(let cat):
+            scan(cat)
+        case .none:
+            scanAll()
+        }
+    }
+
+    /// 仅供诊断与自检：当前这一次**交互式**扫描会不会被权限门拦下。
+    ///
+    /// 存在的理由：这条判据最容易出的错是"确认过之后还在拦"（无限弹窗），
+    /// 而直接调 `scanAll()` 去验会真的启动一轮全量扫描——测试不该有这种副作用。
+    var wouldGateInteractiveScan: Bool {
+        PermissionGuide.scanGate(unattended: false,
+                                 hasFullDiskAccess: PermissionGuide.hasFullDiskAccess,
+                                 acknowledgedWithoutFDA: fdaAcknowledgedWithoutAccess)
+            == .needsFullDiskAccess
+    }
+
+    /// 自检专用：模拟用户已经选过「仍然扫描」。
+    /// 生产路径的唯一写入点是 `proceedScanWithoutFullDiskAccess`。
+    /// 与 `PermissionGuide.fdaProbeOverride`、`AIService.networkDisabled` 同一套路——
+    /// 让"缺权限"这条分支能被真正走到，而不是只能靠人工去系统设置里拔授权。
+    func acknowledgeFullDiskAccessAbsenceForTesting() {
+        fdaAcknowledgedWithoutAccess = true
+    }
+
+    /// 弹窗里选「去系统设置授权」。
+    ///
+    /// 不复用 `PermissionGuide.openSettings()` 的返回值就丢掉的写法——那样点了没反应
+    /// 用户只会以为按钮坏了。失败时把 `permissionSettingsOpenFailed` 置真，界面负责
+    /// 改成"手动去 系统设置 → 隐私与安全性 → 完全磁盘访问权限 勾选 MacClean"。
+    func openPermissionSettings() {
+        permissionSettingsOpenFailed = !PermissionGuide.openSettings()
+    }
+
+    /// 关掉弹窗但**不**开始扫描（用户选了"稍后"）。
+    func dismissPermissionGate() {
+        permissionGate = nil
     }
 
     /// - Parameter resetMeasurementSession: 是否顺带开启新的测量会话。
@@ -261,6 +363,11 @@ final class AppState: ObservableObject {
     /// 而不是等全部做完才一次性显示。同时记录整轮扫描耗时供 Dashboard 展示。
     func scanAll(unattended: Bool = false) {
         guard !isScanningAll, !isCleaning else { return }
+        // 权限门必须在**设 `isScanningAll`、开 `proactiveBlindSpotProbe` 之前**：
+        // 被拦下时不能留下"正在扫描"的假状态，也不能把进程级探测开关翻掉
+        // （那正是 AppState:212 那类"被拒的点击仍然改了全局状态"的老毛病）。
+        // 无人值守那一路由 `scanGate` 内部直接放行，绝不弹窗。
+        guard passPermissionGate(unattended: unattended, category: nil) else { return }
         FileSystem.proactiveBlindSpotProbe = !unattended
 
         // 重置进度与增量缓存统计
@@ -381,7 +488,14 @@ final class AppState: ObservableObject {
             scanRisks()
         case .duplicates:
             duplicateState.startScan()
-        case .spaceTreemap, .startupItems:
+        case .systemOptimize:
+            // 这一页的"刷新"= 重新读取系统设置的现状（只读）。
+            // 它不扫描磁盘：体验优化页与清理链路没有任何关系。
+            tweaks.refresh()
+        case .spaceTreemap, .startupItems, .shredder, .appUpdate,
+             .maintenance, .browserPrivacy, .mailAttachments:
+            // 粉碎器按用户点名即时动作；更新检查的网络访问只在用户显式点「检查更新」时发生；
+            // 维护/浏览器隐私/邮件附件三页各自在自己的动作里即时取数，没有"上一轮扫描结果"可刷新。
             break
         }
     }
@@ -661,14 +775,108 @@ final class AppState: ObservableObject {
     /// `cleanSelectedAcrossCategories` 清的是"当前所有已选"。若这里只补勾，
     /// 那些预勾项就会被顺带删掉——可它们里面有的过不了本函数自己的第二道门槛（近期写过）。
     /// 自动动手的范围只能由自动动手的那段逻辑自己划定，不能被上游的默认值撑大。
+    /// 「一键安全速清」的**唯一**判据：工具可以替用户自动勾选的范围。
+    ///
+    /// ## 三档口径（不要混为一谈）
+    ///
+    /// | 档 | 判据 | 谁在动 | 有没有二次确认 |
+    /// |---|---|---|---|
+    /// | 使用中 | 有进程持有 / 10 分钟内写过 | 谁都不许 | — |
+    /// | 可清理 | ≥3 天没写过 + 无持有（`cleanableIdleWindow`） | 你：勾选 / 全选 / 一键速清 | **有** |
+    /// | 无人值守 | 再额外要求 ≥30 天没写过（`isRecentlyUsed`） | 定时删除（没人看着） | 没有，所以最严 |
+    ///
+    /// 早先"一键速清"也在第二张表里（没有确认，所以要求 30 天）。现在给它补上了
+    /// **确认弹窗**（`pendingQuickClean`：先算出"将会清哪些"给用户看，确认了才动手），
+    /// 于是它不必再靠一个更严的年龄门槛来代替确认——它和"全选"同为**用户看着点**的动作，
+    /// 用同一条 3 天线；真正没人看着的那些（`AutoCleanService` / `DiskMonitor`）
+    /// 仍然保留 30 天，那是另一张表，不在这里。
+    ///
+    /// 抽成唯一一份判据的理由：按钮上写着"一键安全速清 (X)"，那 X 必须**逐字等于**
+    /// 这里会勾掉的量。两处各写一份判据，迟早分叉成"按钮承诺 8 GB、实际清 0.01 GB"——
+    /// 那种数字不是信息，是误导。
+    static func isQuickCleanable(_ item: CleanItem, isWhitelisted: (String) -> Bool) -> Bool {
+        item.recommendation.isSafe            // 结论轴：已排除"使用中 / 需确认 / 勿删"
+            && !isWhitelisted(item.path)
+    }
+
+    // MARK: - 一键速清：先预览再确认
+
+    /// 一键速清的待确认预览。
+    ///
+    /// 为什么需要它：一键速清**没有逐项勾选**，在此之前它靠"30 天内动过就不碰"这个
+    /// 更严的年龄门槛来代替确认。与其用一个更严的闸门去替代确认，不如把确认补上，
+    /// 然后如实告诉用户这次会清什么、其中多少是"最近还动过"的。
+    struct QuickCleanPreview: Equatable {
+        enum Kind: Equatable { case safe, smart }
+
+        let kind: Kind
+        let count: Int
+        let bytes: Int64
+        /// 其中"30 天内动过"的条数。**必须说出来**：那是这次动作的代价所在。
+        let recentlyUsedCount: Int
+        /// 其中"未设置最近写入时间、靠归属证据判定的"条数
+        let unknownAgeCount: Int
+    }
+
+    /// 非 nil = 有一个待用户确认的一键速清。
+    @Published var pendingQuickClean: QuickCleanPreview?
+
+    /// 算出预览，**不改动任何状态**（不勾选、不清理）。
+    func previewQuickClean(_ kind: QuickCleanPreview.Kind) -> QuickCleanPreview {
+        let wl = whitelist
+        let targets: [CleanItem]
+        switch kind {
+        case .safe:
+            targets = categories.flatMap { st in
+                st.items.filter { Self.isQuickCleanable($0, isWhitelisted: { wl.isWhitelisted(path: $0) }) }
+            }
+        case .smart:
+            targets = smartRecommendedItems
+        }
+        return QuickCleanPreview(
+            kind: kind,
+            count: targets.count,
+            bytes: targets.reduce(Int64(0)) { $0 + $1.size },
+            recentlyUsedCount: targets.filter { $0.usage.isRecentlyUsed }.count,
+            unknownAgeCount: targets.filter { $0.use.lastUsed == nil }.count)
+    }
+
+    func requestQuickClean(_ kind: QuickCleanPreview.Kind) {
+        let preview = previewQuickClean(kind)
+        guard preview.count > 0 else {
+            lastCleanSummary = "没有可直接速清的项：当前没有「≥3 天没动过且没有进程持有」的内容"
+            return
+        }
+        pendingQuickClean = preview
+    }
+
+    func confirmQuickClean() {
+        guard let preview = pendingQuickClean else { return }
+        pendingQuickClean = nil
+        switch preview.kind {
+        case .safe: quickCleanSafeItems()
+        case .smart: quickCleanSmartRecommendations()
+        }
+    }
+
+    func cancelQuickClean() { pendingQuickClean = nil }
+
     static func applyQuickCleanSelection(_ items: [CleanItem],
                                          isWhitelisted: (String) -> Bool) -> [CleanItem] {
         items.map { item in
             var copy = item
-            copy.isSelected = copy.recommendation.isSafe
-                && !copy.usage.isRecentlyUsed
-                && !isWhitelisted(copy.path)
+            copy.isSelected = Self.isQuickCleanable(item, isWhitelisted: isWhitelisted)
             return copy
+        }
+    }
+
+    /// 「一键安全速清」真正会清掉的体积。**与 `applyQuickCleanSelection` 共用同一判据**，
+    /// 所以按钮上的数字不可能比实际动作大。自检里有断言把这两者钉在一起。
+    var quickCleanableBytes: Int64 {
+        let wl = whitelist
+        return categories.reduce(Int64(0)) { sum, st in
+            sum + st.items.filter { Self.isQuickCleanable($0, isWhitelisted: { wl.isWhitelisted(path: $0) }) }
+                .reduce(Int64(0)) { $0 + $1.size }
         }
     }
 

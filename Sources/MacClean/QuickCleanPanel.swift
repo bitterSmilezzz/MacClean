@@ -173,6 +173,22 @@ struct QuickCleanPanelView: View {
                 .strokeBorder(Surface.hairline.opacity(0.6), lineWidth: 1)
         )
         .accessibilityIdentifier("quickCleanPanel")
+        // 一键速清的二次确认：先把"将会清哪些"摆出来（条数、体积、其中多少项最近还动过），
+        // 确认了才动手。这条确认是"把更严的年龄门槛换回来"的前提条件。
+        .confirmationDialog(
+            app.pendingQuickClean.map { "确认速清 \($0.count) 项（\($0.bytes.byteStringCN)）" }
+                ?? "确认速清",
+            isPresented: Binding(get: { app.pendingQuickClean != nil },
+                                 set: { if !$0 { app.cancelQuickClean() } }),
+            titleVisibility: .visible
+        ) {
+            Button("移入废纸篓（可恢复）", role: .destructive) { app.confirmQuickClean() }
+            Button("取消", role: .cancel) { app.cancelQuickClean() }
+        } message: {
+            if let preview = app.pendingQuickClean {
+                Text(QuickCleanConfirmText.message(preview))
+            }
+        }
     }
 
     // MARK: - 顶栏
@@ -309,8 +325,12 @@ struct QuickCleanPanelView: View {
             return "极速释放选中项 (\(app.totalSelected.byteStringCN))"
         } else if app.smartRecommendedBytes > 0 {
             return "一键极速推荐瘦身 (\(app.smartRecommendedBytes.byteStringCN))"
-        } else if app.totalCleanable > 0 {
-            return "一键安全速清 (\(app.totalCleanable.byteStringCN))"
+        } else if app.quickCleanableBytes > 0 {
+            // 承诺的量必须**逐字等于**这次真会清掉的量：`quickCleanableBytes` 与
+            // `applyQuickCleanSelection` 共用同一个判据（`AppState.isQuickCleanable`）。
+            // 早先这里用的是 `totalCleanable`（当时等于"扫到的全部"），
+            // 于是按钮写着"安全速清 8.91 GB"、实际只勾得动 5.75 GB。
+            return "一键安全速清 (\(app.quickCleanableBytes.byteStringCN))"
         } else {
             return "一键深度扫描与释放"
         }
@@ -320,9 +340,16 @@ struct QuickCleanPanelView: View {
         if app.totalSelected > 0 {
             app.cleanSelectedAcrossCategories(permanently: false)
         } else if app.smartRecommendedBytes > 0 {
-            app.quickCleanSmartRecommendations()
-        } else if app.totalCleanable > 0 {
-            app.quickCleanSafeItems()
+            // **先预览再确认**：一键速清没有逐项勾选，所以要先把"将会清哪些"摆出来。
+            // 以前它靠"30 天内动过就不碰"这个更严的年龄门槛来代替确认；
+            // 与其用门槛替代确认，不如把确认补上，然后如实报出代价（多少项最近还动过）。
+            app.requestQuickClean(.smart)
+            return
+        } else if app.quickCleanableBytes > 0 {
+            // 判据与标题同一个：标题说有多少，这里就清多少，不会出现
+            // "按钮说有 8 GB 可清、点下去却什么都不清"的错位。
+            app.requestQuickClean(.safe)
+            return
         } else {
             app.scanAll()
             return
@@ -417,5 +444,29 @@ struct VisualEffectBlur: NSViewRepresentable {
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
+    }
+}
+
+// MARK: - 一键速清的确认文案
+
+/// 一键速清确认弹窗的正文。
+///
+/// **两处入口共用这一份**（快速清理面板 + 菜单栏浮窗）。写两份的后果是可预期的：
+/// 同一个动作从两个地方点，一个说清了代价、一个没说清，用户会觉得工具在骗人。
+///
+/// 内容上必须包含**代价**：这次会清的东西里有多少是"30 天内还动过"的——
+/// 那正是用户需要自己权衡的部分（重新下载/重新生成要时间）。
+enum QuickCleanConfirmText {
+    static func message(_ preview: AppState.QuickCleanPreview) -> String {
+        var text = "将清理 \(preview.count) 项，共 \(preview.bytes.byteStringCN)，全部移入废纸篓（可恢复）。"
+        if preview.recentlyUsedCount > 0 {
+            text += "\n\n其中 \(preview.recentlyUsedCount) 项 30 天内还动过——"
+                + "它们重新下载 / 重新生成需要时间，请确认这段时间不需要它们。"
+        }
+        if preview.unknownAgeCount > 0 {
+            text += "\n另有 \(preview.unknownAgeCount) 项测不到最近写入时间，仅凭归属证据判定。"
+        }
+        text += "\n\n这些都不含「使用中 / 需确认 / 勿删」的项。"
+        return text
     }
 }

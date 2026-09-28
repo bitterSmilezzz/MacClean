@@ -540,5 +540,198 @@ extension Selftest {
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
         }
+
+        // ── v1.73.13 求体积口径统一（R2-P2-11 收编）──────────────────────────
+        // 四个模块各自的递归 walker 已删除，统一委托 `FileSystem.directoryStats`。
+        // 下面两族断言钉住新口径：a/d 走 CLICache 元组，e 走稀疏/软链/隐藏/软链-mtime。
+
+        check("CLICache: calculateDirectoryStats 与 FileSystem.directoryStats 同树逐项相等（口径收编 a/d）") {
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            FileSystem.resetDeniedAccess()
+            let root = statsFixtureTree("cli")
+            defer {
+                removeStatsFixtureTree(root)
+                FileSystem.resetDeniedAccess()
+            }
+            let fm = FileManager.default
+            // 夹具样本断言先立住：稀疏文件是真稀疏（`?? 0` 兜底不能吞掉真实值）、
+            // 软链/隐藏/000 子项都在场
+            let sv = try? URL(fileURLWithPath: root + "/sparse.bin")
+                .resourceValues(forKeys: [.fileSizeKey, .totalFileAllocatedSizeKey])
+            guard sv?.fileSize == 1_048_576, (sv?.totalFileAllocatedSize ?? 65_536) < 65_536 else {
+                print("      夹具不成立：sparse logical=\(sv?.fileSize ?? -1) "
+                    + "alloc=\(sv?.totalFileAllocatedSize ?? -1)")
+                return false
+            }
+            // locked_000 已是 mode 000：对它**内部**的条目 stat 会 EACCES，fileExists
+            // 返回 false（fixture 自检时踩过）——所以这里只验目录本身在场；secret.bin
+            // 的存在性由「fileCount == 4 而非 5」的对比（d 族断言）承担，builder 在
+            // 上锁之前就已把文件建好。
+            guard fm.fileExists(atPath: root + "/locked_000"),
+                  fm.fileExists(atPath: root + "/.hidden"),
+                  fm.fileExists(atPath: root + "/link-to-file"),
+                  fm.fileExists(atPath: root + "/link-to-dir") else {
+                print("      夹具不成立：软链/隐藏/000 子项缺失")
+                return false
+            }
+
+            let tuple = CLICacheScanner.calculateDirectoryStats(at: root)
+            let stats = FileSystem.directoryStats(at: root)
+            guard tuple.size == stats.size, tuple.fileCount == stats.fileCount,
+                  tuple.readable == stats.readable else {
+                print("      薄委托与共享实现不等：tuple=(\(tuple.size),\(tuple.fileCount),\(tuple.readable)) "
+                    + "stats=(\(stats.size),\(stats.fileCount),\(stats.readable))")
+                return false
+            }
+
+            let totals = statsFixtureTotals(root: root)
+            // d) mode-000 子目录在场 → readable 必须翻假（size 是"至少这么多"）
+            guard tuple.readable == false else {
+                print("      夹具含 mode-000 子目录却仍 readable=true")
+                return false
+            }
+            // d) 000 内 secret.bin 不计入；软链/隐藏也不计 → 恰好 4 个普通文件
+            guard tuple.fileCount == 4, tuple.fileCount == totals.fileCount else {
+                print("      fileCount=\(tuple.fileCount) ≠ 4（000 内文件/隐藏文件/软链被计入了）")
+                return false
+            }
+            guard tuple.size == totals.allocated else {
+                print("      size=\(tuple.size) ≠ 可见文件实占合计 \(totals.allocated)")
+                return false
+            }
+            // e) 稀疏文件按 allocated 计：远小于逻辑大小（ftruncate 拉出的洞不算体积）
+            guard totals.logical > 1_000_000, tuple.size < totals.logical / 8 else {
+                print("      size=\(tuple.size) 逼近/超过逻辑合计 \(totals.logical)——allocated 口径没生效")
+                return false
+            }
+            // e) 反向样本：可见实数据（3×4KB + 8KB 稀疏实占）必须真的被算到，不许全变 0
+            guard tuple.size >= 20_000 else {
+                print("      size=\(tuple.size) 连可见实数据（≥20480）都没算到")
+                return false
+            }
+            return true
+        }
+
+        check("CLICache: 软链不进 mtime 账（口径收编 e，变异①判红锚点）") {
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            FileSystem.resetDeniedAccess()
+            let root = statsFixtureTree("cli-mtime")
+            defer {
+                removeStatsFixtureTree(root)
+                FileSystem.resetDeniedAccess()
+            }
+            // link-to-file 的自身 mtime 被 lutimes 钉在 2030（夹具全树唯一的未来时刻）。
+            // 夹具自证：resourceValues 读到的就是它自己（2030），不是跟随目标。
+            let linkMtime = try? URL(fileURLWithPath: root + "/link-to-file")
+                .resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            guard linkMtime == statsFixtureFutureMtime else {
+                print("      夹具不成立：link mtime=\(String(describing: linkMtime)) ≠ 2030 锚点")
+                return false
+            }
+            // 软链一旦被计入 mtime 账（变异①摘掉软链 continue），newestModification
+            // 就会跳到这个固定未来时刻——那正是"删一条软链却把它的 mtime 当树内最新"的错口径。
+            let stats = FileSystem.directoryStats(at: root)
+            guard let newest = stats.newestModification, newest < statsFixtureFutureMtime else {
+                print("      newestModification=\(String(describing: stats.newestModification)) "
+                    + "≥ 2030 锚点——软链被计入了 mtime 账")
+                return false
+            }
+            return true
+        }
     }
+}
+
+// MARK: - 统一求体积口径共享夹具（四个 Deep 套件共用，v1.73.13 R2-P2-11 收编）
+
+/// 2030-01-01：`statsFixtureTree` 把 link-to-file 的**软链自身 mtime**用 lutimes 钉在这里。
+/// 变异①（摘掉 `directoryStats` 的软链 continue）的确定性判红锚点：软链一旦计入 mtime 账，
+/// newestModification 就会跳到这个固定未来时刻。
+let statsFixtureFutureMtime = Date(timeIntervalSince1970: 1_893_456_000)
+
+/// 造一棵「统一口径」夹具树（NSTemporaryDirectory 下）。返回夹具根；**调用方负责清理**
+/// （用 `removeStatsFixtureTree`，先恢复 locked_000 权限再删）。
+///
+/// 构成（与断言族 a–e 一一对应）：
+/// - 3 个普通文件：a.bin / nested/b.bin / nested/deeper/c.bin（各 4KB）
+/// - 1 个稀疏文件 sparse.bin：8KB 实数据 + `ftruncate` 拉出 1MB 的洞
+///   （逻辑 ~1MB、实占 8KB——与 `dd seek` 同一产物形态，只是不额外起进程）
+/// - 软链两条：link-to-file（自身 mtime 钉在 2030）、link-to-dir
+/// - 隐藏文件 .hidden（2KB，默认口径不计）
+/// - mode-000 子目录 locked_000（内含 secret.bin，readable 契约用；root 下造不出，断言方自判）
+func statsFixtureTree(_ tag: String) -> String {
+    let root = FileSystem.normalizePath(
+        (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("MacCleanStatsFixture/\(tag)-\(UUID().uuidString)"))
+    try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+    return buildStatsFixtureTree(at: root)
+}
+
+/// 在**指定路径**上长出夹具树（PrinterDriver 套件要把夹具放到扫描根的条目位置上用）。
+/// 前置条件：`root` 目录已存在。返回传入的 root（归一化后）。
+func buildStatsFixtureTree(at root: String) -> String {
+    let fm = FileManager.default
+    try? fm.createDirectory(atPath: root + "/nested/deeper", withIntermediateDirectories: true)
+    fm.createFile(atPath: root + "/a.bin", contents: Data(repeating: 1, count: 4096))
+    fm.createFile(atPath: root + "/nested/b.bin", contents: Data(repeating: 2, count: 4096))
+    fm.createFile(atPath: root + "/nested/deeper/c.bin", contents: Data(repeating: 3, count: 4096))
+    let sparse = root + "/sparse.bin"
+    fm.createFile(atPath: sparse, contents: Data(repeating: 7, count: 8192))
+    if let fh = FileHandle(forWritingAtPath: sparse) {
+        _ = ftruncate(fh.fileDescriptor, 1_048_576)   // 中段成洞：逻辑 ~1MB，实占仍是 8KB
+        try? fh.close()
+    }
+    try? fm.createSymbolicLink(atPath: root + "/link-to-file", withDestinationPath: root + "/a.bin")
+    try? fm.createSymbolicLink(atPath: root + "/link-to-dir", withDestinationPath: root + "/nested")
+    // lutimes 不跟随软链：改的是链接自身的 mtime（已实测，resourceValues 读到的也是它自己）
+    var times = [timeval(tv_sec: 1_893_456_000, tv_usec: 0),
+                 timeval(tv_sec: 1_893_456_000, tv_usec: 0)]
+    _ = lutimes(root + "/link-to-file", &times)
+    fm.createFile(atPath: root + "/.hidden", contents: Data(repeating: 4, count: 2048))
+    let locked = root + "/locked_000"
+    try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+    fm.createFile(atPath: locked + "/secret.bin", contents: Data(repeating: 5, count: 4096))
+    try? fm.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked)
+    return FileSystem.normalizePath(root)
+}
+
+/// 删除 `statsFixtureTree` 造的夹具：先把 locked_000 的权限改回来再删整棵树。
+func removeStatsFixtureTree(_ root: String) {
+    try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                           ofItemAtPath: root + "/locked_000")
+    try? FileManager.default.removeItem(atPath: root)
+}
+
+/// 夹具树「可见普通文件」的独立合计（逐文件 resourceValues 求和，不经过被测实现）。
+/// 断言族 d/e 的样本锚——被测实现的 `?? 0` 兜底若全挂，这个和不会跟着变 0。
+/// 软链（isRegularFile=false）与隐藏项不计；locked_000 内的文件因权限天然不在枚举里。
+/// - Returns: (实占合计, 逻辑合计, 普通文件数)
+func statsFixtureTotals(root: String) -> (allocated: Int64, logical: Int64, fileCount: Int) {
+    let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
+                                  .totalFileAllocatedSizeKey]
+    var allocated: Int64 = 0
+    var logical: Int64 = 0
+    var count = 0
+    if let en = FileManager.default.enumerator(
+        at: URL(fileURLWithPath: root, isDirectory: true),
+        includingPropertiesForKeys: keys,
+        options: [.skipsHiddenFiles],
+        // 没有 errorHandler 时 Foundation 的语义是"第一个错误就停"——locked_000 会
+        // 把整趟合计截断，这里的合计就错了。与被测口径一致：跳过、继续走。
+        errorHandler: { _, _ in true }) {
+        for case let u as URL in en {
+            guard let v = try? u.resourceValues(forKeys: Set(keys)) else { continue }
+            if v.isRegularFile == true {
+                allocated += Int64(v.totalFileAllocatedSize ?? v.fileSize ?? 0)
+                logical += Int64(v.fileSize ?? 0)
+                count += 1
+            }
+        }
+    }
+    return (allocated, logical, count)
 }

@@ -303,15 +303,20 @@ extension Selftest {
                 return calls > 0 ? elapsed : .greatestFiniteMagnitude
             }
 
-            // 交替测两轮，各取较小值：热身那轮要付 dentry 缓存未命中的代价
-            let r1 = timedCalls { _ = FileSystem.realPath($0).count }
-            let g1 = timedCalls { _ = FileSystem.isSafeToClean($0) }
-            let r2 = timedCalls { _ = FileSystem.realPath($0).count }
-            let g2 = timedCalls { _ = FileSystem.isSafeToClean($0) }
-            let resolve = min(r1, r2)
-            let gate = min(g1, g2)
+            // 交替测多轮、各自取最小值：`min` 对"某一轮被调度抢占"天生免疫。
+            //
+            // 轮数从 2 提到 5 的原因是可复现的：编排模式（自检逐套件开子进程）会把
+            // 60 个套件依次跑起来，机器**持续**有负载，两轮时实测抖出过一次 3.0+；
+            // 而同一套件单独跑 3/3 稳定通过。这不是产品回归，是测量方式不够稳——
+            // 这条测试自己上面那段注释早写过同类教训（绝对阈值在并发构建时变红）。
+            var resolve = TimeInterval.greatestFiniteMagnitude
+            var gate = TimeInterval.greatestFiniteMagnitude
+            for _ in 0..<5 {
+                resolve = min(resolve, timedCalls { _ = FileSystem.realPath($0).count })
+                gate = min(gate, timedCalls { _ = FileSystem.isSafeToClean($0) })
+            }
             let ratio = resolve > 0 ? gate / resolve : .greatestFiniteMagnitude
-            print(String(format: "      200 项 × 2 轮：单次软链解析 %.1f ms，闸门判定 %.1f ms → %.1f 倍",
+            print(String(format: "      200 项 × 5 轮取最小：单次软链解析 %.1f ms，闸门判定 %.1f ms → %.1f 倍",
                          resolve * 1000, gate * 1000, ratio))
             // 上界 3.0 而不是更紧的值：判定至少要付一次软链解析（分母本身）
             // + 一次 `lstat`（末段软链判定）+ 一次 `normalizePath`，

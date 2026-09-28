@@ -60,6 +60,21 @@ enum AutoCleanService {
             print("⚠️ [AutoClean] 触发低空间紧急自愈模式：将进行全面深度安全释放")
         }
 
+        // 2.5 废纸篓自动清空（v1.73.14，独立开关）：与下面按分类扫描的候选**完全独立**——
+        // 废纸篓项不来自扫描结果，判据是「顶层条目 mtime 早于 N 天」。彻底删除、无撤销快照，
+        // 开关默认关；读不到废纸篓根时明示跳过（G9：读不到 ≠ 清空了 0 项）。
+        if let trash = TrashAutoEmptyService.emptyIfEnabled() {
+            if trash.rootUnreadable {
+                print("⚠️ [AutoClean] 废纸篓读不到（TCC/权限），本轮自动清空未执行")
+            } else {
+                var line = "[AutoClean] 废纸篓自动清空：删除 \(trash.cleaned) 项、释放 \(trash.freedBytes.byteStringCN)，跳过 \(trash.skippedRecent) 项（未到期或软链）"
+                if !trash.rejected.isEmpty || !trash.failed.isEmpty {
+                    line += "，拒绝 \(trash.rejected.count) / 失败 \(trash.failed.count) 项"
+                }
+                print(line)
+            }
+        }
+
         // 3. 规划扫描分类
         var categoriesToScan: [CleanCategory] = []
         if config.autoCleanUserCaches || triggerHeal {

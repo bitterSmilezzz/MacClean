@@ -125,5 +125,157 @@ extension Selftest {
             _ = FileSystem.hasFullDiskAccess()
             return true
         }
+
+        // MARK: - 废纸篓自动清空（v1.73.14）
+
+        check("废纸篓自动清空：开关关闭时是 no-op，不碰任何文件系统") {
+            // 注入 config（enabled=false），**永不**读真实 UserDefaults/真实废纸篓：
+            // 万一开发者本机开着这个开关，无注入的自检就会清空用户真废纸篓。
+            guard TrashAutoEmptyService.emptyIfEnabled(config: DiskMonitorConfig()) == nil else {
+                print("      默认配置（关）却执行了清空")
+                return false
+            }
+            guard TrashAutoEmptyService.emptyIfEnabled(
+                trashRoot: "/nonexistent-macclean-probe",
+                config: DiskMonitorConfig()) == nil else {
+                print("      默认配置（关）却执行了清空")
+                return false
+            }
+            return true
+        }
+
+        check("废纸篓自动清空：到期项删除、未到期保留、历史落账、无撤销快照") {
+            // 夹具放 /private/tmp：网关的常规放行根是主目录与 /private/tmp，
+            // 不含 per-user 的 /var/folders——生产路径 ~/.Trash 在主目录内不受影响，
+            // 夹具想经网关真删就必须落在放行根里（用 /var/folders 会全数被拒）。
+            let root = "/private/tmp/macclean-trash-fixture-\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(atPath: root) }
+            let fm = FileManager.default
+            let oldFile = (root as NSString).appendingPathComponent("old.txt")
+            let recentFile = (root as NSString).appendingPathComponent("recent.txt")
+            let oldDir = (root as NSString).appendingPathComponent("olddir")
+            fm.createFile(atPath: oldFile, contents: Data(repeating: 3, count: 4096))
+            fm.createFile(atPath: recentFile, contents: Data(repeating: 4, count: 2048))
+            try? fm.createDirectory(atPath: oldDir, withIntermediateDirectories: true)
+            fm.createFile(atPath: (oldDir as NSString).appendingPathComponent("inner.bin"),
+                          contents: Data(repeating: 5, count: 8192))
+            let old = Date().addingTimeInterval(-40 * 86400)
+            try? fm.setAttributes([.modificationDate: old], ofItemAtPath: oldFile)
+            try? fm.setAttributes([.modificationDate: old], ofItemAtPath: oldDir)
+
+            let beforeID = HistoryStore.load().first?.id
+            let out = TrashAutoEmptyService.emptyOlderThan(days: 30, trashRoot: root)
+            guard out.rootUnreadable == false, out.cleaned == 2, out.skippedRecent >= 1 else {
+                print("      cleaned=\(out.cleaned) skipped=\(out.skippedRecent) unreadable=\(out.rootUnreadable)"
+                      + " scanned=\(out.scanned) rejected=\(out.rejected.map { "\($0.name): \($0.message)" })"
+                      + " failed=\(out.failed.map { "\($0.name): \($0.message)" })")
+                return false
+            }
+            guard out.freedBytes > 0 else {
+                print("      freedBytes=\(out.freedBytes)，删除前实测体积没记账")
+                return false
+            }
+            guard !fm.fileExists(atPath: oldFile), !fm.fileExists(atPath: oldDir),
+                  fm.fileExists(atPath: recentFile) else {
+                print("      到期项没删干净或未到期项被误删")
+                return false
+            }
+            // 历史：按身份比对（不比绝对条数——两个存储都有上限裁剪）
+            let after = HistoryStore.load()
+            guard after.first?.id != beforeID,
+                  after.first?.categoryName == "废纸篓自动清空",
+                  after.first?.bytes == out.freedBytes else {
+                print("      历史记录缺失或字段对不上：\(after.first.map { "\($0.categoryName) \($0.bytes)" } ?? "nil")")
+                return false
+            }
+            // 彻底删除不该有撤销快照（不可恢复是本功能定义；有快照反而说明走了废纸篓）
+            if let rec = after.first, UndoManagerStore.session(for: rec.id) != nil {
+                print("      彻底删除却落了撤销快照——闸门走错档了")
+                return false
+            }
+            return true
+        }
+
+        check("废纸篓自动清空：根读不到时明示 rootUnreadable，什么都不删、不落账（G9）") {
+            let root = "/private/tmp/macclean-trash-locked-\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+            let inner = (root as NSString).appendingPathComponent("victim.txt")
+            FileManager.default.createFile(atPath: inner, contents: Data(repeating: 9, count: 1024))
+            defer {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root)
+                try? FileManager.default.removeItem(atPath: root)
+            }
+            try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: root)
+            guard geteuid() != 0 else {
+                print("      以 root 运行，mode 000 不生效，本条跳过（不算通过也不算失败）")
+                return true
+            }
+            let beforeID = HistoryStore.load().first?.id
+            let out = TrashAutoEmptyService.emptyOlderThan(days: 30, trashRoot: root)
+            guard out.rootUnreadable, out.cleaned == 0 else {
+                print("      读不到的根没有明示：unreadable=\(out.rootUnreadable) cleaned=\(out.cleaned)")
+                return false
+            }
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root)
+            guard FileManager.default.fileExists(atPath: inner) else {
+                print("      根读不到却删了里面的文件——G9 被违反")
+                return false
+            }
+            guard HistoryStore.load().first?.id == beforeID else {
+                print("      什么都没删却写了清理历史——凭空记账")
+                return false
+            }
+            return true
+        }
+
+        check("废纸篓自动清空：policy 二道闸必须钉「废纸篓根的直接子项」（源码形状）") {
+            // 这道防御在服务自己的枚举下**结构上不可达**（候选本来就来自根的顶层枚举），
+            // 它保护的是"将来有人改了候选来源"——按清单规矩，不可达分支不配行为自检，
+            // 钉形状：policy 闭包必须存在且判据是「父目录 == 废纸篓根」。
+            let path = (Selftest.sourceDirectoryPath as NSString)
+                .appendingPathComponent("TrashAutoEmptyService.swift")
+            guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                print("      TrashAutoEmptyService.swift 不可读")
+                return false
+            }
+            let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+            guard code.contains("parent==normRoot") else {
+                print("      二道闸判据不见了——越出废纸篓的删除不再被兜")
+                return false
+            }
+            guard code.contains("toTrash:false") else {
+                print("      没有走彻底删除档——自动清空变成了二次进废纸篓")
+                return false
+            }
+            return true
+        }
+
+        check("DiskMonitorConfig：老配置数据缺 trashAutoEmpty* 键不得整份解码失败（复审 #1 的防回归）") {
+            // Swift 合成 Codable **不用属性默认值**：老数据缺一个新键 → 整份 throw →
+            // `load()` 回落出厂值 → 用户已有的全部设置被静默重置。手写 `init(from:)`
+            // 是唯一防线；旧断言全是「先 encode 再 decode」的往返，**结构上测不出缺键**
+            // （复审变异实测：删掉手写解码，全仓自检照样全绿）。这里手造老格式载荷。
+            guard let encoded = try? JSONEncoder().encode(DiskMonitorConfig()),
+                  var obj = try? JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+                print("      夹具构造失败")
+                return false
+            }
+            obj.removeValue(forKey: "trashAutoEmptyEnabled")
+            obj.removeValue(forKey: "trashAutoEmptyDays")
+            obj["scanIntervalHours"] = 9      // 模拟老数据里用户自己的设置
+            obj["autoCleanEnabled"] = true
+            guard let data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
+            guard let decoded = try? JSONDecoder().decode(DiskMonitorConfig.self, from: data) else {
+                print("      缺新键的旧配置解码失败——手写 decodeIfPresent 被拆了？")
+                return false
+            }
+            guard decoded.trashAutoEmptyEnabled == false, decoded.trashAutoEmptyDays == 30 else {
+                print("      新字段没有落默认值：\(decoded.trashAutoEmptyEnabled) / \(decoded.trashAutoEmptyDays)")
+                return false
+            }
+            // 老数据里用户自己的设置必须原样活下来（这才是"被静默重置"的本体）
+            return decoded.scanIntervalHours == 9 && decoded.autoCleanEnabled == true
+        }
     }
 }

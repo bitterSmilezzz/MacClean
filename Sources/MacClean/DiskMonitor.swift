@@ -54,7 +54,44 @@ struct DiskMonitorConfig: Codable, Equatable {
     var globalHotkeyEnabled: Bool = true
     var globalHotkeyPreset: GlobalHotkeyPreset = .controlOptionSpace
 
+    /// 废纸篓自动清空（v1.73.14，主流清理工具标配）：默认关；彻底删除、无撤销快照。
+    var trashAutoEmptyEnabled: Bool = false
+    /// 清空「最后修改时间」早于 N 天的废纸篓顶层条目（无公开 API 读"何时被丢进废纸篓"，
+    /// 移入废纸篓不改 mtime——判据字段用 mtime 是全仓规矩，文案不许说成「丢弃时间」）。
+    var trashAutoEmptyDays: Int = 30
+
     private static let key = "MacClean_DiskMonitorConfig"
+
+    /// 手写解码：`trashAutoEmpty*` 是后加字段，老配置数据里没有它们——
+    /// Swift 合成 Codable **不用属性默认值**，缺一个键整份配置就解码失败，
+    /// 用户已有的全部设置会被静默重置成出厂值（RELEASE-CHECKLIST 明文条目）。
+    /// 旧版本读到新数据不受影响：JSONDecoder 忽略未知键，老键都在。
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        autoScanEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoScanEnabled) ?? true
+        scanIntervalHours = try c.decodeIfPresent(Int.self, forKey: .scanIntervalHours) ?? 3
+        lowSpaceAlertEnabled = try c.decodeIfPresent(Bool.self, forKey: .lowSpaceAlertEnabled) ?? true
+        lowSpaceThresholdGB = try c.decodeIfPresent(Int.self, forKey: .lowSpaceThresholdGB) ?? 15
+        autoCleanEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoCleanEnabled) ?? false
+        dndEnabled = try c.decodeIfPresent(Bool.self, forKey: .dndEnabled) ?? true
+        dndStartHour = try c.decodeIfPresent(Int.self, forKey: .dndStartHour) ?? 23
+        dndEndHour = try c.decodeIfPresent(Int.self, forKey: .dndEndHour) ?? 7
+        autoCleanUserCaches = try c.decodeIfPresent(Bool.self, forKey: .autoCleanUserCaches) ?? true
+        autoCleanLogsAndTemp = try c.decodeIfPresent(Bool.self, forKey: .autoCleanLogsAndTemp) ?? true
+        launchAgentEnabled = try c.decodeIfPresent(Bool.self, forKey: .launchAgentEnabled) ?? false
+        launchAgentFrequency = try c.decodeIfPresent(LaunchAgentFrequency.self, forKey: .launchAgentFrequency) ?? .daily
+        launchAgentDailyHour = try c.decodeIfPresent(Int.self, forKey: .launchAgentDailyHour) ?? 3
+        launchAgentDailyMinute = try c.decodeIfPresent(Int.self, forKey: .launchAgentDailyMinute) ?? 0
+        autoHealOnLowSpace = try c.decodeIfPresent(Bool.self, forKey: .autoHealOnLowSpace) ?? true
+        autoCleanSmartRecommended = try c.decodeIfPresent(Bool.self, forKey: .autoCleanSmartRecommended) ?? true
+        menuBarDisplayMode = try c.decodeIfPresent(MenuBarDisplayMode.self, forKey: .menuBarDisplayMode) ?? .iconOnly
+        globalHotkeyEnabled = try c.decodeIfPresent(Bool.self, forKey: .globalHotkeyEnabled) ?? true
+        globalHotkeyPreset = try c.decodeIfPresent(GlobalHotkeyPreset.self, forKey: .globalHotkeyPreset) ?? .controlOptionSpace
+        trashAutoEmptyEnabled = try c.decodeIfPresent(Bool.self, forKey: .trashAutoEmptyEnabled) ?? false
+        trashAutoEmptyDays = try c.decodeIfPresent(Int.self, forKey: .trashAutoEmptyDays) ?? 30
+    }
 
     static func load() -> DiskMonitorConfig {
         guard let data = UserDefaults.standard.data(forKey: key),

@@ -636,6 +636,31 @@ struct AISettingsView: View {
                         .font(Typo.body)
                         .toggleStyle(.checkbox)
 
+                    // 废纸篓自动清空（v1.73.14）：彻底删除、无撤销快照，所以默认关、
+                    // 开启后把代价写全。判据是条目「最后修改时间」——没有公开 API 读
+                    // 「何时被丢进废纸篓」，文案不许说成「丢弃时间」。
+                    Toggle("自动清空废纸篓（彻底删除，无撤销）", isOn: $app.diskMonitor.config.trashAutoEmptyEnabled)
+                        .font(Typo.body)
+                        .toggleStyle(.checkbox)
+                    if app.diskMonitor.config.trashAutoEmptyEnabled {
+                        HStack {
+                            Text("清空最后修改时间超过 N 天的废纸篓条目")
+                                .font(Typo.body)
+                                .foregroundStyle(Ink.secondary)
+                            Spacer()
+                            Stepper(value: $app.diskMonitor.config.trashAutoEmptyDays, in: 1...365) {
+                                Text("\(app.diskMonitor.config.trashAutoEmptyDays) 天")
+                                    .font(.mcNumeric(13))
+                                    .foregroundStyle(Signal.critical)
+                            }
+                        }
+                        .padding(.leading, Space.sm)
+                        Text("彻底删除、没有撤销快照。没有完全磁盘访问权限时废纸篓读不到，自动清空会跳过并在日志里如实记录。")
+                            .font(Typo.caption)
+                            .foregroundStyle(Ink.secondary)
+                            .padding(.leading, Space.sm)
+                    }
+
                     HStack(spacing: Space.xs) {
                         Circle()
                             .fill(LaunchAgentManager.shared.isInstalled() ? Signal.positive : Ink.tertiary)

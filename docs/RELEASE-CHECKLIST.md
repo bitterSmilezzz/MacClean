@@ -33,7 +33,8 @@ EOF
 swiftc -typecheck /tmp/probe.swift   # 同样报 SwiftUIMacros 错误
 ```
 
-**当前对策**：用旧 SDK 构建，已实测可完整通过自检：
+**当前对策**：用旧 SDK 构建。**注意：SDK 26.5 只解决"能否编译"，不解决"自检能否跑完"**
+——两者是不同的问题，见下面 §0.2。
 ```bash
 SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 ```
@@ -49,9 +50,84 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
 1. 安装完整 Xcode（提供 `SwiftUIMacros` 插件）；
 2. 或等待 Apple 在 CLT 中补齐 SwiftUI 宏插件。
 
+### 0.2 macOS 27 上 ViewInspector 不兼容：34 条断言失败 + 7 个套件不可执行（2026-09-27 实测）
+
+**背景数字**：macOS ≤26 上同一仓库实测 **649 通过 / 0 失败**。
+
+**根因**：ViewInspector 0.10.3（`git ls-remote --tags` 确认其为上游最新，无修复版本）
+靠**猜测 SwiftUI 私有内存布局**来遍历视图树；macOS 27 改了布局，表现有两种：
+
+| 崩溃点 | 机制 | 实测 |
+|---|---|---|
+| `SwiftUI/GeometryReader.swift:69` | 把 `GeometryProxy` 尺寸硬编码为 48 / 52 字节；`unsafeBitCast` 尺寸不符 → `fatalError` | macOS 27 上实测 **76 字节** |
+| `EnvironmentInjection.swift:47` | 对视图结构做原始字节扫描以注入 `@EnvironmentObject`；把一个非指针当对象 `swift_retain` → SIGBUS | 崩在 `swift_retain`，地址 `0x200000008` |
+
+**已验证不可行**：给 `GeometryProxy` 加"按真实尺寸零值构造"的补丁只能让进程多跑一段，
+随后仍撞上 `EnvironmentInjection` 的 SIGBUS；而且该补丁依赖未定义行为（零填充的对象位模式），
+**可能产生假绿或假红——比截断更危险**。结论：不存在能修好的尺寸补丁。
+
+**当前在 macOS 27 上的实测结果**（编排模式，逐套件子进程）：
+
+```
+MacClean 自检完成：602 通过 / 34 失败 / 7 个套件未执行
+未执行：SearchAndClean、SystemAndHistory、SpaceVisualizerDeep、SpaceVisualizerDeep2、
+        MenuBarWidgetsDeep、SpaceArchiveDeep、GlobalHotkeyDeep（exit=5/10，进程级终止）
+```
+
+34 条失败与 7 个未执行套件**全部**属于"依赖 ViewInspector 遍历视图"这一类
+（`buttonNotFound` / 渲染类断言）。
+
+**这些与产品改动无关，已用 A/B 证明**（两边都用编排模式、同一台机器）：
+撤掉全部产品改动后为 **559 通过 / 34 失败 / 7 未执行**；失败清单与未执行清单
+**逐字完全一致**（`diff` 为空），通过数正好多 43 条（即本轮新增的 43 条检查：
+ProcessOccupancy 10 + PermissionGate 6 + CleanableAccounting 7 + SystemTweaks 20）。
+也就是说：产品改动带来 43 条通过、**0 条新增失败**。
+
+**因此，在 macOS 27 上：**
+- 34 条 ViewInspector 断言**无法执行**，7 个套件**无法执行**——换 macOS ≤26 的机器、
+  或上游发布兼容版本之前，**不得声称"自检全绿"**；
+- 但自检的**可执行范围已经跑满**（602 条），且"未执行"与"通过"分开报，
+  不会再出现"没跑到被当成通过了"。
+
+**自检 CLI 口径**（v1.73.11 起）：
+
+| 参数 | 作用 |
+|---|---|
+| `--selftest` | **默认编排模式**：逐套件开子进程，一个套件崩溃只损失它自己 |
+| `--selftest-inproc` | 旧的单进程模式（任一崩溃会吞掉其后全部套件）。怀疑"隔离本身改变了行为"时的对照路径。实测对照：**53 通过 / 7 失败后 fatalError（exit 133）**，而编排模式能跑到 602 通过 |
+| `--selftest-suite=<名字>` | 只跑一个套件（子进程模式用的就是它；名字见 `Selftest.suites`，大小写不敏感）。**必须与 `--selftest` 一起传**——编排器拉子进程用的就是 `["--selftest", "--selftest-suite=…"]` 两个参数；只传 `--selftest-suite=…` 不进自检分支，会掉进 SwiftUI GUI 主循环挂住（2026-09-27 实测：主/子代理三个会话同时中招，进程 CPU≈0 停在 `runApp`，看着像"套件很慢"） |
+| `--selftest-allow-environment-skips` | 只在"**有套件未执行**"时把退出码放行为 0。**它绝不会掩盖失败**——只要有失败项，退出码仍是 1（判断顺序上失败优先）。在 macOS 27 上因此拿不到 0，这是有意的：34 条失败必须逐条看清 |
+
+**系统体验优化的 CLI 口径**（v1.73.12 起）：
+
+| 参数 | 作用 |
+|---|---|
+| `--prefs-check` | **只读**体检 11 条系统偏好项（现状 / 推荐 / 收益 / 代价 / 需重启谁）。自检里有真机断言保证它**一条写命令都不发** |
+| `--prefs-roundtrip` | 真机读写删**往返**自验。用我们自己的临时域 `com.macclean.selftest.roundtrip`，结束删干净（含空 plist），**不碰任何系统偏好**。存在的理由：`defaults write` 的参数拼法与"删键才算还原"只有真机能验，注入假 runner 验的是逻辑不是机制 |
+
+> `--prefs-roundtrip` 是真值来源，不是装饰：它先后照出两个只靠自检看不见的问题——
+> ① macOS 27 对**不存在的域**报的是 `Domain '...' not found.`（第三种措辞，当时不在识别表里，
+> 于是"未设置"又被误判成"读不到"）；② `defaults delete <域>` 对只剩空字典的 plist **会失败**
+> 并留下一个 42 字节的 `{}` 文件，所以"无残留"当时是假的，现在收尾会显式删掉那个 plist。
+
+**据此的验证口径**：模型层改动（判定引擎 / 权限门 / 可清理量口径 / 偏好读写）由
+`Selftest+ProcessOccupancy`、`Selftest+PermissionGate`、`Selftest+CleanableAccounting`、
+`Selftest+SystemTweaks` 四套锁定——它们都不碰 ViewInspector，因此在本机仍然能跑；
+再用 `--scan` / `--permission-check` / `--prefs-check` 做真机前后对比，
+并明确标注哪些断言本轮**没跑到**。
+
+
 ## 1. 代码与测试
 - [ ] **两种构建模式都要验**（v1.72.2 起自检代码不进发布产物）：
-      ① 开发构建 `swift build` 必须含自检，`--selftest` 全绿；
+      ① 开发构建 `swift build` 必须含自检，`--selftest` 的**失败与"未执行"都必须为 0**
+         （只看"退出码 0"不够：见 §0.2，macOS 27 上默认会报若干失败与未执行套件，
+         那是环境问题、不是产品问题，但**必须逐条看清**再决定是否放行）；
+         **2026-09-28 起这条有了机器可查的形式**：`scripts/release.sh` 在退出码非 0 时，
+         会把失败用例名与未执行套件名抽出来，跟 `docs/KNOWN-ENV-SELFTEST-FAILURES-MACOS27.md`
+         **逐条比对**——多一条（新增产品红灯）少一条（基线过期）都照样 die。
+         这不是 `--skip-scan` 式的绕过：比的是具体名字，不是"别看输出"。
+         换到 macOS ≤26 的机器（或装上 Xcode）后应当**删掉那份基线**回到"必须为 0"，
+         否则基线会把那一类真红也一并供起来。
       ② `./scripts/build-app.sh` 会设 `MACCLEAN_NO_SELFTEST=1` 排除 `Selftests/`，
          打完包必须实测 `dist/MacClean.app/Contents/MacOS/MacClean --selftest`
          **明确报错且退出码非 0**（静默"通过"= 严重问题：会让人以为自检过了）；
@@ -98,6 +174,44 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       SwiftUI 可能不呈现它——而 ViewInspector 自检里 `isPresented` 照样会翻转，**测试通过、真机没弹窗**。
       本仓库真踩过：剪贴板「全量净化」的确认自检全绿，人工点开界面前往下点会直接执行删除。
       因此新增确认路径后必须**人工或用 Computer Use 真点一次**，不能只信自检。
+- [ ] **卡片的选中态是 `@State` 时，`.tap()` 之后读不回来**（v1.73.10 实测）：ViewInspector 里
+      `try button("xxxSelectAllButton", in: card).tap()` 会执行动作，但重新 `inspect()` 渲染的仍是
+      **播种时的那份** `@State`（Android 卡片实测点完全选后按钮文案仍为「清理选中 (0 KB)」）。
+      于是"点全选会不会把残缺项勾上"这类**只能靠状态迁移才可见**的契约，在视图层写成断言就是**恒绿的假断言**。
+      两道替代：① 能观测的部分（按钮禁用态、行内警示文案）留在 UI 用例里，并**同时断言反证**
+      （同一份清单换成完整可读必须放开，否则"永远禁用"的坏实现也算过）；
+      ② 方法体本身的判据交给源码形状 lint（`Selftest+ScanDiagnostics`「卡片全选必须走 readable」，
+      用大括号深度精确截函数体，别让同文件的 `selectableCount` 蹭到 `readable` 而免检）。
+      反之，把选中态放在**外部对象**（`scanner.reports`）里的卡片（DiagnosticReport）就能真读回，
+      那种用例别照抄成源码 lint。
+- [ ] **外层过滤把项挡在删除管道之外时，必须把"为什么没删"显式带出来**（v1.73.10 变异暴露）：
+      `item.deletionTargets` 对非孤儿返回空数组是对的方向（健康项的路压根不进网关），但当时
+      `clean()` 返回的是 `cleaned=1、rejected=0`——调用方塞进健康项的表现与"什么都没发生"完全一样。
+      正确形状：模块侧先攒 `blocked: [Rejection]`、用 `Outcome(rejected: blocked).merging(网关结果)`
+      （ClipboardPurger / QuickLook / Screenshots / Downloads 四张面板已经是这个形状，别另起炉灶）。
+      写这条自检时要**同时钉 path、reason 与该条目自己的状态文案**——钉成
+      "rejected 非空"或"A 或 B 之一"都抓不到"原因挂错条目/文案丢判据"。
+- [ ] **"配对两个文件系统对象"时，先确认工具自己按什么配对**（v1.73.10 的 P0）：Android 模块最初按
+      `~/.android/avd/<n>.avd` ↔ `<n>.ini` **文件名**配对判孤儿，而 `avdmanager list avd` 实测是按
+      描述符**内容里的 `path=`** 定位数据目录的（本机造 `zz-descriptor-name.ini` → `probe.avd`，
+      `avdmanager` 照样列出）。后果是一台活的、被工具链认到的 AVD 被判孤儿并**默认勾选**。
+      教训：凡"目录 A 没有同名文件 B = 孤儿"式的判据，先拿**该领域自己的官方工具**跑一遍反证，
+      别拿文件名当身份；并且要覆盖"描述符读不出来"这一支——读不出来的那一份可能正指向它。
+- [ ] **降级/告警文案不许无条件宣称全局事实**（v1.73.10 复审 P1-5）：横幅那句
+      "因此没有任何一项被默认勾选"只要是从 `!isResultComplete` 无条件渲染的，就会在
+      "一条没读全 + 另一棵确证孤儿已勾上"这个真实形态下当面否认界面上看得见的勾选框。
+      写绝对化结论（"没有任何一项""这里没有""全部"）时，判据必须取**实际那个集合**，
+      并给该集合非空的情形补一条断言（含反向：可读夹具上必须抽不到这句警示）。
+- [ ] **按行解析文本文件时用 `components(separatedBy: .newlines)`，不要用 `split(separator: "\n")`**
+      （v1.73.10 二次复审实测）：`String.split(separator:)` 按**字素簇**比对分隔符，而 `\r\n` 在
+      Unicode 里是**一个**字素簇——`"a\r\nb\r\n".split(separator: "\n")` 返回 **1** 个元素，
+      `components(separatedBy: "\n")` 返回 **3**。后果不是"少一行"而是**整份文件不分行**：
+      解析 `key=value` 时第一个 `=` 之后的值会吞掉后面所有行，配对/查找全部落空。
+      在 AVD 描述符上这条会直接**把一台活的 AVD 判成孤儿并默认勾选**。
+- [ ] **卡片里"能不能勾"的判据必须与 `selectableCount` 完全一致**（v1.73.10 二次复审 P2-10）：
+      行内勾选框只判"是孤儿"、而 `selectableCount` 还判 `readable`，就会出现
+      "用户勾上一个残缺项 → 点写着「全选」的按钮 → 该项被 `select && readable` 静默取消勾选"。
+      判据分叉的另一种表现是按钮标签与实际行为相反。
 - [ ] **改动了并发/共享状态时**：跑一遍 Thread Sanitizer，必须零报告
       ```bash
       swift build --sanitize=thread && swift run --sanitize=thread MacClean --selftest
@@ -257,6 +371,22 @@ SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk swift build
       改回 `isSelected: true`，**消费方 lint + 对应的 behavioral 断言**应当同时红
       （atPath 那条 lint 与 `isSelected` 无因果关系，不该被牵进来看似"同时红"——
       v1.73.7 复审抓出上一版本节里那句"两条 lint 与两处 behavioral 应当同时红"是夸大）。
+- [ ] **新增治理模块的求体积必须走 `FileSystem.directoryStats`（v1.73.13 起全仓唯一一份模块级递归 walker）**：
+      此前 CLICache / Spotlight / AudioHAL / PrinterDriver / Android 五个模块各写一份，
+      `fileSize` vs `totalFileAllocatedSize`、跳不跳软链两处口径不一——同一棵树五个面板五个数，
+      而删除侧实测释放量只会是其中一种（v1.73.10 复审待议 R2-P2-11）。新模块再写第 6 份
+      就是把这道口子重新打开；等值断言的现成模式在四个 Deep 套件里（共享夹具树 +
+      「与 `directoryStats` 同树逐项相等」+ 稀疏/软链/mode-000/隐藏各一支），照抄即可。
+- [ ] **造稀疏文件夹具时先验证它真的是稀疏的**：APFS 对 ≤8MB 的洞会整段物化
+      （实测 seek 8MB 的"稀疏"文件 allocated≈逻辑大小，断言恒绿没牙齿），要用
+      `ftruncate` / `truncate(atOffset:)` 撑 **100MB 级尾部洞**（allocated≈4KB），
+      且夹具 sanity 断言直接读 `totalFileAllocatedSize`——`?? 0` 兜底会把它吞成 0、
+      看起来像稀疏其实是没读到。
+- [ ] **夹具要经网关真删时放 `/private/tmp`，别放 `NSTemporaryDirectory()`**：网关的常规
+      放行根是主目录与 `/private/tmp`，**不含** per-user 的 `/var/folders/…/T/`——把夹具
+      建在后者会让每个候选都被「被基础安全护栏拒绝」，端到端断言全红（v1.73.14 废纸篓
+      自动清空自检实测）。生产路径不受影响时（如 `~/.Trash` 在主目录内），这纯粹是
+      夹具选址问题；但别为了夹具去放宽网关。
 - [ ] **"契约两侧都钉"不包括第三侧的门把手：模型默认值 + 卡片全选**：v1.73.7 第一次复审
       抓出**四条**同族 P1，一条比一条更深：
       ① 生产侧加了 `readable` 只算第一道；② scan 消费方 `isSelected: readable` 是第二道；
