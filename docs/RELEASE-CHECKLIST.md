@@ -477,6 +477,14 @@ ProcessOccupancy 10 + PermissionGate 6 + CleanableAccounting 7 + SystemTweaks 20
 - [ ] **别拿"跨阶段时间比"当门禁，拿"同一阶段内的缩放比"当门禁**：`探测耗时 ÷ 体积测算耗时 < 0.5`
       这类判据机器一忙就假红（实测 load 9.7 下从 0.04 跳到 0.58，v1.73.4 发布后一轮之内就咬人）；
       换成两侧在同一时刻、同一负载下量的缩放比（条目 1→300 的开销比），负载同时作用于分子分母，稳定得多。
+- [ ] **`try? resourceValues` / `try? attributesOfItem` 的 nil 是竞态，不是"读不到"**（2026-09-28 实测）：
+      可读目录里放一个 mode 000 的 2 MB 文件，`enumerator(at:)` 的 `errorHandler` 回调 0 次、
+      该条目 `resourceValues` 成功、字节全额计入——**stat 不需要读权限**。所以全仓那 17 处
+      `try?` 取元数据的站点（MailAttachments/Screenshots/Scanner/SystemDeepStorage/SpaceArchive 等）
+      只在"列举与 stat 之间条目消失"或真 IO 错误时才为 nil，把它们统一改成"翻 readable=false"
+      是给正常遍历凭空背"残缺"。**别照着 atPath 那一族去"修"它们**——那一族的失效模式是
+      子树被拒且**不报错**，与这里不同。权限类盲区由 enumerator 的 errorHandler 与根级
+      `isPermissionDenied` 负责。
 - [ ] **自检里别留墙钟上界断言**（2026-09-28）：`卸载器：已安装 App 清单并行取体积` 原来是
       `elapsed < 5.0`。它守的两件事——"别退回串行""别每条目重扫一次"——都是**结构**性质的，
       用时间当代理就会在别人的 App 占 CPU 时翻红（实测两次全量跑 34/35 条失败之差就是它）。

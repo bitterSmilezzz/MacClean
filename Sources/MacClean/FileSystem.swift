@@ -826,8 +826,15 @@ enum FileSystem {
             }
             // 单个条目 resourceValues 解析失败按跳过处理、**不**翻 readable——
             // 与收编前 CLICache/Spotlight 的口径一致（旧 AudioHAL/PrinterDriver 的
-            // walker 在这一支翻 readable，收编时刻意取了宽松侧：该分支没有稳定的
-            // 触发形态，翻假反而会让一次正常遍历背上"残缺"的名字，见复审 #6）。
+            // walker 在这一支翻 readable，收编时刻意取了宽松侧，见复审 #6）。
+            // 2026-09-28 把"为什么宽松"从推理换成实测：可读目录里放一个 mode 000 的
+            // 2 MB 文件，`enumerator(at:)` 的 errorHandler 回调 **0 次**、该条目的
+            // `resourceValues` 也**成功**（stat 不需要读权限），3,006,464 字节全部计入。
+            // 也就是说这一支只会被"列举与 stat 之间条目消失"或真 IO 错误触发——
+            // 那种时候翻 `readable=false` 是给一次正常遍历凭空背"残缺"，噪声大于信号。
+            // 权限类盲区由**上一行的 enumerator errorHandler** 与根级 `isPermissionDenied`
+            // 负责，不靠这里。同理适用于全仓 17 处 `try? resourceValues` /
+            // `try? attributesOfItem`：nil ≈ 竞态，不是"读不到被当成没有"，别照抄去翻假。
             guard let values else { continue }
             if values.isSymbolicLink == true { continue }
             if let m = values.contentModificationDate {
