@@ -765,80 +765,62 @@ extension Selftest {
             return offenders.isEmpty
         }
 
-        check("产品源码里 `enumerator(atPath:)` 每一处都必须紧邻 nil-else 上报 unreadable") {
-            // v1.73.6 复审查出的最后一个 atPath 豁免点：`Scanner.swift:974` 的 D8 Maven
-            // 用的是没有 `errorHandler` 参数的 `enumerator(atPath:)`，且连 nil 分支都没有——
-            // 一次根读不到就静默返回 `[]`，面板显示"这里没有失效元数据"。本轮把它换成了
-            // 带 errorHandler 的 URL 重载。这条 lint 钉住"atPath 不许再裸用"，且要求
-            // 现存那一处（DiagnosticReportScanner:105）保持 nil-else 上报，否则红。
-            // **活性证据**：命中数必须 ≥ 1（当前只有 DiagnosticReportScanner 一处），
-            // 匹配集为空等于 lint 自己失效——v1.73.6 踩过一次同族假绿，别再踩。
-            // **多行排版容忍**：把注释行剔除后**整文件拼一起再 squeeze 空白**——swift-format
-            // 完全可能把 `fm.enumerator(\n  atPath: p)` 折成两行，v1.73.6 复审核实过：
-            // 按单行子串匹配的多行折行假绿是这一族 lint 的通病（RELEASE-CHECKLIST §"排版匹配"）。
-            // **邻居不背书用大括号深度精确截 else 体**：v1.73.7 二次复审 P1-B 实测——
-            // 上一版窗口切"下一处 `.enumerator(` 之前"，而 `DiagnosticReportScanner.swift`
-            // 全文只有 1 处 `.enumerator(`，窗口一路开到 EOF；把 :105 的 else 上报整段
-            // 删成 `else { continue }`，:134 处另一个 `rootFailed` 分支的 `kind: .unreadable`
-            // 落进同一窗口，lint 判绿。所以判据必须只在**本次 else 的花括号体内**取，
-            // 邻居再合规也不背书。
+        check("产品源码里禁止 `enumerator(atPath:)`——该重载会静默跳过读不到的子树") {
+            // 为什么从"要求 nil-else 上报"改成"直接禁用"（v1.73.10 之后这轮）：
+            // **nil 分支根本不是这一族的失效模式**。2026-09-28 在 `DiagnosticReportScanner:105`
+            // 上实测（mode 000 的 `nested/` 里放一个 .ips）：`enumerator(atPath:)` 返回**合法枚举器**、
+            // yield 出 `aaa.log / zzz.log / secret`，被拒子树里的 `hidden.log` 从未出现，
+            // 而且**没有任何错误回调**——面板于是指着少了报告的清单说"这就是全部崩溃报告"。
+            // 旧 lint 只盯 nil 分支，所以这个谎报在它眼皮底下过了三个版本。
+            // 带 `errorHandler` 的 URL 重载在同一夹具上如实回调（见 Selftest+DiagnosticReportDeep 的 7b）。
             let sourceDir = Selftest.sourceDirectoryPath
             let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
             let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/") }.sorted()
-            var hits = 0
+            if files.count < 100 {
+                print("      只扫到 \(files.count) 个产品源文件，清单或路径判据坏了——空集上的绿灯不可信")
+                return false
+            }
+            // 针脚只写**一次**：上一版把同一个字面量抄在扫描循环与活性样本两处，
+            // 改坏循环里那一份就能让"扫不到任何违规"变成恒真通过，而样本照样绿
+            // （v1.73.10 复审 D-P1-4）。
+            let needle = "enumerator(atPath:"
             var offenders: [String] = []
             for rel in files {
                 let path = (sourceDir as NSString).appendingPathComponent(rel)
                 guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
-                    offenders.append("\(rel):<源文件不可读>")
+                    offenders.append("\(rel)<源文件不可读>")
                     continue
                 }
-                let code = Selftest.stripSwiftComments(src)
-                    .filter { !$0.isWhitespace }
-                var searchFrom = code.startIndex
-                while let rng = code.range(of: "enumerator(atPath:", range: searchFrom..<code.endIndex) {
-                    hits += 1
-                    let afterCall = rng.upperBound
-                    // 找**紧邻**的 `else{`；用大括号深度把 else 体精确截出来。
-                    guard let elseRng = code.range(of: "else{", range: afterCall..<code.endIndex) else {
-                        offenders.append("\(rel)<atPath 后无 else 分支>")
-                        searchFrom = rng.upperBound
-                        continue
-                    }
-                    var depth = 1
-                    var i = elseRng.upperBound
-                    var endIdx = code.endIndex
-                    while i < code.endIndex {
-                        let c = code[i]
-                        if c == "{" { depth += 1 }
-                        else if c == "}" {
-                            depth -= 1
-                            if depth == 0 { endIdx = i; break }
-                        }
-                        i = code.index(after: i)
-                    }
-                    let body = String(code[elseRng.upperBound..<endIdx])
-                    let reports = body.contains(".unreadable")
-                        || body.contains(".permissionDenied")
-                        || body.contains("recordDeniedAccess")
-                        || body.contains("unreadableRoots")
-                        || body.contains("permissionIssues")
-                    if body.isEmpty || !reports {
-                        offenders.append(rel)
-                    }
-                    searchFrom = rng.upperBound
+                // 剥注释 + 挤空白：swift-format 会把 `fm.enumerator(\n  atPath: p)` 折成两行，
+                // 按单行子串匹配是这一族 lint 的通病（RELEASE-CHECKLIST §"排版匹配"）。
+                let raw = src.filter { !$0.isWhitespace }
+                let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+                // **禁用型判据的方向与"必须出现"型相反**：剥注释剥得越多，它越容易恒绿。
+                // `stripSwiftComments` 只在"`/*` 前有奇数个引号"时认定在字符串里，
+                // `let s = "a" + "/*b"` 这种偶数前缀会让整个文件后半段对它隐身（D-P1-5）。
+                // 所以加一条保留比例地板：实测全仓产品文件最低 43%，30% 足够安全，
+                // 而"藏掉七成文件"必然踩线——把一次性绕过变成看得见的红灯。
+                if code.count * 10 < raw.count * 3 {
+                    offenders.append("\(rel)<剥注释后只剩 \(code.count)/\(raw.count) 字符，判据对这个文件已隐身>")
+                    continue
                 }
+                if code.contains(needle) { offenders.append(rel) }
             }
-            if hits < 1 {
-                print("      atPath 命中数为 \(hits)，lint 空集通过等于没在管——"
-                      + "匹配逻辑或调用形态可能被改坏，绿灯不可信")
+            // 活性证据：判据必须认得折行/带空格的形态。拿一段合成源码自测——
+            // 判据本身瞎了的时候，"0 处违规"是恒真通过，不是干净。
+            let sample = Selftest.stripSwiftComments(
+                "let e = fm.enumerator(\n    atPath: p\n)").filter { !$0.isWhitespace }
+            if !sample.contains(needle) {
+                print("      判据本身失效：折行形态的 atPath 没被识别出来")
                 return false
             }
             if !offenders.isEmpty {
-                print("      atPath 处没有 nil-else 上报 unreadable：\(offenders)")
+                print("      这些地方用了会被静默截断的 `enumerator(atPath:)`：\(offenders)"
+                      + "——换成带 errorHandler 的 URL 重载")
             }
             return offenders.isEmpty
         }
+
 
         check("求体积入口的调用方不得用无 readable 契约的 size 撑起默认勾选") {
             // 与上一条 lint 一对：一条管"遍历必须留痕"、这条管"消费遍历结果的地方必须以

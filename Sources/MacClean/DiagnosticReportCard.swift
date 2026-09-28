@@ -99,11 +99,22 @@ public struct DiagnosticReportCard: View {
         scanner.reports.filter { $0.isStale }.count
     }
 
+    /// 数**位置**而不是 issue 条数：同一个目录可以同时留下"子目录权限不足""轮转中读不到"
+    /// "部分内容读不出"三条 issue，按条数念会把一个目录喊成三个（v1.73.10 复审 D-P1-6）。
+    /// 抽成静态纯函数是因为本机 ViewInspector 枚举不到按钮（RELEASE-CHECKLIST §0.2），
+    /// 挂在 `emptyStateText` 里就断言不到。
+    static func unreadablePositionCount(_ issues: [GovernanceEvidenceIssue]) -> Int {
+        Set(issues.map { $0.subject }).count
+    }
+
     /// 空列表时那句结论：读不全的时候只能说"读不全"，不能说"没有残留"
     private var emptyStateText: String {
         if scanner.isScanning { return "正在深入排查系统诊断目录..." }
         if !scanner.isResultComplete {
-            return "有 \(scanner.issues.count) 个诊断目录读不到，无法判断是否存在异常报告"
+            // 数的是**位置**，不是 issue 条数：同一个目录可以同时留下"子目录权限不足"
+            // "轮转中读不到""部分内容读不出"三条 issue，按条数念会把一个目录喊成三个
+            // （复审 D-P1-6）。
+            return "有 \(Self.unreadablePositionCount(scanner.issues)) 个诊断目录读不到，无法判断是否存在异常报告"
         }
         return "已读到的目录里没有匹配的崩溃或诊断日志"
     }

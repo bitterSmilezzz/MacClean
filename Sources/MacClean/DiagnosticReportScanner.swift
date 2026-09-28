@@ -102,15 +102,42 @@ public final class DiagnosticReportScanner: ObservableObject {
                     message: "权限不足，当前用户读不到该诊断目录（可能需要管理员或完全磁盘访问权限）：\(exp)"))
                 continue
             }
-            guard let enumerator = fm.enumerator(atPath: exp) else {
+            // **不用 `enumerator(atPath:)`**：那个重载没有 errorHandler，中途撞上读不到的子目录时
+            // Foundation 直接把那棵子树跳过、不报任何错。实测（本机，mode 000 的 `secret/` 里放一个
+            // `hidden.log`）：旧写法 yield 出 `aaa.log / zzz.log / secret`，`hidden.log` 从未出现，
+            // `issues` 也一条没加——面板于是指着不完整的清单说"这就是全部崩溃报告"。
+            // 换成 `at:` + errorHandler：被拒的子树逐条点名、记进盲区账，并让卡片的
+            // "有 N 个诊断目录读不到"那条横幅真的数得到它（实测 errorHandler 会回调）。
+            let blocked = FileSystem.WalkBlockFlag()
+            var deniedSubtrees: [String] = []
+            var movedAway: [String] = []
+            guard let enumerator = fm.enumerator(
+                at: URL(fileURLWithPath: exp, isDirectory: true),
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [],
+                errorHandler: { url, error in
+                    FileSystem.recordDeniedAccess(url, error: error)
+                    blocked.set()
+                    // **必须分诊**：`recordDeniedAccess` 自己只收权限类错误，理由写在它的 doc 里
+                    // ——「遍历中途文件被删、符号链断裂不算盲区，报出来会把用户训练成忽略这条提示」。
+                    // `DiagnosticReports` 正是系统一直在写、一直在轮转的活目录，一条 ENOENT
+                    // 就把整个模块喊成"权限不足"是谎报的另一种形状（v1.73.10 复审 D-P1-1）。
+                    if FileSystem.isPermissionError(error) {
+                        deniedSubtrees.append(url.path)
+                    } else {
+                        movedAway.append(url.path)
+                    }
+                    return true
+                }
+            ) else {
                 issues.append(GovernanceEvidenceIssue(
                     kind: .unreadable, subject: exp, message: "无法枚举诊断目录：\(exp)"))
                 continue
             }
 
             var rootFailed = false
-            while let file = enumerator.nextObject() as? String {
-                let fullPath = (exp as NSString).appendingPathComponent(file)
+            while let url = enumerator.nextObject() as? URL {
+                let fullPath = FileSystem.normalizePath(url.path)
                 guard !visitedPaths.contains(fullPath) else { continue }
 
                 var isSubDir: ObjCBool = false
@@ -133,6 +160,27 @@ public final class DiagnosticReportScanner: ObservableObject {
                 issues.append(GovernanceEvidenceIssue(
                     kind: .unreadable, subject: exp,
                     message: "目录内部分报告读不到内容，元数据判定不完整：\(exp)"))
+            }
+            if blocked.value {
+                // kind 用 `.unreadable` 而不是 `.permissionDenied`：后者会点亮卡片里那句
+                // "全局报告目录由 root:_analyticsusers 管理……"，而它只对**根**成立——
+                // 用户自己目录里一个 0700 的子目录被拒也跟着念那段就是假信息（D-P1-2）。
+                // 权限这件事写在 message 里，逐条点名时看得见；被移走的条目另说一句。
+                if !deniedSubtrees.isEmpty {
+                    issues.append(GovernanceEvidenceIssue(
+                        kind: .unreadable, subject: exp,
+                        message: "该目录下有 \(deniedSubtrees.count) 个子目录权限不足、本轮读不到，"
+                            + "里面的报告根本列不出来（下面这份清单不完整）："
+                            + "\(deniedSubtrees.prefix(3).joined(separator: ", "))"))
+                }
+                if !movedAway.isEmpty {
+                    let names = movedAway.prefix(3).map { ($0 as NSString).lastPathComponent }
+                        .joined(separator: ", ")
+                    issues.append(GovernanceEvidenceIssue(
+                        kind: .unreadable, subject: exp,
+                        message: "遍历期间有 \(movedAway.count) 个条目读不到了（多为系统正在轮转/移走的报告），"
+                            + "本轮清单可能少这几处：\(names)"))
+                }
             }
         }
 

@@ -477,9 +477,17 @@ ProcessOccupancy 10 + PermissionGate 6 + CleanableAccounting 7 + SystemTweaks 20
 - [ ] **别拿"跨阶段时间比"当门禁，拿"同一阶段内的缩放比"当门禁**：`探测耗时 ÷ 体积测算耗时 < 0.5`
       这类判据机器一忙就假红（实测 load 9.7 下从 0.04 跳到 0.58，v1.73.4 发布后一轮之内就咬人）；
       换成两侧在同一时刻、同一负载下量的缩放比（条目 1→300 的开销比），负载同时作用于分子分母，稳定得多。
-- [ ] **`FileManager.enumerator(..., errorHandler: nil)` 是求体积的谎报形状**：`nil` 的语义是
+- [ ] **`FileManager.enumerator` 少写 `errorHandler` 是求体积/清单的谎报形状**：`nil` 的语义是
       "第一个错误就停止遍历且不报告"，于是"有一半没读到"与"真的就这么大"结果一样（实测一个含
-      mode 000 子目录的树返回 **0**）。已有一条 lint 钉住 `errorHandler:nil` / `{_,_ in false}` 两种字面量，但**钉不住整个类别**：Foundation 里省略 `errorHandler:` 参数语义完全相同，当前产品源码另有 5 处就是这么写的。别把那条 lint 的绿色读成「求体积已收口」。
+      mode 000 子目录的树返回 **0**）；Foundation 里**省略 `errorHandler:` 参数与传 `nil` 语义相同**。
+      这一类现在由两条 lint 按**调用点**管（括号配对截参数段，不是"整文件出现过 errorHandler"——
+      那种查法会被同文件另一处合规背书）：① `enumerator(at:)` 必须带 errorHandler；
+      ② `enumerator(atPath:)` **整类禁用**。②是 v1.73.10 之后这轮补的：`atPath` 重载**没有**
+      `errorHandler` 参数，实测它对被拒子树"返回合法枚举器 + 静默跳过 + 不报任何错"
+      （mode 000 的 `nested/` 里的 .ips 从未出现，issues 一条不加），所以老 lint 那句"要求 nil 分支
+      上报 unreadable"盯的是**错的失效模式**——`DiagnosticReportScanner:105` 在它眼皮底下谎报了三个版本。
+      **2026-09-28 实测**：产品源码里省略 errorHandler 的调用点 **0 处**、`atPath` 调用点 **0 处**
+      （此处原文写的"另有 5 处"是过期断言，已按实测更正；再核一遍用上面那个按调用点的查法）。
 - [ ] **归还并发额度要"占几条还几条"，且"已恢复"的守卫必须看满额**：自检投放 N 条卡在信号量上的
       body 却只 `signal()` 一次，就有 N-1 分令牌在本进程剩余 lifetime 内永久消失，后面所有门禁读取
       静默退化成"本轮没顾上"。更阴的是自带的那句"额度未归还"守卫——它只要还剩 1 分可用就通过，

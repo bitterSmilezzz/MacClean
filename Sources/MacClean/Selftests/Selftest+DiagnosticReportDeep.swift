@@ -374,6 +374,80 @@ extension Selftest {
             return true
         }
 
+        // 7b. 根读得到、**里面的子目录**被权限掐断：旧写法用 `enumerator(atPath:)`，那个重载没有
+        //     errorHandler，Foundation 直接跳过被拒子树且不报错——清单少了东西却自称完整。
+        //     实测（mode 000 的 `nested/` 里放一个 .ips）：旧写法 yield 里既没有 HiddenApp，
+        //     issues 也一条不加；换 `at:` + errorHandler 后被拒路径会如实浮上来。
+        check("DiagnosticReport: 被拒的是子目录时也必须记 issues（atPath 静默跳过那一族）") {
+            let fm = FileManager.default
+            let base = "/tmp/MacCleanTest_DiagNested_" + UUID().uuidString
+            let nested = base + "/nested"
+            try? fm.createDirectory(atPath: nested, withIntermediateDirectories: true)
+            try? "{\"app_name\":\"VisibleApp\"}\n{\"procName\":\"VisibleApp\"}"
+                .write(toFile: base + "/VisibleApp_2026-09-01.ips", atomically: true, encoding: .utf8)
+            try? "{\"app_name\":\"HiddenApp\"}\n{\"procName\":\"HiddenApp\"}"
+                .write(toFile: nested + "/HiddenApp_2026-09-01.ips", atomically: true, encoding: .utf8)
+            chmod(nested, 0o000)
+            defer { chmod(nested, 0o755); try? fm.removeItem(atPath: base) }
+            // 夹具自证：chmod 静默失败（比如以 root 跑）时本条毫无意义，必须当场判红而不是"通过"
+            if let attrs = try? fm.attributesOfItem(atPath: nested),
+               let mode = attrs[.posixPermissions] as? NSNumber, mode.int16Value != 0o000 {
+                print("    ❌ 子目录权限没设成 000（实测 mode=\(String(format: "%o", mode.int16Value))），本条无法验证")
+                return false
+            }
+
+            FileSystem.resetDeniedAccess()
+            let found = DiagnosticReportScanner().scanReport(dirs: [base], inventory: diagSelftestInventory())
+            let ledger = FileSystem.deniedAccessSnapshot()
+            FileSystem.resetDeniedAccess()
+
+            var bad: [String] = []
+            let names = found.items.map { $0.appName }
+            if !names.contains(where: { $0.contains("VisibleApp") }) {
+                bad.append("可见报告没被列出来：\(names)")
+            }
+            if names.contains(where: { $0.contains("HiddenApp") }) {
+                bad.append("被拒子树里的报告竟然被列出来了（权限设置没生效？）")
+            }
+            // kind 必须是 `.unreadable` 而不是 `.permissionDenied`：后者会点亮卡片里那句
+            // "全局报告目录由 root:_analyticsusers 管理……"，而它只对**根**成立（D-P1-2）。
+            if !found.issues.contains(where: { $0.kind == .unreadable
+                && $0.message.contains("nested") && $0.message.contains("权限不足") }) {
+                bad.append("被拒子树没留下点名到路径的 unreadable 证据：\(found.issues.map(\.message))"
+                    + "——面板会指着少了报告的清单说这就是全部")
+            }
+            if found.issues.contains(where: { $0.kind == .permissionDenied }) {
+                bad.append("子目录权限不足被记成 .permissionDenied，会牵出卡片里那句只对本该说的"
+                    + "全局目录成立的话：\(found.issues.map(\.message))")
+            }
+            // 横幅断言必须**数得动**：`incompleteBanner([])` 也会返回一句带"不完整"的话
+            // （SpotlightModels.swift:51-57 的 `permissionOnly` 要求非空，空集走另一支），
+            // 所以只断言"包含不完整"是恒真——这里断言条数真的从 0 变成了 1（D-P1-3）。
+            let banner = GovernanceEvidenceIssue.incompleteBanner(found.issues)
+            if !banner.contains("1 个证据源读取失败") {
+                bad.append("被拒子树没让横幅把数量念出来：<\(banner)>")
+            }
+            if GovernanceEvidenceIssue.incompleteBanner([]).contains("1 个") {
+                bad.append("反证失效：空 issues 的横幅也带\"1 个\"，上面的断言恒真")
+            }
+            // 一个目录留下多条 issue 时，界面那句"N 个诊断目录"必须数位置而不是数条数
+            if DiagnosticReportCard.unreadablePositionCount(found.issues) != 1 {
+                bad.append("同一根目录的多条 issue 被念成 \(DiagnosticReportCard.unreadablePositionCount(found.issues)) 个目录")
+            }
+            if !ledger.contains(where: { $0.contains("nested") }) {
+                bad.append("被拒子树没记进全局盲区账：\(ledger)")
+            }
+
+            // 反证：同一棵树放开权限后必须 2 条报告、0 issues——否则上面的断言只是"永远报不完整"
+            chmod(nested, 0o755)
+            let ok = DiagnosticReportScanner().scanReport(dirs: [base], inventory: diagSelftestInventory())
+            if ok.items.count != 2 || !ok.issues.isEmpty {
+                bad.append("权限放开后仍不完整：items=\(ok.items.count) issues=\(ok.issues.map(\.message))")
+            }
+            if !bad.isEmpty { print("    ❌ " + bad.joined(separator: "\n    ❌ ")) }
+            return bad.isEmpty
+        }
+
         // 8. 已安装清单不完整时绝不判孤儿、绝不默选（「读不到」≠「可以删」）
         check("DiagnosticReport: 清单不完整时降级为需确认且不默选不执行删除") {
             let fm = FileManager.default
