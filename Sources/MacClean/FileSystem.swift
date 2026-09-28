@@ -756,13 +756,20 @@ enum FileSystem {
     /// `fileSize` vs `totalFileAllocatedSize`、跳不跳软链两处口径不一致——同一棵树、
     /// 五个面板五个数，而删除侧实测释放量只会是其中一种）。
     ///
-    /// 口径与 `computeMeasurement` 对齐，**同一棵树两个入口必须给出同一个数**：
-    /// 体积用 allocated；软链不计（删掉一条软链释放 0 字节）；目录本身不累计；
-    /// 被权限掐断的子树照常 `recordDeniedAccess`，且 `readable` 用**本次遍历自带的**
-    /// `WalkBlockFlag` 翻假（不查那份 64 条封顶、每轮清空的全局盲区清单）。
-    /// 与 `measure(at:)` 的两处刻意差别：① 不写两级缓存——调用方每轮逐条目调一次，
-    /// 条目随清理消失，缓存收益低而失效风险高；② **不下钻 .app 包**——治理面板列的是
-    /// 缓存目录与工程产物，包内口径是 `bundleSize` 那条链的专属，别把两个口径搅在一起。
+    /// 与 `measure(at:)` **相同**的部分：体积按 allocated；软链不计（删一条软链释放 0 字节）；
+    /// 目录自身不累计；被权限掐断的子树照常 `recordDeniedAccess`，且 `readable` 用**本次遍历
+    /// 自带的** `WalkBlockFlag` 翻假（不查那份 64 条封顶、每轮清空的全局盲区清单）。
+    ///
+    /// **两处刻意不同，别写成"同一个数"**（v1.73.10 复审 D-P1-4 更正：这里原本承诺
+    /// "同一棵树两个入口必须给出同一个数"，而实现两条都相反，钉它的自检又是 `f(X)==f(X)`
+    /// 同义反复——假承诺配假断言，等于无人执法）：
+    /// ① 本函数默认 `.skipsHiddenFiles`，`measure` 不跳隐藏项；
+    /// ② 本函数**会**下钻 `.app`/`.bundle` 包，`measure` 在 `descendIntoPackages:false` 下不钻。
+    /// 后果是树里只要有隐藏条目或包目录，面板数与删除侧实测数就是两个数，且**面板偏小**
+    /// （少报可释放量，属保守方向，不会诱导误删）。③ 另外本函数不写两级缓存：调用方每轮
+    /// 逐条目调一次，条目随清理消失，缓存收益低而失效风险高。
+    /// 差异由 `Selftest+CleanableAccounting` 的「面板 directoryStats 与删除侧 measure 两轴不同」一条钉住——**统一口径
+    /// 会改写五个已收编模块的历史数字**，要人拍板，别顺手改默认值。
     /// - Parameter skipHidden: 现有五处调用方全部 `.skipsHiddenFiles`，默认保持 true；
     ///   谁的领域里隐藏文件是合法条目（目前没有），谁显式传 false 并自证口径。
     static func directoryStats(at path: String, skipHidden: Bool = true) -> DirectoryStats {

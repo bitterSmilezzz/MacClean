@@ -244,6 +244,59 @@ extension Selftest {
             return true
         }
 
+        // 两个求体积入口的**两轴差异**：面板走 `directoryStats`（跳隐藏项、下钻 .app 包），
+        // 删除侧记账走 `measure`（不跳隐藏、不钻包）。`FileSystem.directoryStats` 的 doc
+        // 原先承诺"同一棵树两个入口同一个数"，而实现两条都相反，钉它的自检还是
+        // `f(X)==f(X)`——v1.73.10 复审 D-P1-4。这条把差异**钉成事实**：谁统一了口径，
+        // 这里会红，必须连同 doc 与五个模块的历史数字一起改，不许顺手挪默认值。
+        check("口径：面板 directoryStats 与删除侧 measure 在隐藏项/包目录两轴上刻意不同") {
+            let fm = FileManager.default
+            let root = "/tmp/macclean-caliber-axes-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: root + "/Foo.app/Contents", withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: root) }
+            func blob(_ path: String, _ megabytes: Int) {
+                try? Data(repeating: 0x41, count: 1_000_000 * megabytes)
+                    .write(to: URL(fileURLWithPath: path))
+            }
+            blob(root + "/visible.img", 1)
+            blob(root + "/.hidden.img", 2)
+            blob(root + "/Foo.app/Contents/payload.bin", 3)
+
+            let panel = FileSystem.directoryStats(at: root).size
+            let deleted = FileSystem.size(at: root)
+            var bad: [String] = []
+            // 方向必须已知：面板把包里的 3 MB 算进来却不算隐藏的 2 MB → 面板更大；
+            // 真实机器上隐藏项往往比包目录多，所以这条**不是**"面板永远偏小"的保证，
+            // 保证的是"两轴各算各的、差异可预期"。
+            if panel <= deleted {
+                bad.append("面板数 \(panel) ≤ 删除侧 \(deleted)：包目录那一轴已经不再下钻，口径动过")
+            }
+            if panel - deleted < 900_000 || panel - deleted > 1_200_000 {
+                bad.append("差额 \(panel - deleted) 不在「隐藏 2 MB − 包内 3 MB = 1 MB」量级附近")
+            }
+            if panel < 3_900_000 || panel > 4_200_000 { bad.append("面板数 \(panel) 不在 4 MB 量级") }
+            // 差异必须**由那个开关产生**，不是 walker 恰好算错：显式关掉 skipHidden 之后，
+            // 面板数应当正好长出隐藏项那 2 MB（allocated 有块对齐余量，用区间）。
+            let unhidden = FileSystem.directoryStats(at: root, skipHidden: false).size
+            if unhidden - panel < 1_900_000 || unhidden - panel > 2_200_000 {
+                bad.append("skipHidden=false 与默认值之间只差 \(unhidden - panel) 字节，"
+                    + "隐藏项那 2 MB 没被这个开关管住——两轴差异的成因变了")
+            }
+            if deleted < 2_900_000 || deleted > 3_200_000 { bad.append("删除侧 \(deleted) 不在 3 MB 量级") }
+
+            // 反证：没有隐藏项也没有包时，两个入口必须给出同一个数——
+            // 否则上面的差异可能来自 walker 坏了，而不是这两条轴。
+            let plain = "/tmp/macclean-caliber-plain-\(UUID().uuidString)"
+            try? fm.createDirectory(atPath: plain, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: plain) }
+            blob(plain + "/only.img", 1)
+            if FileSystem.directoryStats(at: plain).size != FileSystem.size(at: plain) {
+                bad.append("同一棵无隐藏/无包的树两个入口都不一致：walker 本身有问题")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         check("口径边界：全部项都可清理时，两个数字必须相等（不许在数字上做手脚）") {
             let app = AppState()
             let st = app.state(for: .userCaches)
