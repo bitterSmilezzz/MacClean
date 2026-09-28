@@ -63,8 +63,7 @@ public struct AndroidEmulatorOptimizerCard: View {
     /// （v1.73.10 二次复审 P2-10 / 三次复审 P1-2）：只判孤儿会让用户手工勾上残缺项、再点
     /// 「全选」时被静默取消；不判根则外接盘上的条目会被默认勾上，而界面写的是「只列示、不删」。
     static func isSelectable(_ item: AndroidEmulatorItem, root: String) -> Bool {
-        item.status.isProvenOrphan && item.readable
-            && FileSystem.isWithinGuardedRoot(FileSystem.normalizePath(root))
+        item.status.isProvenOrphan && item.readable && isWithinDeletableFace(root)
     }
 
     /// 有任意一项够得上可选额度，「全选」才有意义；否则按钮只能禁用（残缺项不构成额度）。
@@ -75,6 +74,22 @@ public struct AndroidEmulatorOptimizerCard: View {
     /// 「清理选中」的可用性：真有勾选项，且既不在扫描也不在清理中（防重复提交）。
     static func isCleanEnabled(_ items: [AndroidEmulatorItem], isScanning: Bool, isCleaning: Bool) -> Bool {
         items.contains(where: \.isSelected) && !isScanning && !isCleaning
+    }
+
+    /// 指标头条该显示什么。三档互斥，且**不许把"还没看"报成"没有"**（三次复审 C-P1：
+    /// 空态分句修了列表，指标条四行仍在结论未出时报 0，而「可释放潜力 0 B」读起来就是
+    /// "这台机器没东西可清"；放行面外的根更矛盾——一边写"一条都不勾"，一边报"可释放 5 GB"）。
+    static func headlineMetric(hasLoaded: Bool, isScanning: Bool, summary: AndroidEmulatorSummary)
+        -> (value: String, detail: String) {
+        if !hasLoaded || isScanning { return ("—", "扫描中·结论未出") }
+        if !isWithinDeletableFace(summary.avdRoot) { return ("不删", "根不在放行面·只列示") }
+        return (summary.orphanSize.byteStringCN, "孤儿 \(summary.orphanCount) 项")
+    }
+
+    /// 根能不能落在网关的常规放行面里。判据只此一处，`isSelectable` 与指标头条共用，
+    /// 免得两边各写一遍然后哪天不同步（那正是"承诺与行为相反"的成因）。
+    static func isWithinDeletableFace(_ root: String) -> Bool {
+        FileSystem.isWithinGuardedRoot(FileSystem.normalizePath(root))
     }
 
     public var body: some View {
@@ -170,11 +185,16 @@ public struct AndroidEmulatorOptimizerCard: View {
     }
 
     private var metricsSummaryBar: some View {
-        HStack(spacing: Space.md) {
-            metric(title: "可释放潜力", value: summary.orphanSize.byteStringCN,
-                   detail: "孤儿 \(summary.orphanCount) 项")
-            metric(title: "镜像已删", value: "\(summary.brokenImageCount)", detail: "需确认·不默删")
-            metric(title: "健康 AVD", value: "\(summary.liveCount)", detail: "勿动")
+        // 三格都走 `headlineMetric`/`pendingMetric`：结论未出时是"— + 扫描中·结论未出"，
+        // 而不是四个 0——四个 0 读起来等于"这台机器没东西可清"（三次复审 C-P1）。
+        let headline = Self.headlineMetric(hasLoaded: hasLoaded, isScanning: isScanning, summary: summary)
+        let pending = !hasLoaded || isScanning
+        return HStack(spacing: Space.md) {
+            metric(title: "可释放潜力", value: headline.value, detail: headline.detail)
+            metric(title: "镜像已删", value: pending ? "—" : "\(summary.brokenImageCount)",
+                   detail: pending ? "结论未出" : "需确认·不默删")
+            metric(title: "健康 AVD", value: pending ? "—" : "\(summary.liveCount)",
+                   detail: pending ? "结论未出" : "勿动")
             Spacer()
         }
     }

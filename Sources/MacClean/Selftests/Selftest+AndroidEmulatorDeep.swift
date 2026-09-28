@@ -1171,6 +1171,13 @@ extension Selftest {
 
             // 反证：真的扫完且没有孤儿时，那句"未发现"必须出现——否则上面两条只是
             // "永远显示正在扫描"，不构成证据。
+            // 指标条同一家族：结论未出时不许报 0（三次复审 C-P1：四个 0 读起来就是"没东西可清"）。
+            _ = try scanning.inspect().find(text: "扫描中·结论未出")
+            do {
+                _ = try scanning.inspect().find(text: "孤儿 0 项")
+                bad.append("还没扫完就在指标条写「孤儿 0 项」")
+            } catch { /* 期望抽不到 */ }
+
             let settled = AndroidEmulatorOptimizerCard(onClose: {}, initialSummary: empty)
             _ = try settled.inspect().find(text: "未发现孤儿 AVD 或已删镜像")
             do {
@@ -1258,6 +1265,32 @@ extension Selftest {
             if AndroidEmulatorOptimizerCard.isCleanEnabled(picked, isScanning: false, isCleaning: true) {
                 bad.append("清理中还能再提交一次（重复删除）")
             }
+
+            // 指标头条三档（三次复审 C-P1）：结论未出与"这根不可删"都不许报字节数。
+            func summaryWith(root: String) -> AndroidEmulatorSummary {
+                AndroidEmulatorSummary(items: [], orphanCount: 2, orphanSize: 5_000_000,
+                                       brokenImageCount: 1, liveCount: 3, issues: [],
+                                       avdRoot: root, detectedSDKRoots: [])
+            }
+            let faceRoot = summaryWith(root: "/tmp/macclean-selftest-avd-ui")
+            let pendingPair = ("—", "扫描中·结论未出")
+            let h1 = AndroidEmulatorOptimizerCard.headlineMetric(hasLoaded: false, isScanning: false,
+                                                                 summary: faceRoot)
+            let h2 = AndroidEmulatorOptimizerCard.headlineMetric(hasLoaded: true, isScanning: true,
+                                                                 summary: faceRoot)
+            if h1 != pendingPair || h2 != pendingPair {
+                bad.append("结论未出时头条报成了具体数字：未加载=\(h1) 扫描中=\(h2)，应为 \(pendingPair)")
+            }
+            let h3 = AndroidEmulatorOptimizerCard.headlineMetric(
+                hasLoaded: true, isScanning: false, summary: summaryWith(root: "/Users/Shared/.android/avd"))
+            if h3 != ("不删", "根不在放行面·只列示") {
+                bad.append("放行面外的根仍报可释放量：\(h3)——一边说「一条都不勾」一边说「可释放 5 MB」")
+            }
+            let h4 = AndroidEmulatorOptimizerCard.headlineMetric(hasLoaded: true, isScanning: false,
+                                                                 summary: faceRoot)
+            if h4 != ("5 MB", "孤儿 2 项") {
+                bad.append("对照组失效：放行面内、已扫完的头条没报真实额度：\(h4)")
+            }
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
         }
@@ -1279,7 +1312,9 @@ extension Selftest {
                            "Self.isCleanEnabled(items, isScanning: isScanning, isCleaning: isCleaning)",
                            ".disabled(!selectAllEnabled)",
                            ".disabled(!cleanEnabled)",
-                           "Self.isSelectable(summary.items[i],"] {
+                           "Self.isSelectable(summary.items[i]",
+                           "Self.headlineMetric(hasLoaded: hasLoaded, isScanning: isScanning, summary: summary)",
+                           "if !isWithinDeletableFace(summary.avdRoot) {",] {
                 if !src.contains(needle) { bad.append("消费点缺失或改道：\(needle)") }
             }
             // 判据本体只允许出现一次（就在 `isSelectable` 里）。出现第二份就是分叉的开始。
