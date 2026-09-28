@@ -284,6 +284,30 @@ extension Selftest {
             }
             if deleted < 2_900_000 || deleted > 3_200_000 { bad.append("删除侧 \(deleted) 不在 3 MB 量级") }
 
+            // 差异方向**不固定**，两轴各推一边，所以必须两个方向都有夹具：
+            // 隐藏项占优时面板偏小，包目录占优时面板偏大。真机实测印证了这一点
+            // （2026-09-28，两个真入口跑同一棵树）：含包目录的缓存树面板比删除侧
+            // **多约 1.06 GB**，含隐藏项的容器树**少约 67 MB**，另两棵树差 0。
+            // "面板永远偏小、属保守方向"这种说法是错的，别拿它当安全垫。
+            let hiddenHeavy = root + "/hh"
+            try? fm.createDirectory(atPath: hiddenHeavy, withIntermediateDirectories: true)
+            blob(hiddenHeavy + "/visible.img", 1)
+            blob(hiddenHeavy + "/.hidden.img", 5)          // 隐藏项 5 MB > 包 0
+            let hp = FileSystem.directoryStats(at: hiddenHeavy).size
+            let hd = FileSystem.size(at: hiddenHeavy)
+            if hp >= hd {
+                bad.append("隐藏项占优的树里面板没有偏小（hp=\(hp) hd=\(hd)）——两轴方向断言失效")
+            }
+            let packageHeavy = root + "/ph"
+            try? fm.createDirectory(atPath: packageHeavy + "/Big.app/Contents", withIntermediateDirectories: true)
+            blob(packageHeavy + "/visible.img", 1)
+            blob(packageHeavy + "/Big.app/Contents/payload.bin", 6)   // 包 6 MB > 隐藏 0
+            let pp = FileSystem.directoryStats(at: packageHeavy).size
+            let pd = FileSystem.size(at: packageHeavy)
+            if pp <= pd {
+                bad.append("包目录占优的树里面板没有偏大（pp=\(pp) pd=\(pd)）——差异方向写反了")
+            }
+
             // 反证：没有隐藏项也没有包时，两个入口必须给出同一个数——
             // 否则上面的差异可能来自 walker 坏了，而不是这两条轴。
             let plain = "/tmp/macclean-caliber-plain-\(UUID().uuidString)"
