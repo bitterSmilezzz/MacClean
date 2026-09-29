@@ -312,7 +312,8 @@ struct HistoryRow: View {
                     .foregroundStyle(Signal.positive)
             }
 
-            Text(record.bytes.byteStringCN)
+            Text(record.freedIsLowerBound == true
+                 ? record.bytes.byteStringCN + "（下限）" : record.bytes.byteStringCN)
                 .font(.mcNumeric(12, weight: .semibold))
                 .foregroundStyle(Ink.primary)
                 .frame(width: 80, alignment: .trailing)

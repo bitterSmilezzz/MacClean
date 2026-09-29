@@ -281,6 +281,198 @@ extension Selftest {
             return outcome.cleanedCount == 1 && outcome.freedBytes == dirSize && !stillThere
         }
 
+        // 13. 删除前实测体积被权限截断时，"这只是下限"必须一路带到结论里。
+        //     以前 `measure` 内部知道被截断（`walkWasBlocked`），但只用来决定"要不要写进
+        //     跨会话缓存"，用完就丢——于是网关把下限当实数记账，Toast 与历史都写"释放 2.4 GB"
+        //     而真实值只会更大（v1.73.12 复审 E-P2）。
+        check("删除网关：实测体积是下限时必须计入 lowerBoundCount 并写进 summary") {
+            let root = makeFixture("lowerbound")
+            let locked = root + "/locked"
+            try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+            makeFile(root + "/visible.bin", 1_000_000)
+            makeFile(locked + "/hidden.bin", 2_000_000)
+            chmod(locked, 0o000)
+            defer { try? fm.removeItem(atPath: root) }
+            if let attrs = try? fm.attributesOfItem(atPath: locked),
+               let mode = attrs[.posixPermissions] as? NSNumber, mode.int16Value != 0 {
+                print("      夹具权限没设成 000（mode=\(String(format: "%o", mode.int16Value))），本条无法验证")
+                return false
+            }
+
+            FileSystem.beginMeasurementSession()
+            let size = FileSystem.size(at: root)
+            var bad: [String] = []
+            if !FileSystem.isLowerBoundSize(at: root) {
+                bad.append("被权限截断的树没标成下限（size=\(size)）——网关会继续把约数当实数记账")
+            }
+            // 必须先解除权限锁再删：000 子目录会让 `removeItem` 本身失败
+            // （枚举不出内容就删不掉），那样测的就不是"下限有没有带出去"而是删除失败了。
+            // 这也正是真实的顺序——测量时被挡，删之前用户补了授权。
+            // 下限标记按会话留存在 `lowerBoundKeys` 里，不会因为 chmod 而丢。
+            chmod(locked, 0o755)
+            let outcome = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("整目录", path: root)], toTrash: false, journal: .none)
+            if outcome.cleanedCount != 1 { bad.append("目录没被删掉：cleaned=\(outcome.cleanedCount)") }
+            if outcome.lowerBoundCount != 1 {
+                bad.append("网关结论没带出下限计数：\(outcome.lowerBoundCount)")
+            }
+            if !outcome.summary.contains("下限") {
+                bad.append("summary 没把约数说出来，用户看到的还是一个精确值：<\(outcome.summary)>")
+            }
+            // 反证：一棵全可读的树不许带下限，否则上面三条只是"逢删就说约数"
+            let cleanRoot = makeFixture("cleanbound")
+            defer { try? fm.removeItem(atPath: cleanRoot) }
+            makeFile(cleanRoot + "/a.bin", 4096)
+            FileSystem.beginMeasurementSession()
+            let cleanSize = FileSystem.size(at: cleanRoot)
+            let clean = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("整目录", path: cleanRoot)], toTrash: false, journal: .none)
+            if FileSystem.isLowerBoundSize(at: cleanRoot) || clean.lowerBoundCount != 0
+                || clean.summary.contains("下限") {
+                bad.append("全可读的树也被说成下限（size=\(cleanSize) clean.lowerBound=\(clean.lowerBoundCount)）")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        // 13b. 下限标记的**生命周期**四条各钉一次（v1.73.12 复审 F-P1-3：上一版只测了
+        //      "被截断时会亮"，对四种变异全绿——清集会漏、复算不清、merge 不加、口径维度混）。
+        check("测量下限标记的生命周期：随会话清、复算会改、merge 会加、两种口径分键") {
+            let fm = FileManager.default
+            func truncatedTree(_ tag: String) -> (String, String) {
+                let root = makeFixture(tag)
+                let locked = root + "/locked"
+                try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+                makeFile(root + "/visible.bin", 1_000_000)
+                makeFile(locked + "/hidden.bin", 2_000_000)
+                chmod(locked, 0o000)
+                return (root, locked)
+            }
+            var bad: [String] = []
+            defer { try? fm.removeItem(atPath: "/tmp") }   // 占位，真正的清理在下面逐个做
+
+            // ① 被截断 → 亮；`beginMeasurementSession` 之后必须**灭**（清集失效就会一直亮着）
+            let (r1, l1) = truncatedTree("lbclear")
+            FileSystem.beginMeasurementSession()
+            _ = FileSystem.size(at: r1)
+            if !FileSystem.isLowerBoundSize(at: r1) { bad.append("① 截断树没亮下限") }
+            chmod(l1, 0o755)
+            FileSystem.beginMeasurementSession()
+            if FileSystem.isLowerBoundSize(at: r1) {
+                bad.append("① 新会话开始后旧标记还在——`lowerBoundKeys` 没随会话清")
+            }
+            try? fm.removeItem(atPath: r1)
+
+            // ② 同一会话内"先残缺后完整"必须**灭**（少了 else-remove 就一直亮）
+            let (r2, l2) = truncatedTree("lbrecompute")
+            FileSystem.beginMeasurementSession()
+            _ = FileSystem.size(at: r2)
+            chmod(l2, 0o755)
+            FileSystem.invalidateMeasurements(for: [r2])
+            _ = FileSystem.size(at: r2)
+            if FileSystem.isLowerBoundSize(at: r2) {
+                bad.append("② 授权后重算完成，标记却没清——复算路径漏了 else 分支")
+            }
+            try? fm.removeItem(atPath: r2)
+
+            // ③ merge 必须把计数相加（漏加的话：模块自己 merge 的结论会把约数说没）
+            var left = ResidueDeletionGate.Outcome()
+            left.lowerBoundCount = 2
+            var right = ResidueDeletionGate.Outcome()
+            right.lowerBoundCount = 3
+            left.merge(right)
+            if left.lowerBoundCount != 5 {
+                bad.append("③ merge 后 lowerBoundCount=\(left.lowerBoundCount)，应为 5")
+            }
+            if left.summary.contains("没有可清理") == false {
+                bad.append("③ merge 出的结论不该凭空宣称清理了什么：\(left.summary)")
+            }
+
+            // ④ 两种口径分键：只跑 `bundleSize`（下钻包）时，非包口径的查询不许跟着亮
+            let (r4, l4) = truncatedTree("lbpkg")
+            FileSystem.beginMeasurementSession()
+            _ = FileSystem.bundleSize(at: r4)
+            let pkgFlag = FileSystem.isLowerBoundSize(at: r4, descendIntoPackages: true)
+            let plainFlag = FileSystem.isLowerBoundSize(at: r4)
+            chmod(l4, 0o755)
+            if !pkgFlag { bad.append("④ 包口径的下限标记没亮") }
+            if plainFlag {
+                bad.append("④ 只测了包口径却让非包口径也跟着亮——两种口径共用了同一个键")
+            }
+            try? fm.removeItem(atPath: r4)
+
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        // 13c. "下限"必须活到清理历史里，而且**老 history.json 必须还能解码**——
+        //      这是给 `CleanRecord.freedIsLowerBound` 为什么必须是 Optional 拿的证据：
+        //      合成 Codable 对 Optional 走 decodeIfPresent，缺键解出 nil；换成非 Optional
+        //      就会让整份历史解码失败（本仓在测量缓存上踩过同一条）。
+        check("清理历史：老记录缺 freedIsLowerBound 键必须仍能解码，且下限要跟着进历史") {
+            let fm = FileManager.default
+            var bad: [String] = []
+            let legacy = #"[{"id":"1F111111-1111-1111-1111-111111111111","date":800000000.0,"categoryName":"旧分类","itemCount":3,"bytes":4242,"mode":"废纸篓","failures":0}]"#
+            let decoder = JSONDecoder()
+            let oldRecords: [CleanRecord]
+            do {
+                oldRecords = try decoder.decode([CleanRecord].self, from: Data(legacy.utf8))
+            } catch {
+                print("      ❌ 改动前格式的 history.json 解不开了：\(error)")
+                return false
+            }
+            guard let legacy0 = oldRecords.first else {
+                print("      ❌ 老记录解码后为空"); return false
+            }
+            if legacy0.freedIsLowerBound != nil || legacy0.bytes != 4242 || legacy0.itemCount != 3 {
+                bad.append("老记录解出来不对：lower=\(String(describing: legacy0.freedIsLowerBound)) bytes=\(legacy0.bytes)")
+            }
+            let flagged = CleanRecord(id: UUID(), date: Date(), categoryName: "自检",
+                                      itemCount: 1, bytes: 100, mode: "彻底删除",
+                                      freedIsLowerBound: true)
+            let data = try? JSONEncoder().encode([flagged])
+            let back = data.flatMap { try? decoder.decode([CleanRecord].self, from: $0) }
+            if back?.first?.freedIsLowerBound != true {
+                bad.append("true 没能往返：\(String(describing: back?.first?.freedIsLowerBound))")
+            }
+
+            // 端到端：删一棵被权限截断的树，写进历史的记录必须带下限；干净树必须不带
+            let histFile = "/tmp/macclean-gate-hist-\(UUID().uuidString).json"
+            let prevOverride = HistoryStore.fileURLOverride
+            HistoryStore.fileURLOverride = URL(fileURLWithPath: histFile)
+            defer { HistoryStore.fileURLOverride = prevOverride; try? fm.removeItem(atPath: histFile) }
+            func delete(_ tag: String, category: String, lockOne: Bool) -> CleanRecord? {
+                let root = makeFixture(tag)
+                let locked = root + "/locked"
+                try? fm.createDirectory(atPath: locked, withIntermediateDirectories: true)
+                makeFile(root + "/visible.bin", 1_000_000)
+                makeFile(locked + "/hidden.bin", 2_000_000)
+                if lockOne { chmod(locked, 0o000) }
+                FileSystem.beginMeasurementSession()
+                _ = FileSystem.size(at: root)          // 先测，把下限标记落到会话里
+                chmod(locked, 0o755)                   // 再放开，否则 removeItem 本身会失败
+                let out = ResidueDeletionGate.execute(
+                    [ResidueDeletionGate.Candidate("整目录", path: root)],
+                    toTrash: false, journal: .module(categoryName: category))
+                guard out.cleanedCount == 1 else {
+                    print("      ❌ \(category)：没删掉（cleaned=\(out.cleanedCount)）")
+                    return nil
+                }
+                // 每次用不同的分类名，避免读到上一次的记录
+                return HistoryStore.load().first(where: { $0.categoryName == category })
+            }
+            let withBound = delete("histbound", category: "自检-下限", lockOne: true)
+            if withBound?.freedIsLowerBound != true {
+                bad.append("删过被截断的树，历史记录却没带下限：\(String(describing: withBound?.freedIsLowerBound))")
+            }
+            let clean = delete("histclean", category: "自检-完整", lockOne: false)
+            if clean?.freedIsLowerBound != nil {
+                bad.append("全可读的树也被记成下限：\(String(describing: clean?.freedIsLowerBound))")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
         // 12. 自检不许把夹具丢进**用户真实的废纸篓**：`execute` 的 `toTrash` 默认是 true，
         //     漏写就等于每跑一次自检往 `~/.Trash` 塞一批测试目录（与"自检不污染真实机器"
         //     这条既有原则冲突）。本轮之前有 8 处就是漏写的，已全部补成 `toTrash: false`；

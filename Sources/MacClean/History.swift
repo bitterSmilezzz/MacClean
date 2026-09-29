@@ -10,6 +10,11 @@ struct CleanRecord: Codable, Identifiable, Equatable {
     var bytes: Int64
     var mode: String        // 废纸篓 / 彻底删除
     var failures: Int
+    /// `bytes` 只是**下限**（删除前有分支被权限挡掉，没被看到）。
+    /// 必须是 Optional：合成 `Codable` 对 Optional 走 `decodeIfPresent`，老 `history.json`
+    /// 里没有这个键也能解出 nil；换成非 Optional + 默认值就会让历史整份解码失败
+    /// （本仓在测量缓存上踩过同一条，见 `FileSystem.DirectoryStats` 的注释）。
+    var freedIsLowerBound: Bool?
 
     init(
         id: UUID = UUID(),
@@ -18,7 +23,8 @@ struct CleanRecord: Codable, Identifiable, Equatable {
         itemCount: Int,
         bytes: Int64,
         mode: String,
-        failures: Int = 0
+        failures: Int = 0,
+        freedIsLowerBound: Bool? = nil
     ) {
         self.id = id
         self.date = date
@@ -27,6 +33,7 @@ struct CleanRecord: Codable, Identifiable, Equatable {
         self.bytes = bytes
         self.mode = mode
         self.failures = failures
+        self.freedIsLowerBound = freedIsLowerBound
     }
 }
 

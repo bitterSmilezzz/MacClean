@@ -56,6 +56,10 @@ enum ResidueDeletionGate {
         var rejected: [Rejection] = []
         var failed: [(name: String, path: String, message: String)] = []
         var trashedSnapshots: [TrashedItemEntry] = []
+        /// 有多少项的实测体积其实是**下限**（删除前有分支被权限挡掉，没被看到）。
+        /// 只用于把话说成约数，不进任何持久化记录（`CleanRecord` 是 Codable，加字段会踩
+        /// "合成 Codable 不用默认值 → 老记录解码必炸"那条既有坑）。
+        var lowerBoundCount = 0
 
         init() {}
 
@@ -71,7 +75,11 @@ enum ResidueDeletionGate {
         /// 一句可直接放进 Toast 的结论
         var summary: String {
             var parts: [String] = []
-            if cleanedCount > 0 { parts.append("已清理 \(cleanedCount) 项 / \(freedBytes.byteStringCN)") }
+            if cleanedCount > 0 {
+                let amount = freedBytes.byteStringCN
+                    + (lowerBoundCount > 0 ? "（其中 \(lowerBoundCount) 项只读到下限）" : "")
+                parts.append("已清理 \(cleanedCount) 项 / \(amount)")
+            }
             if !needsPrivilege.isEmpty {
                 parts.append("\(needsPrivilege.count) 项由 root 管理，无权限删除")
             }
@@ -96,6 +104,7 @@ enum ResidueDeletionGate {
             rejected.append(contentsOf: other.rejected)
             failed.append(contentsOf: other.failed)
             trashedSnapshots.append(contentsOf: other.trashedSnapshots)
+            lowerBoundCount += other.lowerBoundCount
         }
 
         /// 非变异版：`Outcome(rejected: blocked).merging(gateOutcome)`
@@ -167,7 +176,10 @@ enum ResidueDeletionGate {
             // DevProject / PluginExtension / Downloads / AppLocalization / Preference 这些分类的
             // 面板体积用的是 `size`/`bundleSize`，今天它们"面板 = 记账"，换成目录口径反而
             // 变成系统性少配（v1.73.11 复审 E-P1-1 实测驳回）。真正统一要逐模块决定，见任务 #15。
-            let actual = FileSystem.size(at: real)
+            // 一次调用同时拿"体积"和"它只是下限"——分两次问会被并发的
+            // `beginMeasurementSession` 在中间把标记清掉（v1.73.12 复审 F-P1-2）。
+            let sizing = FileSystem.sizeWithProvenance(at: real)
+            let actual = sizing.bytes
             do {
                 if toTrash {
                     var resulting: NSURL?
@@ -182,6 +194,9 @@ enum ResidueDeletionGate {
                 }
                 out.cleanedCount += 1
                 out.freedBytes += actual
+                // 只有**真删掉的**项才配进"其中 N 项只读到下限"——计数放在成功分支里，
+                // 否则删除失败也会计数，N 可能大于已清理项数（v1.73.12 复审 F-P1-1）。
+                if sizing.isLowerBound { out.lowerBoundCount += 1 }
                 out.cleanedPaths.append(real)
                 deletedRealPaths.append(real)
                 FileSystem.invalidateMeasurements(for: [real])
@@ -225,7 +240,10 @@ enum ResidueDeletionGate {
         let record = CleanRecord(
             id: UUID(), date: Date(), categoryName: categoryName,
             itemCount: outcome.cleanedCount, bytes: outcome.freedBytes,
-            mode: permanently ? "彻底删除" : "废纸篓", failures: outcome.errorCount)
+            mode: permanently ? "彻底删除" : "废纸篓", failures: outcome.errorCount,
+            // 只在"确实是下限"时写 true，其余留 nil——老记录与不需要这句话的记录
+            // 保持和改动前逐字节一致。
+            freedIsLowerBound: outcome.lowerBoundCount > 0 ? true : nil)
         HistoryStore.append(record)
 
         if !permanently && !outcome.trashedSnapshots.isEmpty {
