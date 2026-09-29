@@ -1,0 +1,201 @@
+# MacClean 深度优化方案（v1.73.14 之后）
+
+生成于 2026-09-29，基于 v1.73.14 已发布状态。来源：6 路独立只读审计（删除安全 / 谎报剩余面 /
+自检执法力 / 架构重复 / 新模块候选 / 文档与发布卫生）+ 本会话对高危条目的**逐条代码复现**。
+
+## 0. 怎么读这份方案
+
+- **它不是待办清单，是判据 + 队列**。每一轮仍然按 `AGENTS`/cron 里的优先级自己挑，
+  只是这里把"已知真实问题"摆到台面上，避免重复发现。挑中哪条就做哪条，做完划掉并补新证据。
+- 每条都带 `file:line` 与**复现状态**：
+  - `已复现` = 本会话亲自读过那段代码或跑过命令确认；
+  - `审计提出` = 只读审计给的，位置可信但我没逐字复核；
+  - `待验证` = 需要先造夹具/真机读数才能判定是否成立，**不许据此直接改护栏**。
+- **脱敏约定**：本文只写仓库内路径与代码形状。涉及第三方应用的位置一律写成
+  `<vendor>` / `<name>.<ts>.old` 这类占位形式——本机装了哪些软件本身就是个人数据。
+- 一轮的体量上限：**一条带 `file:line` 的真实问题 + 会判红的自检 + 变异验证**。
+  下面的「轮次编排」就是按这个粒度切的。
+
+## 1. 现状底数（实测，不是估计）
+
+| 维度 | 数 | 说明 |
+|---|---|---|
+| 规模 | 144 产品文件 + 65 自检文件 / 85,357 行 | 最大：`CategoryDetailView.swift` 2389、`Scanner.swift` 1952、`UninstallerView.swift` 1925 |
+| 自检 | 784 条 `check(` | 本机跑到并绿 **696**；**34** 条红灯被 §0.2 基线"按名赦免"；**54** 条随 7 个崩溃套件整片没跑 |
+| 执法力 | 逻辑层约九成；**删除动作的"界面→网关"那一层约三分之一** | 18 张卡片/视图在自检里名字都不出现 |
+| 结果面 | 8 份包装类型（6 结构体 + 2 元组）/ 51 个转发成员 | 加一个字段要改 10 处转发；**元组那 2 处编译期不报错** |
+| 本轮代价 | v1.73.14 的 `trashedBytes/space` 改了 **34 个产品文件** | 这就是"结果面没收口"的直接成本 |
+| 门禁 | `release.sh` 只比失败**名集**，不比通过数 | 崩溃点前移、吞掉几十条绿是免费的 |
+| 定时任务 | 每小时自动优化 cron **当前停用**（`pauseReason=manual`） | 且其选题指令仍写着"已知优选：Android AVD 孤儿"——该模块 v1.73.10 已发布 |
+
+## 2. P0 队列（误删 / 不可恢复 / 数据外泄方向）
+
+### P0-1 无人值守清理丢弃撤销快照 —— `已复现`
+
+`DiskMonitor.swift:281-296`：`Cleaner.clean(..., permanently: false)` 之后只 `recordClean(...)`
+写了一行历史，**`result.trashedSnapshots` 被整个丢掉**，从不 `UndoManagerStore.record`。
+对照三条同类路径都写了：`ResidueDeletionGate.swift:273`、`AppState.swift:593-597`、
+`AutoCleanService.swift:131-135`。
+
+→ 后果：唯一"没人看着也会删"的链路留下一行永远点不动的「放回原位」；
+若同时开着"废纸篓自动清空"（彻底删除、无快照），这批文件**永久找不回**。
+
+修法：把"历史行 + 撤销快照"收成**一个出口**（网关 `record()` 已经是这个形状），
+静默清理、卸载器、归档三处一起复用。自检两条腿：
+① 行为——隔离状态目录下跑一次静默清理，断言每条 `mode` 含"废纸篓"的历史记录都能在
+`UndoManagerStore.load()` 找到同 `recordID` 的会话且条目数相等；
+② 源码 lint——穷举 `Cleaner.clean(` 调用点，其所在函数体必须引用 `UndoManagerStore.record`，
+除非该调用点的 `permanently` 可静态证真。现状下 `DiskMonitor` 与 `Uninstaller` 两处都会判红。
+
+### P0-2 卸载器与归档/迁移整条链路不记账、不留快照 —— `审计提出`（位置可信）
+
+- `Uninstaller.swift:288-327`（入口 `UninstallerView.swift:125/517`）对
+  `HistoryStore` / `UndoManagerStore` **零引用**，而它删的常是 `Application Support/<App>`（真数据）。
+- `SpaceArchiveService.swift:192/278`：归档/迁移成功后 `trashItem` 移走原件，
+  护栏齐（`:375`）但**不写历史、不写快照**；且裁决用 `path`、动手用未解析的 `expanded`。
+
+→ 用户侧表现为"应用不知道发生过什么"：历史虚低、无法放回、大文件归档后原件在废纸篓这件事没有记录。
+修法与 P0-1 同一个出口，因此**合并成一轮**。
+
+### P0-3 主链路的软链防跳板第一层是死的 —— `已复现`
+
+`Cleaner.swift:51` 先 `realPath(path)`，`:54` 把**已解析串**交给 `isSafeToClean`；
+而 `FileSystem.swift:1374` 的第一道判断是 `if isSymlink(path) { return false }`——
+对已解析结果恒不成立。网关侧这一层是活的（它拿原始 `candidate.path` 判）。
+
+→ 后果：扫描与删除之间被换成软链（或面板列出的本来就是软链）时，主链路删的是
+**链指向的真目录**，而 `size(at:)` 对软链返回 0，界面显示 0 字节、实际清掉一整棵树。
+`permanently: true` 时直接消失。
+
+修法：在 `Cleaner` 里对**原始** `item.paths` 元素先 `isSymlink` 再解析（把网关那两层顺序抄齐）。
+自检：真机造一个"面板项是软链、指向另一棵主目录内真树"的夹具，断言主链路拒绝且文件原样。
+注意这条会牵动既有 `realPath` 单次解析的 TOCTOU 论证，**必须连注释一起改**，
+否则下一个人会把它"修回去"。
+
+### P0-4 用户数据目录上的默认勾选被一条纯年龄规则破掉 —— `已复现（形状）`
+
+`DownloadsOrganizerModels.swift:77`：`if ageDays >= 90 { return true }`（默认勾选推荐判据），
+赋值点在 `DownloadsOrganizerScanner.swift:107`；截图侧同形 `ScreenshotsOrganizerModels.swift:92`。
+卡片删除按钮直接吃 `filter(\.isSelected)`（`DownloadsOrganizerCard.swift:392`）。
+
+→ G2「默认不勾用户数据」在 `~/Downloads`、`~/Desktop`、`~/Pictures` 上被"放够 90 天"这一条
+年龄证据破掉，而年龄不是"这是垃圾"的证据（pdf/docx/mp4 是文档与照片）。
+修法：兜底档（纯年龄、无所有权/无引用证据）降为「需确认」，**不参与默认勾选**；
+`<vendor>` 类"名字就写着 backups / 宿主在装"的目录要进 C1 反例名单（见 P1-6）。
+
+### P0-5 脱敏门禁可被同形词与备案表静默放行 —— `已复现`
+
+公开仓库 + 天生读全盘的软件，这一条按红线优先级排进 P0：
+
+1. `scripts/release.sh:146` `if fixture_shape "${v}"` 判的是**整行内容**——
+   真凭据只要与 `test` / `fake` / `dummy` / 连续数字 / `{xxx}` 同行，就只打印不计数，
+   **绝对零命中那五类也照样豁免**。
+2. `report_hit`（`:126`）**先查备案表再计数**，所以"abs 类不许备案"只是文案（`:228`）；
+   而 `scripts/secrets-allowlist.txt` 里已经有一行 `hist * private_key`——
+   文件为 `*` 的 scope 让**整条私钥规则对全部 git 历史失效**。
+3. `--skip-scan`（`:217`）只 `warn` 然后照常 commit / push / release。
+4. 历史扫描只吃 `git log -p`，不扫 commit/tag message；`git grep` 只扫索引内文件，
+   而 `git add` 在第 6 步 → **本轮新增的未跟踪文件本轮不扫**；标题参数 `TITLE` 进 tag 也不扫。
+5. 规则形状缺口：`gh[pousrIw]_` 不匹配细粒度 PAT（`github_pat_…`）、私钥头大小写敏感、
+   base64/跨行拼接无覆盖、identity 扫描只 grep 当前 `id -un`。
+
+修法（一轮内可全做完，纯脚本 + 一条会判红的自检）：abs 类在 `report_hit` 里**先判类型再谈备案**，
+命中即 die；`fixture_shape` 只允许作用于**匹配片段**且 abs 类禁用该豁免；
+`--skip-scan` 改为"跳过即 die，除非同时 `--dry-run`"；扫描 pathspec 与 `git add` pathspec 对齐、
+`add` 之后再扫一遍 staged；补 `github_pat_`、`-i`、commit/tag message 三类；
+备案表禁 `file=*` 且每条必须带证据行号。
+
+## 3. P1 队列
+
+### 族 A：结论仍然与真相不符的地方
+
+| # | 位置 | 症状 → 后果 | 状态 |
+|---|---|---|---|
+| P1-1 | `AIService.swift:733` + `:718` + `:661` | `lsof` 不存在/超时/失败一律返回 `[]`，界面渲染成「占用进程：无（本地 lsof 检测）」，而 systemPrompt 明写"为空说明当前无进程占用" → **把"没探到"当权威证据喂给外部模型判删**，可能建议删正在写的文件 | `已复现` |
+| P1-2 | `DiskInfo.swift:7` + `AppState.swift:117` | 「可用」取 `volumeAvailableCapacityForImportantUsage`（含 purgeable，最讨好的一档），`已用 = total − 可用` → 仪表盘/菜单栏同屏的已用/可用比 Finder、`df` 各偏约 3 GB（本机实测三档跨 14.3 GB），`DiskMonitor:312` 低空间告警**晚 3 GB 才响** | `已复现` |
+| P1-3 | 动作**之前**的 10 处手写动词：`QuickCleanPanel:325`、`DashboardView:255`、`DiagnosticReportCard:151/386`、`Spotlight:173`、`PrinterDriver:170`、`ColorSync:153`、`AndroidEmulator:193`、`NotificationManager:69/72` | v1.73.14 只收了"结果句"，**承诺侧没收**：默认落点是 `toTrash`，用户点「极速释放 X」之后磁盘一分不动 | `审计提出` |
+| P1-4 | `HardlinkDedupService.swift:409` | `freed = st_size`：APFS **克隆**对（nlink=1、共享 extent）link+rename 后复核照过 → 报「释放 N」而 Δdisk=0；稀疏/压缩文件同错。`DuplicateScanner.wastedBytes` 同口径 | `待验证`（需 `cp -c` 夹具 + reflink 计数或删前删后 `df` 差值） |
+| P1-5 | `HistoryExporter.swift:312/353`、`SpaceArchiveService.swift:332` | 生成的迁移脚本把**生成时**的总和写死成「释放本地空间 X」，与实际 rsync 成功数无关；`--remove-source-files` 不删空目录、不复核 | `审计提出` |
+| P1-6 | `LoginItemCleaner.swift:77`、`QuickLookThumbnailPurgerCard.swift:145`、`CLICacheOptimizerCard.swift:190` | `try? contentsOfDirectory else continue` 不留痕；`unreadablePaths` 被采集却**从不渲染**（注释还写着"卡片顶栏据此说…"）→ 空态直陈"系统启动项健康 / 数据库极小或已重置 / 系统非常干净"。同类：C1（`~/Library/Caches/*` 各子目录，`CleanupRules.swift:249`，tier T1）**没有任何 backups/数据目录反例名单**，真机存在名为 `…/BundleMigration/backups` 的宿主数据子目录会被当缓存列出 | `已复现（规则形状）` + 具体目录待真机确认 |
+| P1-7 | `SystemDeepStorageInspector.swift:158/161` + `Selftest+SystemDeepStorage.swift:83` | 「切 Mode 0 释放 <sleepimage>」：工具只生成脚本，Mode 0 本身不删 sleepimage，`rm` 后下次休眠又写回；自检只 `contains("台式 Mac") && contains("GB")`，**动词换成什么我都照绿** | `审计提出` |
+
+### 族 B：假绿与自检执法力
+
+| # | 位置 | 症状 → 后果 | 状态 |
+|---|---|---|---|
+| P1-8 | `Selftest+DeletionGate.swift:149` | `guard reason != .userWhitelisted \|\| true else { return false }` —— **`A \|\| true` 恒真**，"域根被白名单放行"这条永远不会红。位置就在本轮刚改过的文件里 | `已复现` |
+| P1-9 | `AIReview.swift:70` | `lastError != nil \|\| reviews.isEmpty` 后项恒真 → "必须明确报错"没闸 | `审计提出` |
+| P1-10 | skip-as-pass 12 处：`AIKeyStorage:65`、`Duplicates:115`、`RulesAndVerdicts:147`、`DeletionGate:250/794/835/837`、`DiagnosticReportDeep:350`、`StartupItemsDeep:298`、`AppLocalizationDeep:554`、`SpotlightDeep:416` | "造不出夹具"时 `else { return true }` 记进**通过**——与 §0.2 的"未执行 ≠ 通过"是同一族，但这里连未执行都不报。正写法已在 `SpaceVisualizerDeep2:197` | `审计提出` |
+| P1-11 | `Selftest+Accessibility.swift:30` | 动效 lint 用非递归 `contentsOfDirectory` → `Rules/` 整片不扫（`DeletionGate:710` 已实测过这个漏洞） | `审计提出` |
+| P1-12 | 崩溃套件吞断言 | `Selftest.swift:319 runOrchestrated` 缺 `##SELFTEST_RESULT` 就整片记未执行，**已打 ✅ 的也全丢**。按被吞条数排序：`SystemAndHistory` 16（崩在 `:48`）＞`SearchAndClean` 11（崩在 `:77`，丢掉唯一的 `cleanSelected` 闭环 `:131`）＞`SpaceArchiveDeep` 9（崩在最后 `:263`，8 条纯逻辑）＞`GlobalHotkeyDeep` 6 ＝ `SpaceVisualizerDeep2` 6（`:171`「归档/迁移 UI 判据与 SIP 服务判据同源」＝**当前完全无执法力的最高价值单条**）＞`SpaceVisualizerDeep` 4 ＞`MenuBarWidgetsDeep` 2 | `已复现（机制）` |
+| P1-13 | 主链空洞 top8（产品被调、自检 0 引用） | `AppState.cleanSelectedAcrossCategories:626`、`confirmQuickClean:857`＋`quickCleanSafeItems:887`＋`quickCleanSmartRecommendations:898`、`restoreCleanRecord:923`、`proceedScanWithoutFullDiskAccess:267`＋`replayScan:276`、`scanRisks:511`＋`riskCounts:526`、`diskUsed/usedRatio:117`、`scanProgress:58`＋`incrementalHits:62`＋`lastScanDuration:60`、`DiskMonitor.performSilentAutoClean`。全仓仅 9 个文件有接线判据，且**没有"UI 层禁现删除原语"的全仓 lint** | `审计提出` |
+| P1-14 | 形状断言：`Selftest+RiskAndWhitelist:259/:141/:90`、`Selftest+Foundation:344` | `contains("5 GB") && contains("15 GB")` 可对调、`contains("100 MB")` 不查动词、`contains("占用进程：无")` **恰好把 P1-1 锁成恒绿** | `已复现（P1-1 那条）` |
+| P1-15 | `scripts/mutate.sh` 不存在 | 变异验证只活在 `RELEASE-CHECKLIST` 的散文里，每轮手写、且我这两轮的脚本都有缺陷（共享状态目录导致附带红点被误归因） | `已复现` |
+
+### 族 C：口径与架构重复（每一轮的成本来源）
+
+| # | 位置 | 症状 → 后果 | 状态 |
+|---|---|---|---|
+| P1-16 | 8 份结果包装（`ClipboardModels:112`、`DownloadsOrganizerModels:141`、`ScreenshotsOrganizerModels:152`、`QuickLookThumbnailModels:97`、`LoginItemCleaner:241`、`PluginExtensionInspector:480`、`PreferenceResidueInspector:274` 元组、`SpotlightScanner:325` 元组） | 51 个转发成员；新字段要改 10 处，**元组那 2 处漏改不报错**（v1.73.14 的 `space` 就是手动补的）；`PluginExtension` 还改名（`succeeded`/`releasedBytes`）→ 同一件事三套名字 | `已复现（计数）` |
+| P1-17 | 字符串当契约 | journal 名 22 处 `categoryName:"…"` 字面；`AppState:347/406/587` 写 `cat.title`，`HistoryView:367` 用 `$0.title == name` 反查 + `contains("重复"/"卸载")` 映射图表色；`CleanItem.rule` 是 String（53 条规则 + `Scanner` ~50 处 `rule:"X"` + `Scanner:15 implementedRuleIDs` 第三份清单）；`CategoryDetailView:1540-1543/1562-1565` 两处各算一遍 `rule == "A1" \|\| path.contains("/Application Support/")`；护栏清单三份合一（`FileSystem:1139` ≡ `HardlinkDedupService:153` ≡ `CLICacheScanner:35`，已记 v1.73.8 待议 3）本轮**又长出第 4 处** `SpaceVisualizerModel:338` | `审计提出` |
+| P1-18 | 体积口径两轴（= 既有待议 #15） | 实测裂口：`du -sk -A ~/.cargo` = 295,547 KiB，其中点号条目 35,456 KiB（12%）——`directoryStats`（跳隐藏、下钻包）与网关 `measure`（不跳、不下钻）在同一棵树上就是两个数；面板与记账谁对谁错**逐模块决定**，一刀切已被 v1.73.11 复审实测驳回 | `已复现（数字）` |
+| P1-19 | 待议 #18 / #20 | ①"只读到下限"接进主链路（本机 `--scan` 实测 0 命中 → 分支可达性靠不住，但**夹具可测**，见 `Selftest+DeletionGate` 的 mode-000 夹具）；②历史 `pendingTrashBytes` 从不与废纸篓现状对账：清空废纸篓会另记一条「彻底删除」、放回原位后两个数同时错，于是"累计释放 + 另有 X 未释放"会互相否定 | `已复现（本轮遗留）` |
+
+## 4. P2 队列（新模块与体验）
+
+**新模块候选（真机量过，按"量大 + 判据可自证 + 误删代价可控"排）**
+
+| 候选 | 真机实测 | 判据怎么自证 | 误删代价 | 现有覆盖差集 |
+|---|---|---|---|---|
+| rustup 组件治理 | 单组件文档件约 **909 MiB** | `lib/rustlib/components` 列已装组件，`manifest-<component>-<target>` 逐行给出该组件**拥有**的 `dir:`/`file:` —— 这是工具自己的账本 | 零用户数据，`rustup component add …` 一条命令还原 | `CleanPaths` 无任何 rustup 路径；D9 只管 `~/.cargo/registry` |
+| CLI 自升级 `.old` 二进制 | 约 **178 MiB** | 同目录存在更新的同名 `<name>`，本文件是 `<name>.<纳秒>.old` 替换前副本 | 无，升级器不再引用 | D15 只管全局 node_modules 前缀 |
+| cargo `registry/src/` 解包重复 | 约 **209 MiB**（336 包 ↔ 336 `.crate` 全配对） | 逐包要求 `cache/<r>/<pkg-ver>.crate` 同名字节存在，src 只是它的解压 | 下次构建重解包（秒级） | D9 整片粗判会连带 index |
+| Chromium 系新位缓存（**这是修 bug 不是新增**） | 单 Profile 数十 MB～近 GB | 宿主 bundle 未跑 + 以 `<Profile>/Cache` 结尾 | 重下网页资源 | **B2 扫的是 `Application Support` 下的 `Cache`，现代 Chromium 已搬家 → 实测该路径不存在 ⇒ B2 恒 0**（"规则在册但界面从未列过某项"＝P1 类） |
+| `confstr DARWIN_USER_CACHE_DIR` 其余条目 | 约 600 MiB / 763 条目（多数目录名就是 bundle id） | bundle id 反查已装 App + 未跑 + `lsof` 无持有者；文档明说系统不自清 | 单 App 冷启动重建 | D13/D14 只放行两个具名模式 |
+
+**明确不做（含理由，别再提议）**：名为 `backups` 且宿主在装的迁移目录（是数据不是缓存，反而要进反例名单）；
+Maven/rustc 按需解析、不留引用表的"旧版本构件"；签名克隆类活跃临时树（量最大但无活引用证据）；
+`/private/var/folders/**/T` 整片放开；游戏平台库目录（用户数据）；
+以及既有否决项：IM/协作媒体缓存、云盘占位、Mail/Messages 附件、照片图库内部、CoreDuet/`/var/db`、需 sudo 或触发 SIP 的一切。
+
+**体验/性能**：`body` 里重复计算的过滤/分组（v1.72.5 只修了分类列表）、常驻轮询未降档、
+`--scan` 是最大耗时项（无头扫描按分类计时无基线可查——先把耗时写进 `--scan` 输出再谈优化）。
+
+## 5. P3 队列（文档与卫生）
+
+| # | 位置 | 症状 → 后果 |
+|---|---|---|
+| P3-1 | 90 条版本标注中 **61 条首入 tag = v1.73.10**（`TrashAutoEmptyService:3`、`AppUpdateScanner:5`、`ShredderService:5`、`AIChatView:639`、`DiskMonitor:57`、`CategoryDetailView:184/1178/1442`、`README:68/86/326`、`mainstream-parity:14-17`、`RELEASE-CHECKLIST:92/101/374/387`） | 用户按 release notes 找不到功能；"无撤销快照"这类**安全口径被记晚四轮**。改标注会让 blame 指向今天的 docs 提交、更不可审计 → 正确做法是新增 `docs/VERSION-ANNOTATIONS.md` 差集表（脚本可复现）+ 在下版 notes 点名 |
+| P3-2 | `README:27/398-399/486/495` 仍称"唯一 `enumerator(atPath:)` 豁免点"，实测产品源码已 **0 处调用**；自检计数四处互斥（README 713/700/666、KNOWN-ENV 675、CHECKLIST 649/602/559）；规则数 53 vs README 写 52；`space.claim()` 实测 18 处 vs 文档"19 副本/约 20 处" | **可数声明失真即谎报**。全部改成"取当前值"或由 lint 钉住 |
+| P3-3 | `docs/code-review/v1.73.15-zcode-subagent.md`（复审稿先于 tag 存在，且它复审的是被并入 v1.73.10 的工作）、`v1.73.13-14-zcode-subagent.md`、6 份时间戳命名稿违反 `code-review/README.md:13`；`1fc2415` message 复制自 `ddb0a66`；三个 tag 提交的 diff 只有 VERSION 一行却写整轮功能 | 历史错账。**不改写已发布历史**：新增 `docs/ERRATA.md`（短哈希 → 实际内容），并立规"bump 提交只写 bump、复审稿不得早于 tag" |
+| P3-4 | `docs/SENSITIVE-DATA-AUDIT.md:139-143/183` 公开了开发者本机 `history.json` 的体量与内容画像，且 `:138`「已删除」与 `:183`「含真实密钥」口径互斥 | 自查文档自己踩红线；改成区间口径 |
+| P3-5 | cron 指令：规模数字（170 文件/5 万行）与 P2 选题（Android AVD 已发布）都过期；cron 当前 `enabled=false` | 未来自动轮会回退到已完成方向。改成"判据 + 已否决清单"，不写具体待办 |
+| P3-6 | `release.sh:263-281` 基线侧与实测侧归一规则不一致（只有一侧 `sed 's/（.*//'`）；11 处固定 `/tmp/mc-release-*` 路径 | 基线粘全称会每次假拦；并行发版会互相覆盖失败集 |
+
+## 6. 轮次编排（每轮 30–60 分钟一刀，含依赖）
+
+| 轮 | 做什么 | 为什么先它 | 会不会打红既有自检 |
+|---|---|---|---|
+| R1 | **P0-5 脱敏门禁**（abs 先判类型、fixture 只判片段、skip-scan 即 die、pathspec 对齐、补 `github_pat_`/大小写/commit-tag message） | 唯一"一旦错了就删不回来"的一类；纯脚本，零产品行为 | 否（新增脚本自检） |
+| R2 | **P0-1 + P0-2 合并**：删除记账与撤销快照收成单一出口，静默清理/卸载器/归档三处复用 + 两条腿自检 | 无人值守链路正在每天删用户文件且不可放回 | 需同步 `Selftest+Undo`、`PreferenceResidueDeep:191` |
+| R3 | **P0-3 软链 + P0-4 默认勾选降级** | 两条都是"界面上没说错但删多了" | 会红若干 `isSelected` 断言，逐条改判据 |
+| R4 | **P1-1 lsof 三态 + P1-14 形状断言**（含把 `contains("占用进程：无")` 改成方向断言） | AI 建议的输入正确性；顺带拆掉替旧实现兜底的恒绿 | 否 |
+| R5 | **P1-12 崩溃套件隔离**：新建 `Selftest+UIRenderQuarantine.swift`，把 7 个崩溃套件里会崩的渲染 check 整块搬进去 | 约 **44 条断言立刻回到记分板**（696→≈740），恢复 `cleanSelected` 闭环与并发记账写入的执法力；这是后续每一轮的地基 | 要同步刷新 KNOWN-ENV 的 S 段（`release.sh` 会强制） |
+| R6 | **P1-8/P1-9/P1-10/P1-11 恒绿清扫** + `scripts/mutate.sh` 落地（rsync 副本、一次性状态目录、打印三集合差、锚点命中数≠1 判 ERROR） | 执法力本身；脚手架让后面每一轮都省事 | 否 |
+| R7 | **P1-16 元组先收口**（`SpotlightScanner:325`、`PreferenceResidueInspector:274` 改回返回 `Outcome`） | 全仓唯一"新字段完全无法沿用"的形状；结果面 8→6、转发成员 51→42；**不碰任何 `#filePath` 文件名 needle** | 只红 `PreferenceResidueDeep:191` 字段名断言 |
+| R8 | **P1-3 承诺侧收口**：新增 `SpaceDisposition.promise(bytes:defaultToTrash:)`，10 处动作前文案改走它 | 与 v1.73.14 同一族的另一半 | 会红若干文案断言 |
+| R9 | **P1-6 空态谎报 + B2 恒 0 规则**（`unreadablePaths` 渲染通道、C1 反例名单、Chromium 新位） | "读不到被讲成干净"是本项目第一优先级族 | 否 |
+| R10 | **P1-2 磁盘口径同屏标注 + P1-18/#15 逐模块口径决定**（先量后改） | 需要产品决策，放在实数据之后 | 否 |
+| R11 | **P2 新模块：rustup 组件治理**（判据来自 rustup 自己的 manifest 账本；D25；`~/.rustup` 进 CleanPaths；5 条自检） | 唯一"量大 + 可自证 + 一条官方命令还原 + 零用户数据"的新模块 | 新文件，无既有断言受影响 |
+| R12 | **P3-1..P3-6 卫生包**（`VERSION-ANNOTATIONS.md` + `ERRATA.md` + README 可数声明 + cron 指令 + `release.sh` 归一/mktemp） | 纯文档/脚本，适合任何一轮的尾巴 | 否 |
+| 待验证 | P1-4 APFS 克隆 `freed`、P1-19 两项、`.trashDirectory` 跨卷解析、`item.permanentDelete` 全部赋值点 | 需要先造夹具/读数，**不许据此直接改护栏** | — |
+
+## 7. 三条元规则（从本轮踩到的坑提炼）
+
+1. **改口径之前先数副本**。"释放 X"这句话有 19 个手写副本，所以修一处漏 18 处；
+   副本 > 1 就把动词收进一个构造器 + 一条带反向绊线的源码 lint，而不是逐处补文案。
+2. **加断言之前先证明它能红、并证明它所在套件会跑完**。本轮一条 ViewInspector 渲染断言
+   崩掉整条套件（682→654 通过），而 `Selftest+DeletionGate.swift:149` 的 `|| true`
+   说明"写在能跑的套件里"也不等于"会红"。
+3. **门禁的豁免面比检测面更值得审**。`fixture_shape` 判整行、备案表先于计数、
+   `hist * private_key` 豁免全历史——这三条都不是"漏检"，是"检到了但被自己放走"。
