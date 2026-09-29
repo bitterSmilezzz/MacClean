@@ -308,7 +308,7 @@ public struct QuickLookThumbnailPurgerCard: View {
 
     /// 播报只说**有证据**的事实：删除量取删除前实测，系统索引是否重置单独交代。
     static func feedback(for res: QuickLookPurgeResult) -> String {
-        var text = "已释放 \(res.purgedCount) 项缩略图缓存（\(res.freedBytes.byteStringCN)）"
+        var text = "已清理 \(res.purgedCount) 项缩略图缓存，\(res.space.claim())"
         if res.systemCacheReset {
             text += "，系统 QuickLook 索引已重置"
         } else if let failure = res.systemResetFailure {

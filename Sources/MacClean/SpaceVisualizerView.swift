@@ -133,7 +133,7 @@ struct SpaceVisualizerView: View {
         .quickLookPreview($quickLookURL)
         .toast(isPresented: $showToast, text: toastMessage)
         .confirmationDialog("原位归档压缩", isPresented: $showArchiveConfirm, titleVisibility: .visible) {
-            Button("压缩并移入废纸篓 (释放空间)") {
+            Button("压缩并移入废纸篓（清空后才释放）") {
                 if let node = nodeToArchive {
                     performArchive(node: node, deleteOriginal: true)
                 }
@@ -145,7 +145,7 @@ struct SpaceVisualizerView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("将「\(nodeToArchive?.name ?? "")」(\(nodeToArchive?.formattedSize ?? "")) 原地压缩为 .zip 归档文件。选择移入废纸篓可立即释放物理空间。")
+            Text("将「\(nodeToArchive?.name ?? "")」(\(nodeToArchive?.formattedSize ?? "")) 原地压缩为 .zip 归档文件。选择移入废纸篓时，磁盘要等清空废纸篓才真正变小。")
         }
         .sheet(isPresented: $showMigrationSheet) {
             migrationSheetView
@@ -858,8 +858,11 @@ struct SpaceVisualizerView: View {
                 if res.success {
                     let freed = res.savedBytes.byteStringCN
                     let ratio = res.ratioString
-                    let trashNote = res.deletedOriginal ? "，原件已移入废纸篓" : ""
-                    self.toastMessage = "归档完成！释放 \(freed) 空间（压缩比 \(ratio)\(trashNote)）"
+                    // 「释放 X 空间」在原件只是被移进废纸篓时是反的：磁盘此刻多了压缩包、
+                    // 一分没少（本机实测同卷 rename Δ = 0 MiB）。所以这句分两种落点说。
+                    self.toastMessage = res.deletedOriginal
+                        ? "归档完成！原件比压缩包大 \(freed)，原件已移入废纸篓——清空废纸篓后才真正腾出磁盘（压缩比 \(ratio)）"
+                        : "归档完成！已生成压缩包（比原件小 \(freed)，压缩比 \(ratio)），原件仍在原处"
                     self.showToast = true
                     self.reloadHierarchy()
                 } else {
@@ -882,7 +885,7 @@ struct SpaceVisualizerView: View {
             DispatchQueue.main.async {
                 self.isMigrating = false
                 if res.success {
-                    let trashNote = res.deletedOriginal ? "，本地原件已移入废纸篓释放空间" : ""
+                    let trashNote = res.deletedOriginal ? "，本地原件已移入废纸篓（清空后才释放本机空间）" : ""
                     self.toastMessage = "迁移成功！已将 \(res.migratedBytes.byteStringCN) 腾挪至外接存储\(trashNote)"
                     self.showToast = true
                     self.reloadHierarchy()
@@ -1013,7 +1016,7 @@ struct SpaceVisualizerView: View {
                         .pickerStyle(.menu)
                         .accessibilityIdentifier("migrationVolumePicker")
 
-                        Toggle("迁移完成后将本地原件移入废纸篓（释放空间）", isOn: $deleteOriginalAfterMigrate)
+                        Toggle("迁移完成后将本地原件移入废纸篓（清空后才释放本机空间）", isOn: $deleteOriginalAfterMigrate)
                             .font(Typo.caption)
                             .foregroundStyle(Ink.primary)
                             .padding(.top, 4)

@@ -414,7 +414,7 @@ final class DuplicateState: ObservableObject {
         // 移除已经不构成重复（副本数 <= 1）的组
         groups.removeAll { $0.items.count <= 1 }
 
-        var parts = ["已清理 \(result.succeeded) 个重复副本，释放 \(result.releasedBytes.byteStringCN)"]
+        var parts = ["已清理 \(result.succeeded) 个重复副本，\(result.space.claim())"]
         if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
         lastSummary = parts.joined(separator: "，")
 

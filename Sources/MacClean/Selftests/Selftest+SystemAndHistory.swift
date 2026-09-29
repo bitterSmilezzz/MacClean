@@ -72,7 +72,8 @@ extension Selftest {
                 mode: "废纸篓",
                 beforeAvailable: 100_000_000_000,
                 afterAvailable: 100_500_000_000,
-                breakdown: [.userCaches: 500_000_000]
+                breakdown: [.userCaches: 500_000_000],
+                space: .reclaimed(500_000_000)
             )
             guard snapshot.releasedBytes == 500_000_000 else { return false }
             guard snapshot.deltaString == "500 MB" else { return false }
@@ -121,7 +122,7 @@ extension Selftest {
                                                 bytes: 1024, mode: "废纸篓", failures: 0))
 
             _ = app.recordClean(categoryName: "主界面清理", itemCount: 1, bytes: 2048,
-                                mode: "废纸篓", failures: 0)
+                                mode: "废纸篓", failures: 0, trashedBytes: 0)
 
             // 旧实现：recordClean 拿启动时那份缓存整片写回 → 网关那条直接消失
             let onDisk = HistoryStore.load()
@@ -355,7 +356,8 @@ extension Selftest {
                 mode: "移入废纸篓",
                 beforeAvailable: 10000000,
                 afterAvailable: 11500000,
-                breakdown: [.userCaches: 1000000, .logsAndTemp: 500000]
+                breakdown: [.userCaches: 1000000, .logsAndTemp: 500000],
+                space: .trashed(1_500_000)
             )
             var historyClicked = false
             var dismissed = false

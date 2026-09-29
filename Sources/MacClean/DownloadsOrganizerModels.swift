@@ -148,6 +148,7 @@ public struct DownloadsCleanResult {
     public var failedCount: Int { outcome.failed.count }
     public var needsPrivilegeCount: Int { outcome.needsPrivilege.count }
     public var summary: String { outcome.summary }
+    var space: SpaceDisposition { outcome.space }
     public var cleanedPaths: [String] { outcome.cleanedPaths }
 
     init(outcome: ResidueDeletionGate.Outcome) { self.outcome = outcome }

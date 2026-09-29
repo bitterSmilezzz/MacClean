@@ -1460,5 +1460,132 @@ extension Selftest {
             return true
         }
 
+
+        // 删除结果的「释放 X」只能有一个出处（v1.73.14）
+        check("产品源码不许手拼「释放 + 删除量」，也不许没量过字节就宣布空间夺回") {
+            // 立这条的缘由：同卷 `trashItem` 只是一次 rename，磁盘可用量一分没动
+            // （本机实测 200 MiB：rename 后 Δ = 0 MiB，removeItem 后 Δ = +200 MiB），
+            // 而"释放 \(outcome.freedBytes.byteStringCN)"这句在 19 处各自手抄了一遍。
+            // 现在动词只有一个出处（`SpaceDisposition.claim()`），这条挡住"第 N 份长回来"。
+            //
+            // 判据形状（v1.73.14 复审 P1-5 之后重写过一次——第一版只查"同一物理行内出现
+            // 字段名"，被指出跨行拼接与先赋局部变量两种形状都免检）：
+            // ① 先按文件收集**别名**：`= <结果字段>` 赋给的局部变量，防"先赋值再插值"；
+            // ② 按**三行滑窗**扫，防字符串拼接跨行；
+            // ③ 豁免**删除之前**的措辞（预计/可释放/建议…）——它们承诺"能清多少"，
+            //    不是"磁盘已经少了多少"；也豁免带"才/没/未"的否定式，那正是如实交代没释放。
+            let sourceDir = Selftest.sourceDirectoryPath
+            let all = (try? FileManager.default.subpathsOfDirectory(atPath: sourceDir)) ?? []
+            let files = all.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Selftests/")
+                && $0 != "SpaceDisposition.swift" }.sorted()
+            guard files.count >= 50 else {
+                print("      只扫到 \(files.count) 个产品源码文件，这条没有覆盖面")
+                return false
+            }
+            // 删除**之后**才存在的量：这些字段配"释放"就是落点声明，必须经构造器
+            let resultFields = ["freedBytes", "releasedBytes", "trashedBytes",
+                                "totalFreed", "savedBytes", "migratedBytes"]
+            let preAction = ["预计", "可释放", "共可", "建议", "待释放", "将释放", "能释放"]
+            let caveated = ["才释放", "才真正", "没释放", "未释放", "还没", "不算数", "清空后"]
+            // 没量过任何字节、却宣布空间已经回来的固定话术
+            let bannedPhrases = ["空间已夺回", "已成功安全释放"]
+
+            func aliases(of code: [String]) -> Set<String> {
+                var out = Set<String>()
+                for line in code {
+                    guard let eq = line.firstIndex(of: "=") else { continue }
+                    let lhs = String(line[line.startIndex..<eq]).trimmingCharacters(in: .whitespaces)
+                    let rhs = String(line[line.index(after: eq)...])
+                    guard lhs.count > 1, lhs.first?.isLetter == true,
+                          !lhs.contains(" "), !lhs.hasPrefix("==") else { continue }
+                    if resultFields.contains(where: { mentions(rhs, $0) }) { out.insert(lhs) }
+                }
+                return out
+            }
+            // 边界感知：`n`、`bytes` 这类短名会蹭到无关文本上，所以只在两侧不是
+            // 字母/数字/下划线时才算命中（复审 P1-5 的第一版就是因为"只要出现
+            // byteStringCN 就算"而把 9 处**删除之前**的按钮文案误判成违规）。
+            func mentions(_ text: String, _ field: String) -> Bool {
+                guard !field.isEmpty else { return false }
+                let chars = Array(text), key = Array(field)
+                guard !chars.isEmpty else { return false }
+                func wordish(_ c: Character) -> Bool { c.isLetter || c.isNumber || c == "_" }
+                for start in 0...max(0, chars.count - key.count) {
+                    if Array(chars[start..<min(start + key.count, chars.count)]) == key {
+                        let beforeOK = start == 0 || !wordish(chars[start - 1])
+                        let afterIdx = start + key.count
+                        let afterOK = afterIdx >= chars.count || !wordish(chars[afterIdx])
+                        if beforeOK && afterOK { return true }
+                    }
+                }
+                return false
+            }
+            func offenders(in code: [String], named names: Set<String>) -> [String] {
+                var hits: [String] = []
+                let fields = resultFields + Array(names)
+                var i = 0
+                while i < code.count {
+                    let window = code[i..<min(i + 3, code.count)].joined(separator: "\n")
+                    let trimmed = window.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmed.contains("\"") else { i += 1; continue }
+                    let claims = trimmed.contains("释放") || trimmed.contains("腾出")
+                    // 只有"这批字节来自一次已完成的删除"才算落点声明；
+                    // 勾选量/选中量/预估量不在此列（那是"能清多少"，不是"已释放多少"）。
+                    let hasBytes = fields.contains(where: { mentions(trimmed, $0) })
+                    if claims, hasBytes,
+                       !preAction.contains(where: { trimmed.contains($0) }),
+                       !caveated.contains(where: { trimmed.contains($0) }) {
+                        hits.append(trimmed.replacingOccurrences(of: "\n", with: " ⏎ "))
+                        i += 3
+                    } else {
+                        i += 1
+                    }
+                }
+                for line in code where bannedPhrases.contains(where: { line.contains($0) }) {
+                    hits.append("固定话术：\(line.trimmingCharacters(in: .whitespaces))")
+                }
+                return hits
+            }
+            var bad: [String] = []
+            var claimSites = 0
+            for rel in files {
+                let path = (sourceDir as NSString).appendingPathComponent(rel)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else {
+                    bad.append("\(rel):<不可读>")
+                    continue
+                }
+                let code = Selftest.stripSwiftComments(src)
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.hasPrefix("//") }
+                for hit in offenders(in: code, named: aliases(of: code)) {
+                    bad.append("\(rel): \(hit)")
+                }
+                claimSites += code.reduce(0) { $0 + $1.components(separatedBy: "space.claim()").count - 1 }
+            }
+            // 反向绊线：三种绕过形状各喂一条，抓不到就说明判据是死的
+            let tripwire = offenders(in: [
+                "self.bannerFeedback = \"已清理 3 项，释放 \"",
+                "\\(outcome.freedBytes.byteStringCN)\"",
+                "let n = res.freedBytes",
+                "parts.append(\"实际释放 \\(n.byteStringCN)\")",
+                "cleanFeedback = \"已完成极速释放，空间已夺回!\""
+            ], named: ["n"])
+            if tripwire.count < 3 {
+                print("      反向绊线只抓到 \(tripwire.count)/3 条合成违规（跨行/别名/固定话术），判据已失效")
+                return false
+            }
+            // 活性证据（另一侧）：构造器必须真的被大量接线，否则"只有一个出处"是空话
+            if claimSites < 15 {
+                print("      只扫到 \(claimSites) 处 `space.claim()` 调用——比 v1.73.14 收口时"
+                      + "（约 20 处）窄得多，说明有消费方被改回手写")
+                return false
+            }
+            if !bad.isEmpty {
+                print("      手拼的释放文案：")
+                for b in bad.prefix(12) { print("        \(b)") }
+            }
+            return bad.isEmpty
+        }
     }
 }

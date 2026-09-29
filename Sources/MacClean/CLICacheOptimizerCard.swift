@@ -370,10 +370,9 @@ public struct CLICacheOptimizerCard: View {
                 self.isCleaning = false
                 self.gateNotes = notes
                 self.bannerIsWarning = (res.cleanedCount == 0 && blocked > 0)
-                let mode = toTrash ? "移入废纸篓" : "彻底清空"
                 self.bannerFeedback = res.cleanedCount == 0
                     ? "未清理任何缓存子项（\(blocked) 项被拦或失败）：\(notes.joined(separator: "；"))"
-                    : "已安全\(mode) \(res.cleanedCount) 项缓存子项，释放 \(res.freedBytes.byteStringCN)（删除前实测）"
+                    : "已清理 \(res.cleanedCount) 项缓存子项，\(res.space.claim())（删除前实测）"
                     + (blocked > 0 ? "；另有 \(blocked) 项未通过网关" : "")
                 self.loadData()
                 self.onTriggerClean?()

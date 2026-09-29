@@ -471,7 +471,7 @@ public struct SpotlightOptimizerCard: View {
             DispatchQueue.main.async {
                 self.isCleaning = false
                 var lines: [String] = []
-                lines.append("成功清理 \(outcome.cleanedCount) 项数据，实测释放 \(outcome.freedBytes.byteStringCN)")
+                lines.append("已清理 \(outcome.cleanedCount) 项数据，\(outcome.space.claim())")
                 lines.append(contentsOf: rejected + failed)
                 self.bannerIsWarning = !rejected.isEmpty || !failed.isEmpty || outcome.cleanedCount == 0
                 self.bannerFeedback = lines.joined(separator: "\n")

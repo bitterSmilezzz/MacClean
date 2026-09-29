@@ -95,15 +95,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// 发送清理完成系统通知
-    func notifyCleanCompleted(releasedBytes: Int64, failureCount: Int) {
+    ///
+    /// 收的是 `SpaceDisposition` 而不是 `releasedBytes: Int64`：一次清理可能只是把文件搬进
+    /// 废纸篓（同卷 rename，磁盘可用量一分没动），通知里不能写「已成功安全释放 X 空间」。
+    func notifyCleanCompleted(space: SpaceDisposition, failureCount: Int) {
         let title = "MacClean 清理完成"
         let body: String
+        var text = space.claim()
         if failureCount > 0 {
-            body = "成功释放 \(releasedBytes.byteStringCN)，另有 \(failureCount) 项清理失败或跳过。"
-        } else {
-            body = "已成功安全释放 \(releasedBytes.byteStringCN) 空间！"
+            text += "；另有 \(failureCount) 项清理失败或跳过"
         }
-
+        body = text
         lastNotification = SentNotification(title: title, body: body)
 
         guard let center else { return }

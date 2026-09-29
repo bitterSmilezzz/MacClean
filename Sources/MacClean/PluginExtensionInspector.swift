@@ -500,6 +500,7 @@ final class PluginExtensionInspector {
         var rejected: [ResidueDeletionGate.Rejection] { outcome.rejected }
         var needsPrivilegeCount: Int { outcome.needsPrivilege.count }
         var summary: String { outcome.summary }
+        var space: SpaceDisposition { outcome.space }
     }
 
     /// 清理所选扩展：判据只作为**候选来源**，放行与否由统一网关逐项裁决。

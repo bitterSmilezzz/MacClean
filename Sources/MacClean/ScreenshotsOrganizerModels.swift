@@ -158,6 +158,7 @@ public struct ScreenshotsCleanResult {
     public var rejectedCount: Int { outcome.rejected.count }
     public var failedCount: Int { outcome.failed.count }
     public var summary: String { outcome.summary }
+    var space: SpaceDisposition { outcome.space }
     public var cleanedPaths: [String] { outcome.cleanedPaths }
 
     init(outcome: ResidueDeletionGate.Outcome) { self.outcome = outcome }

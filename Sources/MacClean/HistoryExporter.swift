@@ -20,14 +20,16 @@ enum HistoryExporter {
     /// 生成标准 CSV 格式字符串（包含 UTF-8 BOM，杜绝 Excel 打开乱码）
     static func generateCSV(records: [CleanRecord]) -> String {
         var csv = "\u{FEFF}" // UTF-8 BOM
-        csv += "记录ID,清理时间,分类,清理模式,清理项数,失败项数,释放字节数,释放大小\n"
+        // 「释放」这一列此前直接倒 `bytes`，而 `bytes` 含只是搬进废纸篓的量——
+        // 那些字节磁盘上一分没动。导出会被人拿去算账，所以拆成两列。
+        csv += "记录ID,清理时间,分类,清理模式,清理项数,失败项数,清理字节数,已释放字节数,废纸篓未释放字节数,清理大小\n"
 
         for r in records {
             let dateStr = dateFormatter.string(from: r.date)
             let cat = escapeCSV(r.categoryName)
             let mode = escapeCSV(r.mode)
             let byteStr = escapeCSV(r.bytes.byteStringCN)
-            csv += "\(r.id.uuidString),\(dateStr),\(cat),\(mode),\(r.itemCount),\(r.failures),\(r.bytes),\(byteStr)\n"
+            csv += "\(r.id.uuidString),\(dateStr),\(cat),\(mode),\(r.itemCount),\(r.failures),\(r.bytes),\(r.reclaimedBytes),\(r.pendingTrashBytes),\(byteStr)\n"
         }
 
         return csv
@@ -36,10 +38,12 @@ enum HistoryExporter {
     /// 生成纯文本 Markdown 格式归档报告
     static func generateReport(records: [CleanRecord]) -> String {
         let nowStr = dateFormatter.string(from: Date())
-        let totalBytes = records.reduce(Int64(0)) { $0 + $1.bytes }
+        // 合计只算**真的从磁盘上腾出来**的量（`bytes` 含只是搬进废纸篓的部分）
+        let totalBytes = records.reduce(Int64(0)) { $0 + $1.reclaimedBytes }
+        let pendingTrash = records.reduce(Int64(0)) { $0 + $1.pendingTrashBytes }
         let totalItems = records.reduce(0) { $0 + $1.itemCount }
         let totalFailures = records.reduce(0) { $0 + $1.failures }
-        let maxSingle = records.map(\.bytes).max() ?? 0
+        let maxSingle = records.map(\.reclaimedBytes).max() ?? 0
 
         var report = """
         # MacClean 清理历史归档报告
@@ -47,7 +51,8 @@ enum HistoryExporter {
 
         ## 1. 总体统计概览
         - 清理执行次数：\(records.count) 次
-        - 累计释放容量：\(totalBytes.byteStringCN) (\(totalBytes) 字节)
+        - 累计释放容量（只含已落盘的删除）：\(totalBytes.byteStringCN) (\(totalBytes) 字节)
+        - 另有 \(pendingTrash.byteStringCN) 只是移进废纸篓，清空之后才真正释放
         - 累计处理文件项：\(totalItems) 项
         - 失败项目统计：\(totalFailures) 项
         - 单次最高释放峰值：\(maxSingle.byteStringCN)
@@ -59,7 +64,7 @@ enum HistoryExporter {
         var byCategory: [String: (bytes: Int64, count: Int)] = [:]
         for r in records {
             let cur = byCategory[r.categoryName, default: (0, 0)]
-            byCategory[r.categoryName] = (cur.bytes + r.bytes, cur.count + r.itemCount)
+            byCategory[r.categoryName] = (cur.bytes + r.reclaimedBytes, cur.count + r.itemCount)
         }
 
         let sortedCategories = byCategory.sorted { $0.value.bytes > $1.value.bytes }
@@ -69,13 +74,13 @@ enum HistoryExporter {
         }
 
         report += "\n\n## 3. 详细清理流水记录\n"
-        report += "| 时间 | 分类 | 模式 | 项数 | 释放容量 | 状态 |\n"
+        report += "| 时间 | 分类 | 模式 | 项数 | 已释放容量 | 状态 |\n"
         report += "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
 
         for r in records {
             let dateStr = dateFormatter.string(from: r.date)
             let status = r.failures > 0 ? "\(r.failures) 项失败" : "成功"
-            report += "| \(dateStr) | \(r.categoryName) | \(r.mode) | \(r.itemCount) 项 | \(r.bytes.byteStringCN) | \(status) |\n"
+            report += "| \(dateStr) | \(r.categoryName) | \(r.mode) | \(r.itemCount) 项 | \(r.reclaimedBytes.byteStringCN) | \(status) |\n"
         }
 
         return report

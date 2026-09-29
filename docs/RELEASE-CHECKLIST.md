@@ -492,6 +492,31 @@ ProcessOccupancy 10 + PermissionGate 6 + CleanableAccounting 7 + SystemTweaks 20
       却没随 size 一起交出去。
       另一条同期教训：`chmod 000` 的子目录会让 `removeItem` **本身失败**（枚举不出内容就删不掉），
       所以"测完再解除权限锁然后删"才是可跑的夹具顺序；先删后测的写法只会得到"1 项删除失败"。
+- [ ] **改"结果播报"之前先数这句话有几个副本**（2026-09-29）：清理完成那句「释放 X」不是逻辑错而是**动词错**——
+      G3 默认把文件移进废纸篓，而同卷 `trashItem` 只是一次 rename，磁盘可用量一分没动
+      （本机实测 200 MiB：同卷 rename 后 `volumeAvailableCapacityForImportantUsage` Δ = 0 MiB，
+      `removeItem` 后 Δ = +200 MiB），可这句话在 19 处各自手抄了一遍
+      （`grep -rnE "(outcome|res|result)\.(freedBytes|releasedBytes)" --include=*.swift Sources/MacClean | grep 释放`）。
+      副本 > 1 就别逐处补文案：把动词收进一个构造器（本轮 `SpaceDisposition.claim()`），
+      再立一条源码 lint 挡住"第 7 份长回来"。lint **必须自带反向绊线**——喂一段合成违规源码，
+      抓不到就说明判据已经死了；另一侧还要有**接线数下界**（`space.claim()` 的调用点数只许变多），
+      否则"全部收口"会变成"全部没人用"。
+- [ ] **不许把唯一能证伪自己的那一列观测夹平**（2026-09-29）：结果弹窗顶部写「本次释放 +X」，
+      同一屏下面的"可用空间前后对比"本可以反驳它，但代码是 `let after = max(before, snapshot.afterAvailable)`
+      ——可用空间**永不显示下降**。夹子的动机多半是好意（怕别的程序把盘写满时用户以为清理工具搞坏了），
+      但后果是顶部那句话在界面上再没有任何反证。判据：凡是"同一屏两处互相印证"的量，
+      只要有一处被 `max/min/clamp` 夹过，就当场问一句"另一处还能不能证伪它"。
+      本轮的修法是把差值算术抽成纯函数（`availableDeltaBytes` 可为负 → 自检直接断言 `-10 GB`），
+      再用一条字面形状 lint 钉住 `max(before, snapshot.afterAvailable)` 不许回来。
+- [ ] **给"只有渲染才看得见"的东西写断言之前，先测这条断言会不会把整条套件带崩**（2026-09-29）：
+      本轮在 `Selftest+DeletionGate` 里给 `CleanResultSheet` 加了一条
+      `inspect().findAll(ViewType.Text.self)` 断言，实测触发
+      `Swift/arm64e-apple-macos.swiftinterface:3272: Fatal error: Can't unsafeBitCast between types of different sizes`
+      → 子进程 exit=5 → **该套件 34 条本来通过的断言整体不计**，全量通过数 682 → 654。
+      一条本想防假绿的断言，制造了比它守的洞更大的盲区。这**不是** §0.2 那批"按钮/勾选框枚举失效"
+      （那类是抛异常、单条红），而是渲染某个视图直接崩进程。判据：加任何 ViewInspector 断言之前，
+      先在未变异的树上跑全量、对比"通过数 + 失败名集 + 未执行套件名集"三样；
+      只要未执行套件多了一个，就把这条改成「纯函数断言 + 源码接线断言」两条腿。
 - [ ] **自检里别留墙钟上界断言**（2026-09-28）：`卸载器：已安装 App 清单并行取体积` 原来是
       `elapsed < 5.0`。它守的两件事——"别退回串行""别每条目重扫一次"——都是**结构**性质的，
       用时间当代理就会在别人的 App 占 CPU 时翻红（实测两次全量跑 34/35 条失败之差就是它）。

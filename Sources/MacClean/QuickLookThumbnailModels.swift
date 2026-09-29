@@ -113,6 +113,7 @@ public struct QuickLookPurgeResult {
     public var errorCount: Int { outcome.errorCount }
     /// 一句话结论
     public var summary: String { outcome.summary }
+    var space: SpaceDisposition { outcome.space }
 
     init(outcome: ResidueDeletionGate.Outcome, resetRequested: Bool,
          systemCacheReset: Bool, systemResetFailure: String?) {

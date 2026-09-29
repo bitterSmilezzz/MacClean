@@ -120,6 +120,7 @@ public struct ClipboardCleanResult {
     public var rejectedCount: Int { outcome.rejected.count }
     public var failedCount: Int { outcome.failed.count }
     public var summary: String { outcome.summary }
+    var space: SpaceDisposition { outcome.space }
     public var rejectedNames: [String] { outcome.rejected.map(\.name) }
     public var needsPrivilegeCount: Int { outcome.needsPrivilege.count }
 

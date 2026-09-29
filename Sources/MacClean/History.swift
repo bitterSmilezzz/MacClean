@@ -15,6 +15,10 @@ struct CleanRecord: Codable, Identifiable, Equatable {
     /// 里没有这个键也能解出 nil；换成非 Optional + 默认值就会让历史整份解码失败
     /// （本仓在测量缓存上踩过同一条，见 `FileSystem.DirectoryStats` 的注释）。
     var freedIsLowerBound: Bool?
+    /// `bytes` 里**只是搬进废纸篓、磁盘还没真正释放**的那部分（v1.73.14）。
+    /// 同样必须是 Optional（同上一条理由）。老记录为 nil → 按 `mode` 回填，见
+    /// `pendingTrashBytes`。
+    var trashedBytes: Int64?
 
     init(
         id: UUID = UUID(),
@@ -24,7 +28,8 @@ struct CleanRecord: Codable, Identifiable, Equatable {
         bytes: Int64,
         mode: String,
         failures: Int = 0,
-        freedIsLowerBound: Bool? = nil
+        freedIsLowerBound: Bool? = nil,
+        trashedBytes: Int64? = nil
     ) {
         self.id = id
         self.date = date
@@ -34,7 +39,22 @@ struct CleanRecord: Codable, Identifiable, Equatable {
         self.mode = mode
         self.failures = failures
         self.freedIsLowerBound = freedIsLowerBound
+        self.trashedBytes = trashedBytes
     }
+
+    /// 还压在磁盘上、要等清空废纸篓才落定的量。
+    ///
+    /// 老记录（字段为 nil）按 `mode` 回填：写记录时只有"整批走同一条路"的形态，
+    /// 所以 `mode == 废纸篓` 就是整批都还没落定；`归档移动` 的 `bytes` 恒为 0，
+    /// `APFS 硬链接` 是原位去重、当场就落定，两者都落在 0 这一侧。
+    var pendingTrashBytes: Int64 {
+        if let trashed = trashedBytes { return min(max(0, trashed), bytes) }
+        return mode.contains("废纸篓") ? bytes : 0
+    }
+
+    /// 真的从磁盘上腾出来的那部分。**任何"累计释放"的合计只能用这个**，
+    /// 用 `bytes` 会把还躺在废纸篓里的空间也算成已释放。
+    var reclaimedBytes: Int64 { bytes - pendingTrashBytes }
 }
 
 enum HistoryStore {
@@ -122,7 +142,9 @@ enum HistoryStore {
         _ = mutate { $0 = records }
     }
 
-    /// 统计最近 7 天的每日清理释放量（用于菜单栏迷你回收趋势）
+    /// 统计最近 7 天的每日清理**已落定**量（用于菜单栏迷你回收趋势）。
+    ///
+    /// 用 `reclaimedBytes` 而不是 `bytes`：后者含"只是搬进废纸篓"的量，而这条曲线叫"回收"。
     static func dailyFreedBytesLast7Days(records: [CleanRecord], relativeTo now: Date = Date()) -> [(dayLabel: String, bytes: Int64)] {
         let calendar = Calendar.current
         var result: [(dayLabel: String, bytes: Int64)] = []
@@ -133,17 +155,30 @@ enum HistoryStore {
             guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { continue }
 
             let dayRecords = records.filter { $0.date >= dayStart && $0.date < dayEnd }
-            let total = dayRecords.reduce(0) { $0 + $1.bytes }
+            let total = dayRecords.reduce(Int64(0)) { $0 + $1.reclaimedBytes }
             let label = i == 0 ? "今" : String(calendar.component(.day, from: targetDay))
             result.append((dayLabel: label, bytes: total))
         }
         return result
     }
 
-    /// 统计最近 7 天累计释放总字节数
+    /// 统计最近 7 天**真的从磁盘上释放**的总字节数。
+    ///
+    /// 名字里有 "Freed" 而实现取的是 `reclaimedBytes`：`bytes` 里含"只是搬进废纸篓"的那部分，
+    /// 磁盘上一分没少（本机实测同卷 rename 后 `volumeAvailableCapacityForImportantUsage`
+    /// Δ = 0）。菜单栏那一格写的是"释放"，所以只能统计落定的量。
     static func totalFreedLast7Days(records: [CleanRecord], relativeTo now: Date = Date()) -> Int64 {
         let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
-        return records.filter { $0.date >= sevenDaysAgo }.reduce(0) { $0 + $1.bytes }
+        return records.filter { $0.date >= sevenDaysAgo }.reduce(Int64(0)) { $0 + $1.reclaimedBytes }
+    }
+
+    /// 最近 7 天里还躺在废纸篓、没清空因而没释放的量。
+    /// 任何"累计释放"的展示都必须把这一个数一起说，否则用户以为磁盘已经小了对应那么多。
+    static func totalPendingTrashLast7Days(records: [CleanRecord],
+                                          relativeTo now: Date = Date()) -> Int64 {
+        let sevenDaysAgo = Calendar.current.date(byAdding: .day, value: -7, to: now) ?? now
+        return records.filter { $0.date >= sevenDaysAgo }
+            .reduce(Int64(0)) { $0 + $1.pendingTrashBytes }
     }
 }
 

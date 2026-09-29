@@ -287,12 +287,11 @@ final class DiskMonitor: ObservableObject {
                     itemCount: result.succeeded,
                     bytes: result.releasedBytes,
                     mode: "废纸篓",
-                    failures: result.failures.count
+                    failures: result.failures.count,
+                    trashedBytes: result.trashedBytes
                 )
-                NotificationManager.shared.notifyCleanCompleted(
-                    releasedBytes: result.releasedBytes,
-                    failureCount: result.failures.count
-                )
+                NotificationManager.shared.notifyCleanCompleted(space: result.space,
+                                                              failureCount: result.failures.count)
             }
         }
     }

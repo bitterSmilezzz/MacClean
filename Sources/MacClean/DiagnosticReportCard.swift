@@ -477,7 +477,7 @@ public struct DiagnosticReportCard: View {
     private func cleanSingle(_ item: DiagnosticReportItem) {
         let res = scanner.cleanReport(item, permanently: false)
         if res.success {
-            showBanner("已移入废纸篓，释放 \(res.freedBytes.byteStringCN)")
+            showBanner(SpaceDisposition(toTrash: true, bytes: res.freedBytes).claim())
             onTriggerClean?()
         } else {
             // 失败/被拦必须说清是哪一条护栏，不能只报"清理失败"

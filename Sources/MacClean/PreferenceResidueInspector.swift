@@ -271,9 +271,9 @@ final class PreferenceResidueInspector {
         toTrash: Bool = true,
         home: String = NSHomeDirectory(),
         journal: ResidueDeletionGate.Journal = .module(categoryName: "偏好残留")
-    ) -> (successCount: Int, failCount: Int, freedBytes: Int64) {
+    ) -> (successCount: Int, failCount: Int, freedBytes: Int64, space: SpaceDisposition) {
         let outcome = cleanOutcome(items: items, toTrash: toTrash, home: home, journal: journal)
         // `failCount` 现在含"被护栏拦下"的项：只报成功数会让用户以为剩下的也处理了
-        return (outcome.cleanedCount, outcome.errorCount, outcome.freedBytes)
+        return (outcome.cleanedCount, outcome.errorCount, outcome.freedBytes, outcome.space)
     }
 }

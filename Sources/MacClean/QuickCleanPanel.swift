@@ -356,7 +356,11 @@ struct QuickCleanPanelView: View {
         }
 
         withAnimation(.easeOut(duration: 0.2)) {
-            cleanFeedback = "已完成极速释放，空间已夺回！"
+            // 这句此前写死「已完成极速释放，空间已夺回！」，而上面那条分支走的是
+            // `cleanSelectedAcrossCategories(permanently: false)`——字节只是被搬进废纸篓，
+            // 磁盘可用量一分没动（本机实测同卷 rename Δ = 0 MiB）。清理又是异步的，
+            // 这一刻连量都还没算出来，所以这里只能说不落任何"已释放"的承诺。
+            cleanFeedback = "已提交清理，落点与量见结果弹窗"
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             withAnimation {

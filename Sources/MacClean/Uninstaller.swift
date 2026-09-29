@@ -209,10 +209,9 @@ final class UninstallerState: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.isCleaningLocalization = false
-                let mode = permanently ? "彻底清除" : "移入废纸篓"
                 // 摘要必须带上被拦数：网关会因为签名密封风险、语言保护、越权等原因
                 // 拒绝其中若干项，只播报"已安全清理 N 个"等于让用户以为剩下的也处理了。
-                var summary = "【\(bundle.appName)】已\(mode) \(res.cleanedCount) 个外语包，释放 \(res.freedBytes.byteStringCN)"
+                var summary = "【\(bundle.appName)】已清理 \(res.cleanedCount) 个外语包，\(res.space.claim())"
                 if !res.needsPrivilege.isEmpty {
                     summary += "；\(res.needsPrivilege.count) 项无删除权限（该 App 由 root 管理）"
                 }
@@ -319,7 +318,7 @@ final class UninstallerState: ObservableObject {
                 // `AppInventory` 有 60 s TTL，不主动失效的话：卸载后马上转去查孤儿残留，
                 // 它的 Caches/Containers/偏好仍被判"宿主还在"，一个都列不出来。
                 if result.succeeded > 0 { AppInventory.invalidate() }
-                var parts = ["已卸载 \(result.succeeded) 项，释放 \(result.releasedBytes.byteStringCN)"]
+                var parts = ["已卸载 \(result.succeeded) 项，\(result.space.claim())"]
                 if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
                 self.lastSummary = parts.joined(separator: "，")
             }
@@ -424,7 +423,7 @@ final class UninstallerState: ObservableObject {
                     self.selectedOrphanApp = updatedApps.first
                 }
                 self.isCleaningOrphans = false
-                var parts = ["已清理 \(result.succeeded) 项孤儿残留，释放 \(result.releasedBytes.byteStringCN)"]
+                var parts = ["已清理 \(result.succeeded) 项孤儿残留，\(result.space.claim())"]
                 if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
                 self.lastOrphanSummary = parts.joined(separator: "，")
             }
@@ -481,8 +480,7 @@ final class UninstallerState: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isCleaningPreferences = false
-                let action = toTrash ? "移入废纸篓" : "彻底清除"
-                var summary = "已\(action) \(res.successCount) 个已卸载偏好碎片，释放 \(res.freedBytes.byteStringCN)"
+                var summary = "已清理 \(res.successCount) 个已卸载偏好碎片，\(res.space.claim())"
                 // 被护栏拦下与删除失败的都要播报，否则用户以为剩下的也处理了
                 if res.failCount > 0 { summary += "；\(res.failCount) 项未处理（护栏拦下或删除失败）" }
                 self.lastPreferenceSummary = summary
@@ -557,8 +555,7 @@ final class UninstallerState: ObservableObject {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isCleaningPlugins = false
-                let action = permanently ? "彻底删除" : "移入废纸篓"
-                var summary = "已安全\(action) \(res.succeeded) 项扩展残留，释放 \(res.releasedBytes.byteStringCN)"
+                var summary = "已清理 \(res.succeeded) 项扩展残留，\(res.space.claim())"
                 if res.hadQuickLook {
                     summary += "（已自动刷新 QuickLook 缓存）"
                 }

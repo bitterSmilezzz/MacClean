@@ -15,11 +15,39 @@ struct CleanResultSnapshot: Identifiable, Equatable {
     var timestamp: Date = Date()
     /// 可选关联的撤销会话 ID（v1.35.0）
     var undoSessionID: UUID? = nil
+    /// 这批字节的落点（v1.73.14）。**故意不给默认值**：弹窗是"释放了多少"最响的一处，
+    /// 给个 `.nothing` 默认就会让忘记传参的调用点继续打印「本次释放 +X」——那正是本轮
+    /// 收口的谎报形状。没有默认值意味着新增调用点必须在编译期交代这批字节去了哪儿。
+    var space: SpaceDisposition
 
     var canUndo: Bool { undoSessionID != nil }
 
     var deltaString: String {
-        releasedBytes.byteStringCN
+        // 大数字用的是总量，标签由落点决定：全在废纸篓时写"本次移入废纸篓"。
+        space.totalBytes > 0 ? space.totalBytes.byteStringCN : releasedBytes.byteStringCN
+    }
+
+    /// 磁盘可用空间的**真实**变化（可为负）。视图与自检共用这一个实现：
+    /// 只要有人把 `max(前, 后)` 那种夹子加回来，`Selftest+DeletionGate` 的纯算术
+    /// 断言立刻红——用 ViewInspector 抽这段文字在本机会把整条套件带崩
+    /// （`Swift/arm64e-apple-macos.swiftinterface:3272` unsafeBitCast 崩溃，
+    /// 见 docs/KNOWN-ENV-SELFTEST-FAILURES-MACOS27.md），所以判据不走 UI 运行时。
+    var availableDeltaBytes: Int64 { max(0, afterAvailable) - max(0, beforeAvailable) }
+
+    /// 比例条两段的宽度（0…1）。放在快照上而不是视图里，是因为视图里曾写
+    /// `max(before, afterAvailable)` 把可用空间夹成永不下降——几何留在视图里就没法被证伪。
+    /// 这里刻意不出现 `max(before` 这个写法：那条源码自检判据就是按它红的。
+    var availableBarRatios: (before: Double, after: Double) {
+        let before = max(0, beforeAvailable)
+        let after = max(0, afterAvailable)
+        let total = max(1, before > after ? before : after)
+        return (Double(before) / Double(total), Double(after) / Double(total))
+    }
+
+    var availableDeltaText: String {
+        let delta = availableDeltaBytes
+        if delta == 0 { return "没变" }
+        return delta > 0 ? "+\(delta.byteStringCN)" : "-\((-delta).byteStringCN)"
     }
 }
 
@@ -74,7 +102,7 @@ struct CleanResultSheet: View {
     private var heroPanel: some View {
         HStack(alignment: .center, spacing: Space.md) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("本次释放")
+                Text(snapshot.space.heroLabel)
                     .font(Typo.caption)
                     .foregroundStyle(Ink.secondary)
 
@@ -86,6 +114,15 @@ struct CleanResultSheet: View {
                 Text("\(snapshot.itemCount) 个项目 · \(snapshot.mode)")
                     .font(Typo.caption)
                     .foregroundStyle(Ink.tertiary)
+
+                // 移进废纸篓的那部分一分钱磁盘都没腾出来，必须在这块最显眼的位置上
+                // 自己说清楚，而不是等用户去比对下面那格可用空间。
+                if let caveat = snapshot.space.heroCaveat {
+                    Text(caveat)
+                        .font(Typo.caption)
+                        .foregroundStyle(Signal.caution)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: Space.md)
@@ -102,11 +139,17 @@ struct CleanResultSheet: View {
     }
 
     // MARK: - 磁盘空间前后对比
+    ///
+    /// 这里此前写的是 `let after = max(before, snapshot.afterAvailable)`：可用空间**永不
+    /// 显示下降**。而"本次释放 +X"要成立，靠的正是这一格变化，于是全 App 唯一一个能
+    /// 证伪那个大数字的观测被结构性地藏掉了——移入废纸篓时它一分没动，被夹成"持平"；
+    /// 别的程序把盘写满时它变少了，也被夹成"持平"。去掉夹子，并按真实差值配色。
     private var diskComparisonGroup: some View {
-        let before = max(0, snapshot.beforeAvailable)
-        let after = max(before, snapshot.afterAvailable)
-        let total = max(1, after)
-        let beforeRatio = CGFloat(before) / CGFloat(total)
+        let delta = snapshot.availableDeltaBytes
+        let beforeRatio = CGFloat(snapshot.availableBarRatios.before)
+        let afterRatio = CGFloat(snapshot.availableBarRatios.after)
+        let deltaColor: Color = delta > 0 ? Signal.positive : (delta < 0 ? Signal.caution : Ink.tertiary)
+        let deltaText = snapshot.availableDeltaText
 
         return GroupBox(title: "Macintosh HD 可用空间") {
             VStack(alignment: .leading, spacing: Space.sm) {
@@ -140,23 +183,25 @@ struct CleanResultSheet: View {
                     }
                 }
 
-                // 分段比例条：原有可用 + 本次释放增量
+                // 比例条：灰 = 清理前可用，彩色 = 当前可用（变少时彩色更短，不再被夹平）
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Signal.positive)
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Accent.tint)
+                            .fill(Ink.quaternary)
                             .frame(width: max(0, geo.size.width * beforeRatio))
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(deltaColor)
+                            .frame(width: max(0, geo.size.width * afterRatio))
                     }
                 }
                 .frame(height: 7)
 
                 HStack(spacing: Space.lg) {
-                    LegendItem(color: Accent.tint, label: "原有可用",
+                    LegendItem(color: Ink.quaternary, label: "清理前可用",
                                value: snapshot.beforeAvailable.byteStringCN)
-                    LegendItem(color: Signal.positive, label: "本次释放",
-                               value: "+\(snapshot.deltaString)", emphasized: true)
+                    // 这一格写的是**磁盘真实变化**，不是删除量：移入废纸篓时它是"没变"。
+                    LegendItem(color: deltaColor, label: "可用空间变化",
+                               value: deltaText, emphasized: true)
                 }
             }
             .padding(Space.sm)
@@ -168,7 +213,7 @@ struct CleanResultSheet: View {
         let total = max(1, snapshot.releasedBytes)
         let sortedEntries = snapshot.breakdown.sorted(by: { $0.value > $1.value })
 
-        return GroupBox(title: "分类释放占比") {
+        return GroupBox(title: "分类删除量占比") {
             VStack(alignment: .leading, spacing: Space.sm) {
                 // 水平分段比例条（唯一使用 ChartPalette 的场景）
                 GeometryReader { geo in

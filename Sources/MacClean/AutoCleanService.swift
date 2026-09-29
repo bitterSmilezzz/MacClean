@@ -67,7 +67,10 @@ enum AutoCleanService {
             if trash.rootUnreadable {
                 print("⚠️ [AutoClean] 废纸篓读不到（TCC/权限），本轮自动清空未执行")
             } else {
-                var line = "[AutoClean] 废纸篓自动清空：删除 \(trash.cleaned) 项、释放 \(trash.freedBytes.byteStringCN)，跳过 \(trash.skippedRecent) 项（未到期或软链）"
+                // 清空废纸篓是当场落盘的删除（不是再搬一次垃圾箱），所以落点是「已释放」。
+                var line = "[AutoClean] 废纸篓自动清空：删除 \(trash.cleaned) 项、"
+                    + SpaceDisposition(reclaimed: trash.freedBytes, trashed: 0).claim()
+                    + "，跳过 \(trash.skippedRecent) 项（未到期或软链）"
                 if !trash.rejected.isEmpty || !trash.failed.isEmpty {
                     line += "，拒绝 \(trash.rejected.count) / 失败 \(trash.failed.count) 项"
                 }
@@ -115,7 +118,9 @@ enum AutoCleanService {
 
         // 6. 执行安全清理（非彻底删除，统一移入系统废纸篓）
         let result = Cleaner.clean(candidates, permanently: false) { _ in }
-        print("[AutoClean] 清理完成：成功移入废纸篓 \(result.succeeded) 项，实际释放 \(result.releasedBytes.byteStringCN)，失败 \(result.failures.count) 项")
+        // 「实际释放」在这里是说谎：无头链路一律 `permanently: false`，字节只是被搬进
+        // 废纸篓（本机实测同卷 rename 后磁盘可用量 Δ = 0），所以这句话必须由落点出口。
+        print("[AutoClean] 清理完成：\(result.space.claim())，共 \(result.succeeded) 项，失败 \(result.failures.count) 项")
 
         // 7. 持久化记录（历史记录与撤销快照）
         if result.succeeded > 0 {
@@ -125,7 +130,8 @@ enum AutoCleanService {
                 itemCount: result.succeeded,
                 bytes: result.releasedBytes,
                 mode: "废纸篓",
-                failures: result.failures.count
+                failures: result.failures.count,
+                trashedBytes: result.trashedBytes > 0 ? result.trashedBytes : nil
             )
             _ = HistoryStore.append(record)
 
@@ -137,7 +143,7 @@ enum AutoCleanService {
 
             // 8. 发送系统通知
             sendCompletionNotification(
-                releasedBytes: result.releasedBytes,
+                space: result.space,
                 failures: result.failures.count,
                 isHeal: triggerHeal
             )
@@ -177,18 +183,14 @@ enum AutoCleanService {
     }
 
     /// 发送 macOS 系统完成通知
-    private static func sendCompletionNotification(releasedBytes: Int64, failures: Int, isHeal: Bool) {
+    private static func sendCompletionNotification(space: SpaceDisposition, failures: Int, isHeal: Bool) {
         let title = isHeal ? "MacClean 低空间自愈完成" : "MacClean 定时自动维护完成"
-        let body: String
-        if failures > 0 {
-            body = "已安全释放 \(releasedBytes.byteStringCN)，另有 \(failures) 项被跳过或失败。"
-        } else {
-            body = "已成功安全释放 \(releasedBytes.byteStringCN) 空间！"
-        }
+        var body = space.claim()
+        if failures > 0 { body += "；另有 \(failures) 项被跳过或失败" }
 
         // 1. 若处于 App Bundle 环境，直接使用 NotificationManager
         if NotificationManager.isAppBundle {
-            NotificationManager.shared.notifyCleanCompleted(releasedBytes: releasedBytes, failureCount: failures)
+            NotificationManager.shared.notifyCleanCompleted(space: space, failureCount: failures)
             return
         }
 

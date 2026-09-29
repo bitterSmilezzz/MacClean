@@ -432,7 +432,8 @@ struct DuplicateView: View {
                     itemCount: result.succeeded,
                     bytes: result.releasedBytes,
                     mode: permanent ? "彻底删除" : "废纸篓",
-                    failures: result.failures.count
+                    failures: result.failures.count,
+                    trashedBytes: result.trashedBytes
                 )
                 app.lastCleanResult = CleanResultSnapshot(
                     title: "重复文件清理完成",
@@ -443,7 +444,8 @@ struct DuplicateView: View {
                     beforeAvailable: beforeAvailable,
                     afterAvailable: app.diskAvailable,
                     breakdown: [.largeFiles: result.releasedBytes],
-                    timestamp: Date()
+                    timestamp: Date(),
+                    space: result.space
                 )
                 app.showCleanResultSheet = true
             }

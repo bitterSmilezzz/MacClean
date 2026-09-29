@@ -922,5 +922,523 @@ extension Selftest {
             return refreshed.appPaths != first.appPaths
                 && refreshed.appPaths.contains(where: { $0.hasPrefix(dirB) })
         }
+
+        // ── 18–23：删除结果的「落点」分账（v1.73.14）────────────────────────────
+        // 本机实测：200 MiB 同卷 rename（= `trashItem` 的实际动作）之后
+        // `volumeAvailableCapacityForImportantUsage` Δ = 0 MiB，而 `removeItem` 之后
+        // Δ = +200 MiB。G3 把"移入废纸篓"设成默认，于是默认路径上每一次清理此前都在
+        // 报一个磁盘上并没有发生的数字。下面这几条钉的是"动词不能再被随手拼出来"。
+
+        // 18. 落点三态与相加：措辞的唯一出处
+        check("SpaceDisposition：三态各自的说法、相加，以及未落盘的量不许配「释放 N」") {
+            var bad: [String] = []
+            if SpaceDisposition.reclaimed(5_000_000).claim() != "释放 5 MB" {
+                bad.append("彻底删除的说法不对：\(SpaceDisposition.reclaimed(5_000_000).claim())")
+            }
+            let trash = SpaceDisposition.trashed(5_000_000)
+            if !trash.claim().hasPrefix("移入废纸篓 5 MB") {
+                bad.append("废纸篓的说法不以落点开头：\(trash.claim())")
+            }
+            // 「磁盘还没释放」里含"释放"二字，所以绊线要查的是「释放 + 数字」这个组合
+            if trash.claim().contains("释放 5") {
+                bad.append("还没落盘的量被说成释放：\(trash.claim())")
+            }
+            if trash.heroLabel != "本次移入废纸篓" || trash.heroCaveat == nil {
+                bad.append("heroLabel/heroCaveat 没跟着落点走：\(trash.heroLabel)")
+            }
+            if SpaceDisposition.reclaimed(5_000_000).heroCaveat != nil {
+                bad.append("全是彻底删除时还要什么 caveat")
+            }
+            let mixed = SpaceDisposition.split(reclaimed: 1_000_000, trashed: 4_000_000)
+            if !mixed.claim().contains("释放 1 MB") || !mixed.claim().contains("另有 4 MB") {
+                bad.append("混合落点没把两批分开：\(mixed.claim())")
+            }
+            if mixed.totalBytes != 5_000_000 || mixed.reclaimedBytes != 1_000_000 {
+                bad.append("混合落点的量算错：\(mixed)")
+            }
+            let sum = SpaceDisposition.trashed(4_000_000) + SpaceDisposition.reclaimed(1_000_000)
+            if sum != mixed {
+                bad.append("两份结果相加的落点不等于直接构造的混合落点：\(sum)")
+            }
+            if SpaceDisposition.nothing.claim() != "0 B" {
+                bad.append("零字节落点应当只报量，不该替调用方下结论：\(SpaceDisposition.nothing.claim())")
+            }
+            if SpaceDisposition.nothing.claim().contains("没有清掉") {
+                bad.append("删掉空目录/0 字节日志时 cleanedCount>0，这句会把它播成「什么都没做」")
+            }
+            if SpaceDisposition(toTrash: true, bytes: 5_000_000) != trash {
+                bad.append("toTrash 工厂构造与 .trashed 不一致")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 19. 网关：彻底删除的那批必须算「已释放」，且 summary 用落点动词
+        check("网关按落点分账：toTrash:false 记成已释放，summary 说「释放」") {
+            let root = makeFixture("space_reclaim")
+            let victim = root + "/big.bin"
+            makeFile(victim, 3_000_000)
+            let outcome = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("big.bin", path: victim)],
+                toTrash: false, journal: .none)
+            var bad: [String] = []
+            guard outcome.cleanedCount == 1 else {
+                print("      夹具没被删掉：\(outcome.summary)")
+                return false
+            }
+            if outcome.trashedBytes != 0 {
+                bad.append("彻底删除被记成废纸篓未释放：\(outcome.trashedBytes)")
+            }
+            if outcome.space != .reclaimed(outcome.freedBytes) {
+                bad.append("落点不是「已释放」：\(outcome.space)")
+            }
+            if !outcome.summary.contains("已清理 1 项 / 释放 ") {
+                bad.append("summary 没用落点动词：\(outcome.summary)")
+            }
+            if exists(victim) { bad.append("夹具文件还在，说明这一轮没真删") }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 20. 网关：整批移进废纸篓时，summary 里不许出现「释放 <数字>」
+        //     （真往用户废纸篓塞夹具是既有做法，见 Selftest+Undo：用完立刻把自己那份删掉）
+        check("网关废纸篓侧分账：trashedBytes 等于删除量，summary 不说「释放 N」") {
+            let root = makeFixture("space_trash")
+            let victim = root + "/move_me.bin"
+            makeFile(victim, 2_000_000)
+            let outcome = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("move_me.bin", path: victim)],
+                toTrash: true, journal: .none)
+            defer {
+                for snap in outcome.trashedSnapshots {
+                    try? FileManager.default.removeItem(atPath: snap.trashPath)
+                }
+            }
+            var bad: [String] = []
+            guard outcome.cleanedCount == 1 else {
+                print("      夹具没被移进废纸篓：\(outcome.summary)")
+                return false
+            }
+            if outcome.trashedBytes != outcome.freedBytes || outcome.freedBytes == 0 {
+                bad.append("废纸篓侧没分到账：freed=\(outcome.freedBytes) trashed=\(outcome.trashedBytes)")
+            }
+            if outcome.space != .trashed(outcome.freedBytes) {
+                bad.append("落点不是「废纸篓」：\(outcome.space)")
+            }
+            if !outcome.summary.hasPrefix("已清理 1 项 / 移入废纸篓") {
+                bad.append("summary 仍以「释放」开头：\(outcome.summary)")
+            }
+            if outcome.summary.contains("释放 \(outcome.freedBytes.byteStringCN)") {
+                bad.append("summary 把没落盘的量说成释放：\(outcome.summary)")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 21. 主链路 Cleaner：真删夹具后两批字节必须分开，且混合落点要能算出来
+        check("Cleaner 分账：permanently:true 全算已释放；混合落点按逐条路径拆开") {
+            let root = makeFixture("cleaner_space")
+            let purged = root + "/purge.bin", moved = root + "/move.bin"
+            makeFile(purged, 2_000_000)
+            makeFile(moved, 1_000_000)
+            func item(_ name: String, _ path: String, _ size: Int) -> CleanItem {
+                CleanItem(name: name, path: path, size: Int64(size),
+                          nature: .losslessCache, consequence: "自检夹具",
+                          category: .logsAndTemp,
+                          use: UseState(ownerIsRunning: false, ownerName: nil,
+                                        lastUsed: nil, level: .dormant))
+            }
+            var bad: [String] = []
+
+            let onlyPurge = Cleaner.clean([item("purge.bin", purged, 2_000_000)],
+                                          permanently: true) { _ in }
+            if onlyPurge.releasedBytes == 0 {
+                bad.append("彻底删除没记账：\(onlyPurge.releasedBytes)")
+            }
+            if onlyPurge.trashedBytes != 0 || onlyPurge.space != .reclaimed(onlyPurge.releasedBytes) {
+                bad.append("彻底删除被记成搬进废纸篓：trashed=\(onlyPurge.trashedBytes)")
+            }
+
+            let onlyMove = Cleaner.clean([item("move.bin", moved, 1_000_000)],
+                                         permanently: false) { _ in }
+            defer {
+                for snap in onlyMove.trashedSnapshots {
+                    try? FileManager.default.removeItem(atPath: snap.trashPath)
+                }
+            }
+            if onlyMove.trashedBytes != onlyMove.releasedBytes || onlyMove.releasedBytes == 0 {
+                bad.append("移入废纸篓的字节没单独记账：released=\(onlyMove.releasedBytes) trashed=\(onlyMove.trashedBytes)")
+            }
+            if onlyMove.space != .trashed(onlyMove.releasedBytes) {
+                bad.append("整批搬进废纸篓时报的不是废纸篓落点：\(onlyMove.space)")
+            }
+            // 已在废纸篓里的条目会被强制彻底删除（`item.permanentDelete`）→ 同一次调用
+            // 里两批字节并存，此时必须能各算各的，而不是笼统报一个方向。
+            if onlyPurge.trashedBytes + onlyMove.trashedBytes
+                != (onlyPurge.space + onlyMove.space).trashedBytes {
+                bad.append("两次结果相加时废纸篓量丢了")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 22. 分账接线不许被拆：两处累加必须留在各自的落点分支里
+        check("Cleaner/网关的落点累加必须待在 forcePermanent / toTrash 那一侧（接线绊线）") {
+            let sourceDir = Selftest.sourceDirectoryPath
+            func code(_ file: String) -> [String] {
+                let path = (sourceDir as NSString).appendingPathComponent(file)
+                guard let src = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+                return Selftest.stripSwiftComments(src)
+                    .split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+            }
+            var bad: [String] = []
+            let cleaner = code("Cleaner.swift")
+            guard !cleaner.isEmpty else { return false }
+            if !cleaner.contains(where: { $0.contains("if !forcePermanent") && $0.contains("itemTrashedBytes += actual") }) {
+                bad.append("Cleaner.swift 里「废纸篓侧累加」不再与 !forcePermanent 同一行——可能被挪进另一侧或被删")
+            }
+            if !cleaner.contains(where: { $0.contains("result.trashedBytes += itemTrashedBytes") }) {
+                bad.append("Cleaner.swift 不再把逐条废纸篓量提交进 Result")
+            }
+            let gate = code("ResidueDeletionGate.swift")
+            guard !gate.isEmpty else { return false }
+            if !gate.contains(where: { $0.contains("if toTrash {") && $0.contains("out.trashedBytes += actual") }) {
+                bad.append("网关里「废纸篓侧累加」不再与 toTrash 同一行")
+            }
+            if !gate.contains(where: { $0.contains("trashedBytes += other.trashedBytes") }) {
+                bad.append("Outcome.merge 不再相加落点")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 23. 历史记账的口径：`bytes` 里没落盘的部分必须能单独问出来，且老记录不炸
+        check("CleanRecord：pendingTrashBytes 按字段/mode 回填，reclaimedBytes 与之互补，老 JSON 仍可解") {
+            var bad: [String] = []
+            // ① 新记录：10 MB 里 4 MB 只是搬进废纸篓
+            let mixed = CleanRecord(categoryName: "自检", itemCount: 2, bytes: 10_000_000,
+                                    mode: "废纸篓", trashedBytes: 4_000_000)
+            if mixed.pendingTrashBytes != 4_000_000 || mixed.reclaimedBytes != 6_000_000 {
+                bad.append("显式字段没被采用：pending=\(mixed.pendingTrashBytes)")
+            }
+            // ② 老记录（没有这个字段）按 mode 回填
+            let legacyTrash = CleanRecord(categoryName: "自检", itemCount: 1, bytes: 5_000_000,
+                                          mode: "废纸篓")
+            if legacyTrash.reclaimedBytes != 0 || legacyTrash.pendingTrashBytes != 5_000_000 {
+                bad.append("mode=废纸篓 的老记录仍被算成已释放")
+            }
+            let legacyPurge = CleanRecord(categoryName: "自检", itemCount: 1, bytes: 5_000_000,
+                                          mode: "彻底删除")
+            if legacyPurge.reclaimedBytes != 5_000_000 {
+                bad.append("彻底删除的老记录被算成没释放")
+            }
+            // ③ 字段被人工改大时不得出现负数释放
+            let inflated = CleanRecord(categoryName: "自检", itemCount: 1, bytes: 5_000_000,
+                                       mode: "废纸篓", trashedBytes: 9_000_000)
+            if inflated.reclaimedBytes != 0 || inflated.pendingTrashBytes != 5_000_000 {
+                bad.append("越界的 trashedBytes 没被钳制：reclaimed=\(inflated.reclaimedBytes)")
+            }
+            // ④ 老 history.json（缺 trashedBytes 与 freedIsLowerBound）必须仍能解码：
+            //    字段一旦改成非 Optional，合成 decoder 会 keyNotFound → 整份历史读不回来。
+            let legacyJSON = """
+            [{"id":"8CBE62D0-0A6B-4A3E-9E37-3E1A4F534001","date":800000000,
+              "categoryName":"历史遗留","itemCount":3,"bytes":123,"mode":"废纸篓","failures":0}]
+            """
+            let decoded = try? JSONDecoder().decode([CleanRecord].self,
+                                                    from: Data(legacyJSON.utf8))
+            if let decoded, decoded.first?.bytes != 123 {
+                bad.append("老记录解出来了但字段不对")
+            }
+            if decoded == nil {
+                bad.append("缺字段的老 history.json 解码失败——用户整份历史会凭空消失")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        func worseRatioProbe() -> (before: Double, after: Double) {
+            CleanResultSnapshot(releasedBytes: 8_000_000, itemCount: 3, failureCount: 0,
+                                mode: "废纸篓", beforeAvailable: 50_000_000_000,
+                                afterAvailable: 40_000_000_000,
+                                space: .trashed(8_000_000)).availableBarRatios
+        }
+
+        // 24. 结果弹窗的两句结论不许被夹平：差值算术与"谁在用落点出口"
+        check("CleanResultSheet：可用空间差值可为负、措辞走 SpaceDisposition（本机可跑的接线判据）") {
+            var bad: [String] = []
+            let snapshot = CleanResultSnapshot(releasedBytes: 8_000_000, itemCount: 3,
+                                               failureCount: 0, mode: "废纸篓",
+                                               beforeAvailable: 50_000_000_000,
+                                               afterAvailable: 40_000_000_000,
+                                               space: .trashed(8_000_000))
+            // 旧实现是 `let after = max(before, snapshot.afterAvailable)`：可用空间
+            // 永不显示下降，于是全弹窗唯一能证伪「本次释放 +8 MB」的那一列被藏掉。
+            if snapshot.availableDeltaBytes != -10_000_000_000 {
+                bad.append("磁盘变少 10 GB 却报成 \(snapshot.availableDeltaBytes)")
+            }
+            if snapshot.availableDeltaText != "-10 GB" {
+                bad.append("差值文案没带负号：\(snapshot.availableDeltaText)")
+            }
+            let flat = CleanResultSnapshot(releasedBytes: 8_000_000, itemCount: 1,
+                                           failureCount: 0, mode: "废纸篓",
+                                           beforeAvailable: 50_000_000_000,
+                                           afterAvailable: 50_000_000_000,
+                                           space: .trashed(8_000_000))
+            if flat.availableDeltaText != "没变" {
+                bad.append("移入废纸篓后磁盘没动，文案却写：\(flat.availableDeltaText)")
+            }
+            let worseRatios = worseRatioProbe()
+            if abs(worseRatios.after - 0.8) > 0.001 || abs(worseRatios.before - 1.0) > 0.001 {
+                bad.append("比例条没按真实差值画（before=\(worseRatios.before) after=\(worseRatios.after)）")
+            }
+            if flat.space.heroLabel != "本次移入废纸篓" || flat.deltaString != "8 MB" {
+                bad.append("顶部那句仍按「释放」口径：\(flat.space.heroLabel) \(flat.deltaString)")
+            }
+
+            // 接线：这两句话只能出自那两个出口，且夹子不许被加回来
+            let path = (Selftest.sourceDirectoryPath as NSString)
+                .appendingPathComponent("CleanResultSheet.swift")
+            guard let src = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+            let code = Selftest.stripSwiftComments(src)
+                .split(separator: "\n", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+            if !code.contains(where: { $0.contains("Text(snapshot.space.heroLabel)") }) {
+                bad.append("弹窗顶部标题不再读 SpaceDisposition.heroLabel（手写文案长回来了）")
+            }
+            if !code.contains(where: { $0.contains("snapshot.space.heroCaveat") }) {
+                bad.append("弹窗没再把「还没落盘」那一句挂出来")
+            }
+            // 视图里现在没有任何"以 before 为下界取 max"的写法了（比例条也搬进快照），
+            // 所以判据可以放宽到这个形状本身——换拼法（先存局部变量再夹）照样红。
+            if code.contains(where: { $0.contains("max(before,") }) {
+                bad.append("可用空间又被 max(before, …) 夹住了")
+            }
+            if !code.contains(where: { $0.contains("snapshot.availableBarRatios") }) {
+                bad.append("比例条不再读快照上的纯函数，几何回到了视图里")
+            }
+            if code.contains(where: { $0.contains("label: \"本次释放\"") }) {
+                bad.append("磁盘那一格又拿删除量冒充可用空间变化")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 25. 两条清理路径共用的收尾播报：落点、失败数、跳过数各说各话
+        check("AppState.cleanAnnouncement：废纸篓落点不写「释放」，失败与跳过各自计数") {
+            var bad: [String] = []
+            let moved = AppState.cleanAnnouncement(space: .trashed(8_000_000),
+                                                   failures: 2, skippedRunning: 1)
+            if !moved.hasPrefix("移入废纸篓 8 MB") {
+                bad.append("整批搬进废纸篓时这句开头就说错了：\(moved)")
+            }
+            if moved.contains("释放 8") {
+                bad.append("还没落盘的 8 MB 被写进状态栏的「释放」：\(moved)")
+            }
+            if !moved.contains("2 项失败") || !moved.contains("1 项因 App 正在运行已跳过") {
+                bad.append("失败/跳过数被吞：\(moved)")
+            }
+            let purge = AppState.cleanAnnouncement(space: .reclaimed(8_000_000),
+                                                   failures: 0, skippedRunning: 0)
+            if purge != "释放 8 MB" {
+                bad.append("彻底删除的那句被落点话术污染：\(purge)")
+            }
+            // 接线：单分类与聚合两条路都必须经这一个函数，不许再各自手抄 parts
+            let path = (Selftest.sourceDirectoryPath as NSString)
+                .appendingPathComponent("AppState.swift")
+            let code = (try? String(contentsOfFile: path, encoding: .utf8)).map {
+                Selftest.stripSwiftComments($0)
+            } ?? ""
+            let calls = code.components(separatedBy: "Self.cleanAnnouncement(").count - 1
+            if calls != 2 {
+                bad.append("清理收尾播报的调用点是 \(calls) 处（应为 2：单分类 + 聚合）")
+            }
+            if code.components(separatedBy: "项因 App 正在运行已跳过").count - 1 != 1 {
+                bad.append("「因 App 正在运行已跳过」这句话又长出第二份副本")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+        check("历史口径·菜单栏回收趋势：近 7 天每日释放量统计聚合 (dailyFreedBytesLast7Days)") {
+            let calendar = Calendar.current
+            let now = Date()
+
+            // 构造测试清理记录（口径：只有**真的从磁盘删掉**的量才进这条曲线）：
+            // - 今天：清理 10 MB，其中 4 MB 只是搬进废纸篓 → 计入 6 MB
+            // - 昨天：清理 20 MB，整批在废纸篓（老记录没有 trashedBytes 字段，
+            //   按 mode 回填）→ 计入 0
+            // - 3 天前：彻底删除 30 MB → 计入 30 MB
+            // - 10 天前：50 MB（应被过滤排除）
+            let todayDate = now
+            let yesterdayDate = calendar.date(byAdding: .day, value: -1, to: now)!
+            let threeDaysAgoDate = calendar.date(byAdding: .day, value: -3, to: now)!
+            let tenDaysAgoDate = calendar.date(byAdding: .day, value: -10, to: now)!
+
+            let testRecords = [
+                CleanRecord(date: todayDate, categoryName: "系统垃圾", itemCount: 5,
+                            bytes: 10 * 1024 * 1024, mode: "废纸篓", trashedBytes: 4 * 1024 * 1024),
+                CleanRecord(date: yesterdayDate, categoryName: "应用缓存", itemCount: 8,
+                            bytes: 20 * 1024 * 1024, mode: "废纸篓"),
+                CleanRecord(date: threeDaysAgoDate, categoryName: "开发残留", itemCount: 12,
+                            bytes: 30 * 1024 * 1024, mode: "彻底删除"),
+                CleanRecord(date: tenDaysAgoDate, categoryName: "大文件", itemCount: 20,
+                            bytes: 50 * 1024 * 1024, mode: "废纸篓")
+            ]
+
+            let trend = HistoryStore.dailyFreedBytesLast7Days(records: testRecords, relativeTo: now)
+            guard trend.count == 7 else { return false }
+
+            // 最后一个柱子为当天，标签为 "今"
+            guard let lastItem = trend.last, lastItem.dayLabel == "今" else { return false }
+            guard lastItem.bytes == 6 * 1024 * 1024 else { return false }
+
+            // 倒数第二个柱子为昨天：整批还压在废纸篓里，磁盘一分没动 → 必须是 0
+            let yesterdayItem = trend[trend.count - 2]
+            guard yesterdayItem.bytes == 0 else { return false }
+
+            // 倒数第四个柱子为 3 天前
+            let threeDaysAgoItem = trend[trend.count - 4]
+            guard threeDaysAgoItem.bytes == 30 * 1024 * 1024 else { return false }
+
+            // 10 天前的记录绝不能泄露进入 7 天聚合中
+            let totalInTrend = trend.reduce(0) { $0 + $1.bytes }
+            guard totalInTrend == 36 * 1024 * 1024 else { return false }
+
+            // 空记录边界测试
+            let emptyTrend = HistoryStore.dailyFreedBytesLast7Days(records: [], relativeTo: now)
+            guard emptyTrend.count == 7 else { return false }
+            guard emptyTrend.allSatisfy({ $0.bytes == 0 }) else { return false }
+
+            return true
+        }
+
+        check("历史口径·菜单栏回收趋势：近 7 天累计减负总量计算 (totalFreedLast7Days)") {
+            let calendar = Calendar.current
+            let now = Date()
+
+            // 100 KB 整批在废纸篓（老记录按 mode 回填）、200 KB 里 50 KB 在废纸篓、
+            // 999 KB 是 15 天前的彻底删除（出窗）→ 只有 150 KB 真的落盘了
+            let recordInWeek1 = CleanRecord(date: now, categoryName: "系统垃圾", itemCount: 1,
+                                            bytes: 100 * 1024, mode: "废纸篓")
+            let recordInWeek2 = CleanRecord(date: calendar.date(byAdding: .day, value: -5, to: now)!,
+                                            categoryName: "应用缓存", itemCount: 2,
+                                            bytes: 200 * 1024, mode: "废纸篓",
+                                            trashedBytes: 50 * 1024)
+            let recordOld = CleanRecord(date: calendar.date(byAdding: .day, value: -15, to: now)!,
+                                        categoryName: "开发残留", itemCount: 5,
+                                        bytes: 999 * 1024, mode: "彻底删除")
+
+            let records = [recordInWeek1, recordInWeek2, recordOld]
+            let total = HistoryStore.totalFreedLast7Days(records: records, relativeTo: now)
+            guard total == 150 * 1024 else { return false }
+
+            // 没落盘的那 150 KB 必须另有一处交代，否则"累计释放"就把它悄悄吞了
+            let pending = HistoryStore.totalPendingTrashLast7Days(records: records, relativeTo: now)
+            guard pending == 150 * 1024 else { return false }
+            guard total + pending == 300 * 1024 else { return false }
+
+            guard HistoryStore.totalFreedLast7Days(records: [], relativeTo: now) == 0 else { return false }
+            return true
+        }
+
+
+        // 26. 0 字节的删除仍然是"做成了"：落点为 0 时只报量，不宣布什么都没清（复审 P1-4）
+        check("删掉空目录：cleanedCount 记 1、落点报 0 B，summary 不许说「没有清掉任何内容」") {
+            let root = makeFixture("zero_byte")
+            let emptyDir = root + "/empty"
+            try? FileManager.default.createDirectory(atPath: emptyDir,
+                                                     withIntermediateDirectories: true)
+            let outcome = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("empty", path: emptyDir)],
+                toTrash: false, journal: .none)
+            var bad: [String] = []
+            guard outcome.cleanedCount == 1 else {
+                print("      空目录没被删掉：\(outcome.summary)")
+                return false
+            }
+            if outcome.freedBytes != 0 { bad.append("空目录测出了量：\(outcome.freedBytes)") }
+            if outcome.summary != "已清理 1 项 / 0 B" {
+                bad.append("结论句：\(outcome.summary)")
+            }
+            if outcome.summary.contains("没有可清理") || outcome.summary.contains("没有清掉") {
+                bad.append("把做成的一件事播成没做成：\(outcome.summary)")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 27. 同一次调用里两种落点并存（`item.permanentDelete` 强制彻底删 + 其余进废纸篓）
+        //     ——这才是主链路真实的混合形态，两次独立调用相加证明不了它（复审 P2）。
+        check("一次清理里混合落点：permanentDelete 的那条算已释放，其余算搬进废纸篓") {
+            let root = makeFixture("mixed_call")
+            let inTrash = root + "/already_in_trash.bin"   // 模拟"来自废纸篓"的条目
+            let normal = root + "/normal.bin"
+            makeFile(inTrash, 3_000_000)
+            makeFile(normal, 1_000_000)
+            let purgeItem = CleanItem(name: "in_trash", path: inTrash, size: 3_000_000,
+                                      nature: .losslessCache, consequence: "自检夹具",
+                                      category: .logsAndTemp, permanentDelete: true,
+                                      use: UseState(ownerIsRunning: false, ownerName: nil,
+                                                   lastUsed: nil, level: .dormant))
+            let trashItem = CleanItem(name: "normal", path: normal, size: 1_000_000,
+                                      nature: .losslessCache, consequence: "自检夹具",
+                                      category: .logsAndTemp,
+                                      use: UseState(ownerIsRunning: false, ownerName: nil,
+                                                   lastUsed: nil, level: .dormant))
+            let r = Cleaner.clean([purgeItem, trashItem], permanently: false) { _ in }
+            var bad: [String] = []
+            // 只有真搬进废纸篓的那一条需要清走；快照数必须等于条数，否则 defer 会空转，
+            // 夹具留在用户废纸篓里而断言照样绿（复审 P2）。
+            defer {
+                for snap in r.trashedSnapshots {
+                    try? FileManager.default.removeItem(atPath: snap.trashPath)
+                }
+            }
+            if r.succeeded != 2 { bad.append("两条都没成功：succeeded=\(r.succeeded)") }
+            if r.trashedSnapshots.count != 1 {
+                bad.append("废纸篓快照数不是 1（\(r.trashedSnapshots.count)），清理夹具的收尾会空转")
+            }
+            if r.releasedBytes == 0 { bad.append("一次删除什么都没记到量") }
+            if r.trashedBytes == 0 || r.trashedBytes >= r.releasedBytes {
+                bad.append("混合落点没拆开：released=\(r.releasedBytes) trashed=\(r.trashedBytes)")
+            }
+            switch r.space {
+            case .split(let rec, let tra) where rec > 0 && tra > 0:
+                break
+            default:
+                bad.append("落点不是 split：\(r.space)")
+            }
+            if r.space.totalBytes != r.releasedBytes || r.space.reclaimedBytes != r.releasedBytes - r.trashedBytes {
+                bad.append("落点与总账不吻合")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
+
+        // 28. 落点必须真的写进历史：只靠 mode 回推会把混合结果算成 100% 未释放
+        check("recordClean 落参：混合结果写进历史后 pending 是显式值而不是 mode 回推的整批") {
+            let dir = makeFixture("history_state")
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let saved = HistoryStore.fileURLOverride
+            defer { HistoryStore.fileURLOverride = saved }
+            HistoryStore.fileURLOverride = URL(fileURLWithPath: dir + "/history.json")
+
+            let app = AppState()
+            _ = app.recordClean(categoryName: "自检混合落盘", itemCount: 2,
+                                bytes: 10_000_000, mode: "废纸篓", failures: 0,
+                                trashedBytes: 3_000_000)
+            var bad: [String] = []
+            guard let row = HistoryStore.load().first(where: { $0.categoryName == "自检混合落盘" }) else {
+                print("      历史里没找到这条记录")
+                return false
+            }
+            if row.trashedBytes != 3_000_000 {
+                bad.append("落点参数被吞：trashedBytes=\(String(describing: row.trashedBytes))")
+            }
+            // mode 回推会给出 pending = 整批 10 MB；显式值必须是 3 MB
+            if row.pendingTrashBytes != 3_000_000 || row.reclaimedBytes != 7_000_000 {
+                bad.append("pending/reclaimed 走的是 mode 回推：pending=\(row.pendingTrashBytes)")
+            }
+            bad.forEach { print("      \($0)") }
+            return bad.isEmpty
+        }
     }
 }

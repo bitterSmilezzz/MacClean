@@ -329,8 +329,11 @@ extension Selftest {
             }
             let app = AppState()
             app.recordClean(categoryName: "用户缓存", itemCount: 3, bytes: 1234,
-                            mode: "废纸篓", failures: 0)
+                            mode: "废纸篓", failures: 0, trashedBytes: 1234)
             guard app.history.count == 1, app.history[0].bytes == 1234 else { return false }
+            // 落点必须跟着进历史：这批字节此刻还压在磁盘上，"累计释放"不许算它
+            guard app.history[0].reclaimedBytes == 0,
+                  app.history[0].pendingTrashBytes == 1234 else { return false }
             app.clearHistory()
             return app.history.isEmpty
         }

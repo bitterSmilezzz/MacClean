@@ -65,7 +65,9 @@ extension Selftest {
                 afterAvailable: 150_000_000,
                 breakdown: [:],
                 timestamp: Date(),
-                undoSessionID: UUID()
+                undoSessionID: UUID(),
+                // 有撤销快照 + mode「废纸篓」→ 这批字节此刻还压在磁盘上
+                space: .trashed(1024 * 1024 * 50)
             )
 
             app.lastCleanSummary = "已释放 50 MB"

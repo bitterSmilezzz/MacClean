@@ -247,6 +247,7 @@ public final class LoginItemCleaner {
         var errorCount: Int { gate.errorCount + unloadResults.filter { !$0.succeeded }.count }
         var needsPrivilege: [ResidueDeletionGate.Rejection] { gate.needsPrivilege }
         var summary: String { gate.summary }
+        var space: SpaceDisposition { gate.space }
 
         /// 卸载失败提示（文件已删但服务没停 → 必须让用户知道）
         var unloadWarnings: [String] {

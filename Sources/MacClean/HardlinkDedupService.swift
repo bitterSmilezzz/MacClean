@@ -30,7 +30,10 @@ struct HardlinkDedupResult: Equatable {
     var summaryText: String {
         var parts: [String] = []
         if succeededCount > 0 {
-            parts.append("成功无损硬链接去重 \(succeededCount) 个副本，释放物理空间 \(freedBytes.byteStringCN)")
+            // 去重是**当场落盘**的：同一份内容仍留一份，多出来的克隆当场消失，
+            // 所以这里可以直说"释放"（清空废纸篓/彻底删除同理，见 AutoCleanService）。
+            parts.append("成功无损硬链接去重 \(succeededCount) 个副本，"
+                + SpaceDisposition(reclaimed: freedBytes, trashed: 0).claim())
         }
         if skippedCount > 0 {
             parts.append("\(skippedCount) 项已是硬链接已跳过")

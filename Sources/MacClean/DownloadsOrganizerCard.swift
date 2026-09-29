@@ -395,9 +395,8 @@ public struct DownloadsOrganizerCard: View {
             let res = DownloadsOrganizerScanner.shared.clean(items: targets, toTrash: toTrash)
             DispatchQueue.main.async {
                 self.isCleaning = false
-                let mode = toTrash ? "移入废纸篓" : "彻底删除"
-                self.bannerFeedback = "已安全\(mode) \(res.cleanedCount) 个下载文件，"
-                    + "实测释放 \(res.freedBytes.byteStringCN)"
+                self.bannerFeedback = "已清理 \(res.cleanedCount) 个下载文件，"
+                    + res.space.claim()
                     + (res.errorCount > 0 ? "；\(res.rejectedCount) 项被护栏拦下、\(res.failedCount) 项失败" : "")
                 self.loadData()
                 self.onTriggerClean?()

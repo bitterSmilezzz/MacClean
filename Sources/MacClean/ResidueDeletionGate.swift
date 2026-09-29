@@ -60,6 +60,19 @@ enum ResidueDeletionGate {
         /// 只用于把话说成约数，不进任何持久化记录（`CleanRecord` 是 Codable，加字段会踩
         /// "合成 Codable 不用默认值 → 老记录解码必炸"那条既有坑）。
         var lowerBoundCount = 0
+        /// `freedBytes` 里**只是搬进废纸篓、磁盘还没真正释放**的那部分。
+        /// `execute(toTrash:)` 一次动作只有一种落点，所以它等于 `freedBytes` 或 0；
+        /// `merge` 之后才可能夹在中间（一个模块先彻底删、再把另一批移进废纸篓）。
+        /// 与 `lowerBoundCount` 一样只活在一次结果里，不进任何持久化记录。
+        var trashedBytes: Int64 = 0
+
+        /// 这批字节的落点。所有"释放了多少"的话都必须经它出口（见 `SpaceDisposition.claim`）。
+        ///
+        /// `0 ≤ trashedBytes ≤ freedBytes` 由两个写入点保证：`freedBytes` 只在 `execute`
+        /// 的成功分支里加（同一分支同步加 `trashedBytes`），`merge` 两边一起加。
+        var space: SpaceDisposition {
+            SpaceDisposition(reclaimed: freedBytes - trashedBytes, trashed: trashedBytes)
+        }
 
         init() {}
 
@@ -76,8 +89,10 @@ enum ResidueDeletionGate {
         var summary: String {
             var parts: [String] = []
             if cleanedCount > 0 {
-                let amount = freedBytes.byteStringCN
-                    + (lowerBoundCount > 0 ? "（其中 \(lowerBoundCount) 项只读到下限）" : "")
+                // 「字节 + 动词」不在这里拼：只有 `SpaceDisposition.claim()` 知道
+                // 移进废纸篓的那部分其实还没释放磁盘（v1.73.14）。
+                var amount = space.claim()
+                if lowerBoundCount > 0 { amount += "（其中 \(lowerBoundCount) 项只读到下限）" }
                 parts.append("已清理 \(cleanedCount) 项 / \(amount)")
             }
             if !needsPrivilege.isEmpty {
@@ -105,6 +120,7 @@ enum ResidueDeletionGate {
             failed.append(contentsOf: other.failed)
             trashedSnapshots.append(contentsOf: other.trashedSnapshots)
             lowerBoundCount += other.lowerBoundCount
+            trashedBytes += other.trashedBytes
         }
 
         /// 非变异版：`Outcome(rejected: blocked).merging(gateOutcome)`
@@ -194,6 +210,10 @@ enum ResidueDeletionGate {
                 }
                 out.cleanedCount += 1
                 out.freedBytes += actual
+                // 与 `freedBytes` 同步分账：移进废纸篓只是同卷 rename，磁盘可用量一分没动
+                // （本机实测 Δ = 0 MiB / 彻底删除 Δ = +200 MiB），所以"到底释放了多少"
+                // 必须能从这里单独问出来。
+                if toTrash { out.trashedBytes += actual }
                 // 只有**真删掉的**项才配进"其中 N 项只读到下限"——计数放在成功分支里，
                 // 否则删除失败也会计数，N 可能大于已清理项数（v1.73.12 复审 F-P1-1）。
                 if sizing.isLowerBound { out.lowerBoundCount += 1 }
@@ -243,7 +263,10 @@ enum ResidueDeletionGate {
             mode: permanently ? "彻底删除" : "废纸篓", failures: outcome.errorCount,
             // 只在"确实是下限"时写 true，其余留 nil——老记录与不需要这句话的记录
             // 保持和改动前逐字节一致。
-            freedIsLowerBound: outcome.lowerBoundCount > 0 ? true : nil)
+            freedIsLowerBound: outcome.lowerBoundCount > 0 ? true : nil,
+            // 只在"确实有量还压在废纸篓里"时写，其余留 nil：老记录与不需要这句话的记录
+            // 保持和改动前逐字节一致（同 `freedIsLowerBound` 的理由）。
+            trashedBytes: outcome.trashedBytes > 0 ? outcome.trashedBytes : nil)
         HistoryStore.append(record)
 
         if !permanently && !outcome.trashedSnapshots.isEmpty {

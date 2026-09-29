@@ -41,7 +41,15 @@ struct HistoryView: View {
         }
     }
 
-    private var totalBytes: Int64 { filteredRecords.reduce(0) { $0 + $1.bytes } }
+    /// 只算**真的从磁盘上腾出来**的量。用 `bytes` 会把"只是搬进废纸篓"的也算成已释放
+    /// （本机实测：200 MiB 同卷 rename 之后可用空间 Δ = 0 MiB）。
+    private var totalBytes: Int64 { filteredRecords.reduce(Int64(0)) { $0 + $1.reclaimedBytes } }
+
+    /// 还压在废纸篓里、没清空因而没释放的量。必须与上面那个数同时出现，否则
+    /// 「累计释放」会随时间越吹越大，而磁盘上什么都没少。
+    private var pendingTrashBytes: Int64 {
+        filteredRecords.reduce(Int64(0)) { $0 + $1.pendingTrashBytes }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -215,6 +223,21 @@ struct HistoryView: View {
                     .motionSafeNumericTransition()
             }
 
+            // 没清空废纸篓的那部分单列，不并进"累计释放"
+            if pendingTrashBytes > 0 {
+                HStack(spacing: Space.xxs) {
+                    Text("另有")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
+                    Text(pendingTrashBytes.byteStringCN)
+                        .font(.mcNumeric(12, weight: .medium))
+                        .foregroundStyle(Signal.caution)
+                    Text("按记录推算还压在废纸篓里没释放")
+                        .font(Typo.caption)
+                        .foregroundStyle(Ink.tertiary)
+                }
+            }
+
             Spacer(minLength: Space.sm)
 
             Button {
@@ -335,7 +358,7 @@ struct HistoryCategoryDistributionCard: View {
         var bytesMap: [String: Int64] = [:]
         var countMap: [String: Int] = [:]
         for r in records {
-            bytesMap[r.categoryName, default: 0] += r.bytes
+            bytesMap[r.categoryName, default: 0] += r.reclaimedBytes
             countMap[r.categoryName, default: 0] += 1
         }
         let sorted = bytesMap.sorted(by: { $0.value > $1.value })
@@ -355,8 +378,8 @@ struct HistoryCategoryDistributionCard: View {
     }
 
     var body: some View {
-        let total = max(1, records.reduce(0) { $0 + $1.bytes })
-        return GroupBox(title: "各分类累计释放", footer: "共 \(categoryTotals.count) 个分类贡献") {
+        let total = max(1, records.reduce(Int64(0)) { $0 + $1.reclaimedBytes })
+        return GroupBox(title: "各分类累计释放", footer: "共 \(categoryTotals.count) 个分类贡献 · 只算已落盘的删除") {
             VStack(alignment: .leading, spacing: Space.sm) {
                 // 多色水平堆叠比例条
                 GeometryReader { geo in
@@ -401,20 +424,20 @@ struct HistoryTrendChart: View {
     }
 
     private var maxBytes: Int64 {
-        max(chartRecords.map(\.bytes).max() ?? 1, 1)
+        max(chartRecords.map(\.reclaimedBytes).max() ?? 1, 1)
     }
 
     private var avgBytes: Int64 {
         guard !chartRecords.isEmpty else { return 0 }
-        return chartRecords.reduce(0) { $0 + $1.bytes } / Int64(chartRecords.count)
+        return chartRecords.reduce(Int64(0)) { $0 + $1.reclaimedBytes } / Int64(chartRecords.count)
     }
 
     private var totalBytes: Int64 {
-        records.reduce(0) { $0 + $1.bytes }
+        records.reduce(Int64(0)) { $0 + $1.reclaimedBytes }
     }
 
     private var footerText: String {
-        let shown = "最近 \(chartRecords.count) 次清理流水"
+        let shown = "最近 \(chartRecords.count) 次清理流水 · 只计已落盘的删除（废纸篓里的不算）"
         return range == .all ? shown : "\(range.rawValue) · \(shown)"
     }
 
@@ -457,7 +480,7 @@ struct HistoryTrendChart: View {
                                 .foregroundStyle(Ink.primary)
                             Text("·")
                                 .foregroundStyle(Ink.quaternary)
-                            Text(hovered.bytes.byteStringCN)
+                            Text(hovered.reclaimedBytes.byteStringCN)
                                 .font(.mcNumeric(11, weight: .semibold))
                                 .foregroundStyle(Ink.primary)
                             Text("·")
@@ -506,7 +529,7 @@ struct HistoryBarItem: View {
     let onHover: (Bool) -> Void
 
     private var barHeight: CGFloat {
-        let ratio = CGFloat(record.bytes) / CGFloat(max(maxBytes, 1))
+        let ratio = CGFloat(record.reclaimedBytes) / CGFloat(max(maxBytes, 1))
         return max(ratio * 70, 4)
     }
 

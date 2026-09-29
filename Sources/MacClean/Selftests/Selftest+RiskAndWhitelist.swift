@@ -81,7 +81,12 @@ extension Selftest {
             ]
             let csv = HistoryExporter.generateCSV(records: records)
             guard csv.hasPrefix("\u{FEFF}") else { return false }
-            guard csv.contains("记录ID,清理时间,分类,清理模式,清理项数,失败项数,释放字节数,释放大小") else { return false }
+            guard csv.contains("记录ID,清理时间,分类,清理模式,清理项数,失败项数,清理字节数,已释放字节数,废纸篓未释放字节数,清理大小") else { return false }
+            // 「已释放」与「废纸篓未释放」必须分列：混在一列里，导出的账就把搬进
+            // 垃圾箱的量算成腾出来的空间（本机实测同卷 rename 后磁盘可用量 Δ = 0）。
+            // 这两条同时钉住"老记录没有 trashedBytes 字段 → 按 mode 回填"这条路。
+            guard csv.contains(",1000000,0,1000000,1 MB") else { return false }      // mode=移入废纸篓 → 一分没释放
+            guard csv.contains(",2000000,2000000,0,2 MB") else { return false }      // mode=彻底删除 → 全落盘
             guard csv.contains("系统日志") && csv.contains("用户缓存") && csv.contains("1 MB") && csv.contains("2 MB") else { return false }
             return true
         }
@@ -93,7 +98,11 @@ extension Selftest {
             let report = HistoryExporter.generateReport(records: records)
             guard report.contains("# MacClean 清理历史归档报告") else { return false }
             guard report.contains("清理执行次数：2 次") else { return false }
-            guard report.contains("3 MB") else { return false }
+            // 合计只许算已落盘的那 2 MB；另 1 MB 只是搬进废纸篓，磁盘上一分没少。
+            // 旧断言查的是两条相加的 "3 MB"——把未释放的量也当成释放，正是本次要收口的谎报。
+            guard report.contains("累计释放容量（只含已落盘的删除）：2 MB") else { return false }
+            guard report.contains("另有 1 MB 只是移进废纸篓") else { return false }
+            guard !report.contains("：3 MB") else { return false }
             guard report.contains("各分类释放分布统计") else { return false }
             guard report.contains("详细清理流水记录") else { return false }
             return true
@@ -142,14 +151,18 @@ extension Selftest {
         }
         check("系统通知：清理完成通知与状态组装") {
             let mgr = NotificationManager.shared
-            mgr.notifyCleanCompleted(releasedBytes: 104_857_600, failureCount: 0)
+            // 只有真从磁盘删掉的量才配说「释放」。旧断言只查 `contains("105 MB")`，
+            // 那是个形状断言——把动词换成任何别的词它照样绿。
+            mgr.notifyCleanCompleted(space: .reclaimed(104_857_600), failureCount: 0)
             guard let notif = mgr.lastNotification else { return false }
             guard notif.title == "MacClean 清理完成" else { return false }
-            guard notif.body.contains("105 MB") else { return false }
+            guard notif.body.hasPrefix("释放 105 MB") else { return false }
 
-            mgr.notifyCleanCompleted(releasedBytes: 20_000_000, failureCount: 2)
+            mgr.notifyCleanCompleted(space: .trashed(20_000_000), failureCount: 2)
             guard let notif2 = mgr.lastNotification else { return false }
-            guard notif2.body.contains("2 项清理失败或跳过") && notif2.body.contains("20 MB") else { return false }
+            guard notif2.body.contains("2 项清理失败或跳过") else { return false }
+            guard notif2.body.hasPrefix("移入废纸篓 20 MB") else { return false }
+            guard !notif2.body.contains("释放 20") else { return false }
             return true
         }
         check("系统通知：Dock 徽标状态同步") {

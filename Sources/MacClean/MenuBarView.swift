@@ -32,6 +32,8 @@ struct MenuBarView: View {
     @State var pendingDanglingClean: Bool = false
     @State var recentTrend: [(dayLabel: String, bytes: Int64)] = []
     @State var weekTotalFreed: Int64 = 0
+    /// 近 7 天里只是搬进废纸篓、还没清空的量（与上面那个数分开报，不并入）
+    @State var weekPendingTrash: Int64 = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -478,6 +480,11 @@ struct MenuBarView: View {
                             .foregroundStyle(weekTotalFreed > 0 ? Signal.positive : Ink.tertiary)
                             .motionSafeNumericTransition()
                     }
+                    if weekPendingTrash > 0 {
+                        Text("另有 \(weekPendingTrash.byteStringCN) 在废纸篓里，清空后才释放")
+                            .font(Typo.micro)
+                            .foregroundStyle(Signal.caution)
+                    }
 
                     // 迷你 7 天柱状趋势图
                     let maxBytes = max(1, recentTrend.map(\.bytes).max() ?? 1)
@@ -691,6 +698,7 @@ struct MenuBarView: View {
             let history = HistoryStore.load()
             let trend = HistoryStore.dailyFreedBytesLast7Days(records: history)
             let weekTotal = HistoryStore.totalFreedLast7Days(records: history)
+            let weekPending = HistoryStore.totalPendingTrashLast7Days(records: history)
 
             DispatchQueue.main.async {
                 self.localSnapshots = snaps
@@ -698,6 +706,7 @@ struct MenuBarView: View {
                 self.danglingStartupItems = startups
                 self.recentTrend = trend
                 self.weekTotalFreed = weekTotal
+                self.weekPendingTrash = weekPending
             }
         }
     }

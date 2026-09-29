@@ -495,7 +495,6 @@ public struct FontCacheInspectorCard: View {
             // 勾选了但被拦下的项不会静默消失：全部留在 rejected 里如实上报
             let fRes = FontCacheInspector.shared.cleanFonts(items: fontsToClean, toTrash: toTrash)
             let cRes = FontCacheInspector.shared.cleanCaches(items: cachesToClean, toTrash: toTrash)
-            let totalFreed = fRes.freedBytes + cRes.freedBytes
             let notes = Self.explanationNotes(from: [fRes, cRes])
             let cleaned = fRes.cleanedCount + cRes.cleanedCount
             let blocked = fRes.errorCount + cRes.errorCount
@@ -506,7 +505,7 @@ public struct FontCacheInspectorCard: View {
                 self.bannerIsWarning = (cleaned == 0 && blocked > 0) || !notes.isEmpty
                 self.bannerFeedback = cleaned == 0
                     ? "未清理任何项目（\(blocked) 项被拒或失败）：\(Self.compactReasons(from: [fRes, cRes]))"
-                    : "已清理 \(cleaned) 项，释放 \(totalFreed.byteStringCN)"
+                    : "已清理 \(cleaned) 项，\((fRes.space + cRes.space).claim())"
                     + (blocked > 0 ? "；另有 \(blocked) 项未通过网关" : "")
                 self.loadData()
                 self.onTriggerClean?()

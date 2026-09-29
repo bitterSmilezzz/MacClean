@@ -345,7 +345,7 @@ public struct AndroidEmulatorOptimizerCard: View {
             let outcome = AndroidEmulatorScanner.shared.clean(items: targets, toTrash: toTrash)
             DispatchQueue.main.async {
                 isCleaning = false
-                var lines = ["已清理 \(outcome.cleanedCount) 项，释放 \(outcome.freedBytes.byteStringCN)"]
+                var lines = ["已清理 \(outcome.cleanedCount) 项，\(outcome.space.claim())"]
                 lines.append(contentsOf: outcome.rejected.map { "\($0.name)：\($0.message)" })
                 bannerFeedback = lines.joined(separator: "\n")
                 loadData()

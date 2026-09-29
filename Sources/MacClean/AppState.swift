@@ -588,21 +588,17 @@ final class AppState: ObservableObject {
                                               itemCount: result.succeeded,
                                               bytes: result.releasedBytes,   // N8：历史记录用实际释放量，而非计划量
                                               mode: permanently ? "彻底删除" : "废纸篓",
-                                              failures: result.failures.count)
+                                              failures: result.failures.count,
+                                              trashedBytes: result.trashedBytes)
                 var undoID: UUID? = nil
                 if !permanently && !result.trashedSnapshots.isEmpty {
                     let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
                     UndoManagerStore.record(session: session)
                     undoID = session.id
                 }
-                var parts = ["已释放 \(result.releasedBytes.byteStringCN)"]
-                if !result.failures.isEmpty {
-                    parts.append("\(result.failures.count) 项失败")
-                }
-                if !runningBlocked.isEmpty {
-                    parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
-                }
-                self.lastCleanSummary = parts.joined(separator: "，")
+                self.lastCleanSummary = Self.cleanAnnouncement(
+                    space: result.space, failures: result.failures.count,
+                    skippedRunning: runningBlocked.count)
                 if result.releasedBytes > 0 || result.succeeded > 0 {
                     self.lastCleanResult = CleanResultSnapshot(
                         title: "\(cat.title) 清理完成",
@@ -614,14 +610,13 @@ final class AppState: ObservableObject {
                         afterAvailable: self.diskAvailable,
                         breakdown: [cat: result.releasedBytes],
                         timestamp: Date(),
-                        undoSessionID: undoID
+                        undoSessionID: undoID,
+                        space: result.space
                     )
                     self.showCleanResultSheet = true
                 }
-                NotificationManager.shared.notifyCleanCompleted(
-                    releasedBytes: result.releasedBytes,
-                    failureCount: result.failures.count
-                )
+                NotificationManager.shared.notifyCleanCompleted(space: result.space,
+                                                              failureCount: result.failures.count)
             }
         }
     }
@@ -714,6 +709,20 @@ final class AppState: ObservableObject {
         return breakdown
     }
 
+    /// 清理收尾要播报的那一句（**两条清理路径共用**）。
+    ///
+    /// 为什么单独抽出来：此前这里是两份手抄的 `parts` 拼装，而"这次到底有没有真的
+    /// 腾出磁盘"由 `SpaceDisposition` 决定——抄两遍就意味着改一处漏一处。
+    /// 抽成纯函数还有一层用处：`AppState` 的清理链路要后台队列 + 主线程回写，
+    /// 在本机没法端到端跑到，只有纯函数能被自检钉住（否则变异能活着回来）。
+    static func cleanAnnouncement(space: SpaceDisposition, failures: Int,
+                                  skippedRunning: Int) -> String {
+        var parts = [space.claim()]
+        if failures > 0 { parts.append("\(failures) 项失败") }
+        if skippedRunning > 0 { parts.append("\(skippedRunning) 项因 App 正在运行已跳过") }
+        return parts.joined(separator: "，")
+    }
+
     /// 聚合清理的收尾播报：写清理历史、状态栏摘要、结果弹窗快照与系统通知
     private func reportAggregateCleanOutcome(result: Cleaner.Result,
                                              breakdown: [CleanCategory: Int64],
@@ -724,21 +733,17 @@ final class AppState: ObservableObject {
                                  itemCount: result.succeeded,
                                  bytes: result.releasedBytes,   // N8：实际释放量
                                  mode: permanently ? "彻底删除" : "废纸篓",
-                                 failures: result.failures.count)
+                                 failures: result.failures.count,
+                                 trashedBytes: result.trashedBytes)
         var undoID: UUID? = nil
         if !permanently && !result.trashedSnapshots.isEmpty {
             let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
             UndoManagerStore.record(session: session)
             undoID = session.id
         }
-        var parts = ["已释放 \(result.releasedBytes.byteStringCN)"]
-        if !result.failures.isEmpty {
-            parts.append("\(result.failures.count) 项失败")
-        }
-        if !runningBlocked.isEmpty {
-            parts.append("\(runningBlocked.count) 项因 App 正在运行已跳过")
-        }
-        lastCleanSummary = parts.joined(separator: "，")
+        lastCleanSummary = Self.cleanAnnouncement(
+            space: result.space, failures: result.failures.count,
+            skippedRunning: runningBlocked.count)
         if result.releasedBytes > 0 || result.succeeded > 0 {
             lastCleanResult = CleanResultSnapshot(
                 title: "聚合清理完成",
@@ -750,14 +755,13 @@ final class AppState: ObservableObject {
                 afterAvailable: diskAvailable,
                 breakdown: breakdown,
                 timestamp: Date(),
-                undoSessionID: undoID
+                undoSessionID: undoID,
+                space: result.space
             )
             showCleanResultSheet = true
         }
-        NotificationManager.shared.notifyCleanCompleted(
-            releasedBytes: result.releasedBytes,
-            failureCount: result.failures.count
-        )
+        NotificationManager.shared.notifyCleanCompleted(space: result.space,
+                                                      failureCount: result.failures.count)
     }
 
     /// 菜单栏助手一键快速安全清理：自动勾选所有结论为「可清理」且未加入白名单的项并移入废纸篓。
@@ -902,9 +906,11 @@ final class AppState: ObservableObject {
     /// 记录一次清理历史（Mole `mo history` 思路）
     @discardableResult
     func recordClean(categoryName: String, itemCount: Int, bytes: Int64,
-                     mode: String, failures: Int) -> CleanRecord {
+                     mode: String, failures: Int,
+                     trashedBytes: Int64) -> CleanRecord {
         let record = CleanRecord(categoryName: categoryName, itemCount: itemCount,
-                                 bytes: bytes, mode: mode, failures: failures)
+                                 bytes: bytes, mode: mode, failures: failures,
+                                 trashedBytes: trashedBytes > 0 ? trashedBytes : nil)
         // 走唯一写入口：它自己读盘合并，返回落盘后的完整清单再刷内存缓存。
         // 旧写法是 `history.insert(...); HistoryStore.save(history)`——`history` 只在启动时
         // 读过一次，于是启动期间由删除网关/归档/去重/定时自愈记下的记录会被这份陈旧缓存整片抹掉。

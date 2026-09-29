@@ -38,7 +38,7 @@ final class MailAttachmentsModel: ObservableObject {
             let outcome = MailAttachmentsScanner.clean(items: items, toTrash: toTrash)
             DispatchQueue.main.async {
                 self?.isCleaning = false
-                var lines = ["已处理 \(outcome.cleanedCount) 项，腾出 \(outcome.freedBytes.byteStringCN)"]
+                var lines = ["已处理 \(outcome.cleanedCount) 项，\(outcome.space.claim())"]
                 if !outcome.rejected.isEmpty {
                     lines.append("被安全护栏拦下 \(outcome.rejected.count) 项")
                     lines.append(contentsOf: outcome.rejected.prefix(5).map { "\($0.name)：\($0.message)" })

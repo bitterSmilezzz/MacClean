@@ -15,6 +15,14 @@ final class Cleaner {
         var releasedBytesByItem: [UUID: Int64] = [:]
         /// 移入废纸篓的项目快照（v1.35.0：供 Undo / 放回原位使用）
         var trashedSnapshots: [TrashedItemEntry] = []
+        /// `releasedBytes` 里**只是搬进废纸篓**的那部分：同卷 rename，磁盘可用量一分没动。
+        /// 一次清理里可以两种落点并存——已在废纸篓里的条目会强制彻底删除。
+        var trashedBytes: Int64 = 0
+
+        /// 这批字节究竟落到哪儿了。「释放了多少」这句话只能由它出口。
+        var space: SpaceDisposition {
+            SpaceDisposition(reclaimed: releasedBytes - trashedBytes, trashed: trashedBytes)
+        }
     }
 
     /// 执行清理
@@ -32,6 +40,7 @@ final class Cleaner {
             var itemFailedPaths: [String] = []
             var deletedAnyPath = false   // N4：至少实际删了一个路径才计字节
             var itemBytes: Int64 = 0     // LOW-4：逐 item 实际释放字节
+            var itemTrashedBytes: Int64 = 0   // 其中只是搬进废纸篓、磁盘还没落定的部分
             for path in item.paths {
                 // 先把路径解析到**真实位置**，之后校验与删除都作用于这一个字符串。
                 //
@@ -67,6 +76,10 @@ final class Cleaner {
                     }
                     deletedAnyPath = true
                     itemBytes += actual
+                    // `trashItem` 在同一卷上只是一次 rename：字节还占着磁盘。
+                    // 本机实测（`volumeAvailableCapacityForImportantUsage`，与界面同一格读数）
+                    // 200 MiB 同卷 rename 之后 Δ = 0 MiB，`removeItem` 之后 Δ = +200 MiB。
+                    if !forcePermanent { itemTrashedBytes += actual }
                     // 让测量缓存失效：否则紧接着的重新扫描会命中旧值，
                     // 给已经删掉的目录报出删除前的体积
                     FileSystem.invalidateMeasurements(for: [target])
@@ -76,7 +89,10 @@ final class Cleaner {
             }
             // 按 item 计成功：全部路径删净（或已不存在）才算该项成功，避免多路径重复累加字节（M1）
             if itemFailedPaths.isEmpty {
-                if deletedAnyPath { result.releasedBytes += itemBytes }
+                if deletedAnyPath {
+                    result.releasedBytes += itemBytes
+                    result.trashedBytes += itemTrashedBytes
+                }
                 result.succeeded += 1
                 result.succeededItemIDs.insert(item.id)
                 result.releasedBytesByItem[item.id] = itemBytes
