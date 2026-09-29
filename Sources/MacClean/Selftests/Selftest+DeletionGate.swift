@@ -235,7 +235,7 @@ extension Selftest {
             let outcome = ResidueDeletionGate.execute(
                 [ResidueDeletionGate.Candidate("keepme.otf", path: victim,
                                                domain: syntheticDomain(root: root))],
-                journal: .none)
+                toTrash: false, journal: .none)
             return outcome.cleanedCount == 0 && outcome.errorCount == 1 && exists(victim)
         }
 
@@ -256,7 +256,7 @@ extension Selftest {
             let outcome = ResidueDeletionGate.execute(
                 [ResidueDeletionGate.Candidate("locked.icc", path: victim,
                                                domain: syntheticDomain(root: root))],
-                journal: .none)
+                toTrash: false, journal: .none)
             return outcome.cleanedCount == 0 && outcome.freedBytes == 0
                 && outcome.needsPrivilege.count == 1 && exists(victim)
         }
@@ -274,11 +274,80 @@ extension Selftest {
                 ResidueDeletionGate.Candidate("整目录", path: root),
                 ResidueDeletionGate.Candidate("a.bin", path: root + "/a.bin"),
                 ResidueDeletionGate.Candidate("b.bin", path: root + "/b.bin"),
-            ], journal: .none)
+            ], toTrash: false, journal: .none)
 
             let stillThere = exists(root) || exists(root + "/a.bin") || exists(root + "/b.bin")
             // 只应实际处理一次，且记账等于整目录实测体积，而不是 3 份
             return outcome.cleanedCount == 1 && outcome.freedBytes == dirSize && !stillThere
+        }
+
+        // 12. 自检不许把夹具丢进**用户真实的废纸篓**：`execute` 的 `toTrash` 默认是 true，
+        //     漏写就等于每跑一次自检往 `~/.Trash` 塞一批测试目录（与"自检不污染真实机器"
+        //     这条既有原则冲突）。本轮之前有 8 处就是漏写的，已全部补成 `toTrash: false`；
+        //     这条 lint 保证以后新增的用例不能再靠默认值污染——要测废纸篓路径的，
+        //     必须显式写 `toTrash: true` 并同时负责把它清干净（见本文件第 11 条）。
+        check("自检里每个 ResidueDeletionGate.execute 都必须显式写 toTrash（默认 true 会污染真废纸篓）") {
+            let dir = (Selftest.sourceDirectoryPath as NSString).appendingPathComponent("Selftests")
+            let files = ((try? FileManager.default.subpathsOfDirectory(atPath: dir)) ?? [])
+                .filter { $0.hasSuffix(".swift") }.sorted()
+            var offenders: [String] = []
+            var hits = 0
+            // 针脚拆开写：整串字面量会出现在这条 lint 自己的源码里，
+            // 于是它第一次跑就"抓到"了自己（本轮实测就是这个现象）。
+            let callNeedle = "ResidueDeletionGate." + "execute("
+            for rel in files {
+                let src = (try? String(contentsOfFile: (dir as NSString).appendingPathComponent(rel),
+                                      encoding: .utf8)) ?? ""
+                let code = Selftest.stripSwiftComments(src)
+                var searchFrom = code.startIndex
+                while let rng = code.range(of: callNeedle, range: searchFrom..<code.endIndex) {
+                    hits += 1
+                    var depth = 1
+                    var i = rng.upperBound
+                    while i < code.endIndex && depth > 0 {
+                        let c = code[i]
+                        if c == "(" { depth += 1 }
+                        else if c == ")" { depth -= 1 }
+                        i = code.index(after: i)
+                    }
+                    if !code[rng.upperBound..<i].contains("toTrash:") { offenders.append(rel) }
+                    searchFrom = i
+                }
+            }
+            if hits < 10 {
+                print("      只匹配到 \(hits) 处 execute 调用（自检里应有 10+）——匹配逻辑坏了，绿灯不可信")
+                return false
+            }
+            if !offenders.isEmpty {
+                print("      这些文件里的 execute 调用没写 toTrash（会往用户真废纸篓塞东西）：\(offenders)")
+            }
+            return offenders.isEmpty
+        }
+
+        // 8b. 反向钉住一条容易被"顺手统一"破坏的不变量：**记账口径必须与该分类面板当初
+        //     用的口径一致**。这里用 DevProject 那类"面板走 size"的分类做样本：如果谁把网关
+        //     一刀切换成 `directoryStats`（含 .app 包时数值会变大），这条就会红。
+        check("删除网关：面板走 size 的分类，记账必须仍等于面板那个数（不许一刀切换口径）") {
+            let root = makeFixture("keepsmeasure")
+            defer { try? fm.removeItem(atPath: root) }
+            makeFile(root + "/visible.bin", 1_000_000)
+            try? fm.createDirectory(atPath: root + "/Tool.app/Contents/MacOS",
+                                    withIntermediateDirectories: true)
+            makeFile(root + "/Tool.app/Contents/MacOS/tool", 2_000_000)
+            let panelNumber = FileSystem.size(at: root)          // 这些分类的面板就是这么算的
+            guard panelNumber > 0 else { print("      夹具体积读不出来"); return false }
+            let outcome = ResidueDeletionGate.execute(
+                [ResidueDeletionGate.Candidate("整目录", path: root)], toTrash: false, journal: .none)
+            var bad: [String] = []
+            if outcome.cleanedCount != 1 || exists(root) {
+                bad.append("目录没被删掉：cleaned=\(outcome.cleanedCount)")
+            }
+            if outcome.freedBytes != panelNumber {
+                bad.append("记账 \(outcome.freedBytes) ≠ 面板当初那个数 \(panelNumber)"
+                    + "——网关口径被换掉了，这个分类会从『面板=记录』变成不一致")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
         }
 
         // 9. policy 闭包是模块特有判据的唯一插入口：拦下就不许动文件，
@@ -293,7 +362,7 @@ extension Selftest {
             let outcome = ResidueDeletionGate.execute([
                 ResidueDeletionGate.Candidate("orphan", path: root + "/orphan.dat"),
                 ResidueDeletionGate.Candidate("inuse", path: root + "/inuse.dat"),
-            ], journal: .none) { candidate in
+            ], toTrash: false, journal: .none) { candidate in
                 guard candidate.name == "inuse" else { return nil }
                 return .make(candidate, reason: .inUse, message: "注册表显示它仍在被设备使用")
             }
@@ -309,7 +378,7 @@ extension Selftest {
             // 省略 message 时回落到 reason 的内置文案（旧行为仍可用）
             let fallback = ResidueDeletionGate.execute(
                 [ResidueDeletionGate.Candidate("quiet", path: root + "/inuse.dat")],
-                journal: .none) { candidate in .make(candidate, reason: .notDeletable) }
+                toTrash: false, journal: .none) { candidate in .make(candidate, reason: .notDeletable) }
             return fallback.rejected.first?.message == GovernanceVerdict.rejected(.notDeletable).message
         }
 
@@ -322,7 +391,7 @@ extension Selftest {
             let pre = ResidueDeletionGate.Rejection.make(name: "预先拦下", path: root + "/pre.dat",
                                                          reason: .notDeletable, message: "模块自己判掉的项")
             let gate = ResidueDeletionGate.execute(
-                [ResidueDeletionGate.Candidate("a.dat", path: root + "/a.dat")], journal: .none)
+                [ResidueDeletionGate.Candidate("a.dat", path: root + "/a.dat")], toTrash: false, journal: .none)
             let merged = ResidueDeletionGate.Outcome(rejected: [pre]).merging(gate)
 
             guard merged.cleanedCount == gate.cleanedCount, merged.freedBytes == gate.freedBytes,
@@ -345,7 +414,7 @@ extension Selftest {
                 ResidueDeletionGate.Candidate("one", path: root + "/one.dat"),
                 ResidueDeletionGate.Candidate("two", path: root + "/two.dat"),
                 ResidueDeletionGate.Candidate("幽灵", path: root + "/ghost.dat"),   // 不存在
-            ], journal: .none)
+            ], toTrash: false, journal: .none)
 
             // 不存在的项按"已消失"拒绝，绝不能凭空计一笔释放量
             let ghostRejected = outcome.rejected.contains { $0.reason == .missing }

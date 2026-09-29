@@ -247,8 +247,11 @@ extension Selftest {
         // 两个求体积入口的**两轴差异**：面板走 `directoryStats`（跳隐藏项、下钻 .app 包），
         // 删除侧记账走 `measure`（不跳隐藏、不钻包）。`FileSystem.directoryStats` 的 doc
         // 原先承诺"同一棵树两个入口同一个数"，而实现两条都相反，钉它的自检还是
-        // `f(X)==f(X)`——v1.73.10 复审 D-P1-4。这条把差异**钉成事实**：谁统一了口径，
-        // 这里会红，必须连同 doc 与五个模块的历史数字一起改，不许顺手挪默认值。
+        // `f(X)==f(X)`——v1.73.10 复审 D-P1-4。这条钉的是**两个函数本身**的差异：谁把
+        // `directoryStats` 与 `measure` 的默认口径改成一样，这里会红。
+        // 它**不**覆盖"所有调用方收敛到同一个入口、而两个函数仍然不同"那种统一——
+        // 那一半由 `Selftest+DeletionGate` 的「面板走 size 的分类，记账必须仍等于面板那个数」
+        // 守着（v1.73.11 复审 E-P1-2 指出这里原先说过头）。
         check("口径：面板 directoryStats 与删除侧 measure 在隐藏项/包目录两轴上刻意不同") {
             let fm = FileManager.default
             let root = "/tmp/macclean-caliber-axes-\(UUID().uuidString)"

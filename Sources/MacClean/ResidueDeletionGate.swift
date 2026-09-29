@@ -162,7 +162,11 @@ enum ResidueDeletionGate {
                 continue
             }
 
-            // 删除前实测真实体积：扫描缓存可能是上一次会话的旧值
+            // 删除前实测真实体积：扫描缓存可能是上一次会话的旧值。
+            // **口径必须跟着"面板当初用什么算的"走**，不能一刀切换成 `directoryStats`：
+            // DevProject / PluginExtension / Downloads / AppLocalization / Preference 这些分类的
+            // 面板体积用的是 `size`/`bundleSize`，今天它们"面板 = 记账"，换成目录口径反而
+            // 变成系统性少配（v1.73.11 复审 E-P1-1 实测驳回）。真正统一要逐模块决定，见任务 #15。
             let actual = FileSystem.size(at: real)
             do {
                 if toTrash {
