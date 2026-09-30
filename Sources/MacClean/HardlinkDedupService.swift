@@ -230,14 +230,26 @@ enum HardlinkDedupService {
                                   sourceFingerprint: DedupFingerprint?,
                                   targetFingerprint: DedupFingerprint?)
         -> (blocked: DedupOutcome?, source: DedupFingerprint?, target: DedupFingerprint?) {
+        // ⚠ 顺序就是这条判据能不能用（G21 同族第三处，v1.73.15）：**必须对未解析的入参判软链**。
+        //   原来这里是先 `realPath`、再把解析完的路径喂给 `isSymlink`，而 `isSymlink` 用的是
+        //   `lstat`——对着一个已经解析到底的路径问"你是不是软链"永远答"不是"，于是
+        //   "源/目标是符号链接，不参与硬链接替换"这一条从写下来那天起一次都没响过。
+        //   与 `Cleaner` 那条的差别（同形不等于同 bug）：`DuplicateScanner.swift:518` 已在扫描侧
+        //   滤掉软链，所以这里的可达路径是"扫描之后这一项被换成软链"的 TOCTOU 替换、以及
+        //   直接传任意路径的非扫描调用方，因此定为 P1 而不是 P0。
+        //   落点却比主链路更狠：本模块用 `rename` 覆盖，**不进废纸篓、无法撤销**，
+        //   而历史行记的是解析后的路径——用户点名的是软链，被动过的是它背后的那份文件。
+        for (role, path) in [("源", source), ("目标", target)] {
+            if isSymlink(path) {
+                return (DedupOutcome(status: .rejected(reason: "\(role)是符号链接，不参与硬链接替换")), nil, nil)
+            }
+        }
+
         let realSource = FileSystem.normalizePath(FileSystem.realPath(source))
         let realTarget = FileSystem.normalizePath(FileSystem.realPath(target))
         guard realSource != realTarget else { return (DedupOutcome(status: .skipped(reason: "源与目标是同一个路径")), nil, nil) }
 
         for (role, path) in [("源", realSource), ("目标", realTarget)] {
-            if isSymlink(path) {
-                return (DedupOutcome(status: .rejected(reason: "\(role)是符号链接，不参与硬链接替换")), nil, nil)
-            }
             if let reason = guardRejection(forPath: path) {
                 return (DedupOutcome(status: .rejected(
                     reason: "\(role)位于受保护位置（\(GovernanceVerdict.rejected(reason).message)），拒绝硬链接替换")), nil, nil)

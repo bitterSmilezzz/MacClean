@@ -40,12 +40,31 @@ extension Selftest {
             )
             guard oldArchive.isHighlyRecommendedToClean else { return false }
 
+            // ③纯年龄兜底那一档**必须是 false**（R3 的 P0-4）。
+            //   这一条以前反过来断言 `oldDoc.isHighlyRecommendedToClean == true`——
+            //   也就是说旧自检把"下载目录里放够 90 天的 pdf 该被默认勾上"钉成了规矩，
+            //   而这一位的输出同时是默认勾选的来源（`DownloadsOrganizerScanner.swift:106`），
+            //   卡片删除按钮又直接吃 `filter(\.isSelected)`。断言写反，规矩就跟着反。
             let oldDoc = DownloadItem(
                 id: "4", fileName: "report.pdf", path: "/report.pdf", size: 50, kind: .document,
                 modificationDate: Date(), ageDays: 100, isSelected: false
             )
-            guard oldDoc.isHighlyRecommendedToClean else { return false }
-
+            if oldDoc.isHighlyRecommendedToClean {
+                print("      100 天的 pdf 仍被算成「该清」：它会默认进勾选集合")
+                return false
+            }
+            let oldMedia = DownloadItem(
+                id: "5", fileName: "clip.mp4", path: "/clip.mp4", size: 50, kind: .media,
+                modificationDate: Date(), ageDays: 400, isSelected: false
+            )
+            if oldMedia.isHighlyRecommendedToClean {
+                print("      400 天的视频仍被算成「该清」"); return false
+            }
+            // 反向哨兵：有"是什么"证据的档位不许被顺手改掉（否则上面两条会因为
+            // "整个函数恒 false"而一起通过——同一条判据的两个方向都要钉）。
+            if !(oldInstaller.isHighlyRecommendedToClean && oldArchive.isHighlyRecommendedToClean) {
+                print("      安装包 ≥7 天 / 压缩包 ≥30 天这两档被一起改没了"); return false
+            }
             return true
         }
 

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 // 自检套件：删除记账与撤销快照的**单一出口** `DeletionLedger`（R2 的 P0）
 //
@@ -143,6 +144,167 @@ extension Selftest {
             }
             if !offenders.isEmpty {
                 bad.append("产品文件引用了注入缝：\(offenders.joined(separator: ", "))")
+            }
+            if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+            return bad.isEmpty
+        }
+
+        // 2c. 主链路的软链防跳板必须在**解析之前**（R3 的 P0-3）。
+        //     这条是顺序判据，不是存在判据：`isSafeToClean` 自己第一层就是 `isSymlink`，
+        //     但 `Cleaner` 先 `realPath(path)` 再校验，传进去的已经是解析完的目标——
+        //     那一层在主链路上永远不响。所以只查"文件里出现过 isSymlink"毫无判别力。
+        //     ⚠ 三次复审 P2-1 实测到旧写法（整档比"谁第一次出现"）有两个洞：
+        //       ① `isSymlink(realPath(path))`——形状仍是"软链判据在前"，实际判的是解析后的目标；
+        //       ② 在别处（另一个函数、或一句永不执行的 `if false { _ = isSymlink(path) }`）
+        //          先写一次 `isSymlink`，整档比法就被它背书，循环体里那条真判据删掉照样绿。
+        //     所以按 `for path in item.paths` 的**循环体**切（大括号深度），并且要求
+        //     切出来的体里那句是 `guard … else` 形状——存在/先后都不足以钉住这一档。
+        check("G21 Cleaner 循环体里的软链 guard 排在路径解析之前（整档第一次会被别处背书）") {
+            let dir = Selftest.sourceDirectoryPath
+            let src = (try? String(contentsOfFile: (dir as NSString).appendingPathComponent("Cleaner.swift"),
+                                  encoding: .utf8)) ?? ""
+            let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+            guard let head = code.range(of: "forpathinitem.paths{") else {
+                print("      找不到 `for path in item.paths` 循环（形状改了？判据要跟着改，别删）")
+                return false
+            }
+            // ⚠ 针脚本身**含**那朵 `{`，所以 head.upperBound 已在循环体内部：初值必须是 1，
+            //   且不能再"找第一朵 `{` 当体首"——那样截出来的是 `else { … }` 那一小段。
+            var i = head.upperBound
+            let bodyStart = head.upperBound
+            var endIdx = code.endIndex
+            var depth = 1
+            while i < code.endIndex {
+                let c = code[i]
+                if c == "{" {
+                    depth += 1
+                } else if c == "}" {
+                    depth -= 1
+                    if depth == 0 { endIdx = i; break }
+                }
+                i = code.index(after: i)
+            }
+            guard depth == 0, bodyStart < endIdx else {
+                print("      循环体截不出来（大括号不配对）"); return false
+            }
+            let body = String(code[bodyStart..<endIdx])
+            var bad: [String] = []
+            let guardNeedle = "guard!" + "FileSystem.isSymlink(path)else{"
+            guard let g = body.range(of: guardNeedle) else {
+                print("      循环体里没有 guard 形状的软链判据——"
+                      + "换成 `isSymlink(realPath(path))` 或挪到别处都会走到这里")
+                return false
+            }
+            if let r = body.range(of: "FileSystem.realPath("), g.lowerBound > r.lowerBound {
+                bad.append("软链 guard 排在 realPath 之后：传进去的目标已解析，那一层永远不响")
+            }
+            if body.contains("isSymlink(FileSystem.realPath(") {
+                bad.append("判据对着解析结果问是不是软链（lstat 永远答「不是」，这就是修之前的形状）")
+            }
+            // 终审 F2 实测：`if false { guard … }` 这种"死分支包壳"里，形状与先后都漂亮，
+            // 但那一条永远不执行——所以还要钉住它待在循环体**顶层**。
+            if Selftest.braceDepth(in: body, upTo: g.lowerBound) != 0 {
+                bad.append("软链 guard 不在循环体顶层：被包进任何分支（含永不执行的那一种）时，"
+                           + "顺序判据看不见，只有行为腿拦得住")
+            }
+            if !bad.isEmpty {
+                print("      " + bad.joined(separator: "\n      "))
+                return false
+            }
+            return true
+        }
+
+        // 2d. 行为：软链项必须**原样留下**，而不是顺着它删掉指向的真文件。
+        //     两侧都要钉：①软链被拒且**目标与软链都还在**；②同目录里的普通文件照常删掉。
+        //     只钉①会犯 v1.73.8 那条错——"两侧都拒 → 恒真"：把判据改成"什么都别删"它照样全绿。
+        check("主链路遇到软链项：拒删、报错、软链与目标都还在；同批普通文件照常删") {
+            return ledgerScope("symlinkGuard") {
+                let root = "/private/tmp/macclean_symlink_guard_\(UUID().uuidString)"
+                let fm = FileManager.default
+                try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+                defer { try? fm.removeItem(atPath: root) }
+                let victim = root + "/合同.pdf"          // 软链指向的真文件（模拟用户的资料）
+                let link = root + "/report.pdf"         // 列表上写着的那一项
+                let plain = root + "/keep-me.txt"        // 正向对照：普通文件必须照删
+                try? "合同正文".write(toFile: victim, atomically: true, encoding: .utf8)
+                try? "普通内容".write(toFile: plain, atomically: true, encoding: .utf8)
+                do { try fm.createSymbolicLink(atPath: link, withDestinationPath: victim) }
+                catch { print("      造不出软链夹具，本条未执行：\(error)"); return false }
+    
+                let linkItem = CleanItem(name: "report.pdf", path: link, size: 12,
+                                         rule: "T1", category: .largeFiles, note: "软链夹具")
+                let plainItem = CleanItem(name: "keep-me.txt", path: plain, size: 12,
+                                          rule: "T1", category: .largeFiles, note: "普通夹具")
+                let result = DeletionLedger.clean([linkItem, plainItem],
+                                                  permanently: true,
+                                                  categoryName: "自检-软链护栏").result
+                var bad: [String] = []
+                if !FileManager.default.fileExists(atPath: victim) {
+                    bad.append("软链指向的真文件被删了——这正是「删掉列表上根本没写的那个东西」")
+                }
+                if !FileManager.default.fileExists(atPath: link) {
+                    bad.append("软链本身也被删了：护栏应当拒删整项而不是顺手清掉入口")
+                }
+                if FileManager.default.fileExists(atPath: plain) {
+                    bad.append("同批的普通文件没删：判据被改成了「什么都不删」，正向对照失效")
+                }
+                if result.succeeded != 1 { bad.append("成功项数应为 1（软链那项必须算失败），实到 \(result.succeeded)") }
+                if result.failedPaths != [link] { bad.append("失败集合没指到软链：\(result.failedPaths)") }
+                // 释放量只能算那**一个**真删掉的文件：软链那一项既没删成也不该计进去
+                if result.releasedBytes <= 0 { bad.append("删掉了一项却记 0 字节") }
+                if result.releasedBytesByItem[plainItem.id] == nil {
+                    bad.append("成功项没有逐 item 的释放量（LOW-4 那格）")
+                }
+                if result.releasedBytesByItem[linkItem.id] != nil {
+                    bad.append("被拒的软链项也进了释放账")
+                }
+                if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
+                return bad.isEmpty
+            }
+        }
+
+        // 2e. 默认支（移入废纸篓）也必须有执法力 —— 三次复审 P1-1 实测：2d 只跑
+        //     `permanently: true`，于是 `guard !(forcePermanent && isSymlink(path))` 这种
+        //     "把判据门控到彻底删除那一支"的变异，两条判据**同时全绿**。
+        //     ⚠ 这一条的前一版用**悬挂软链**，是一条假绿（我自己跑变异才发现的）：悬挂软链的
+        //     `realPath` 按词法返回软链自己（`FileSystem.swift:41` 自述"不存在的末段保持原样"），
+        //     于是门控变异走到 `isSafeToClean(target)` 时仍被它第一层的 `isSymlink` 拒掉，
+        //     `failedPaths` 照旧是 `[link]`——**拒绝来自别人**，判据死了也不红。
+        //     所以夹具必须用**活的**目标：默认支会真把它搬进废纸篓，收尾按仓里 §27 那条既有做法，
+        //     只删自己建的东西、且删除清单直接取返回的 `trashedSnapshots`（实现正确时它是空的，
+        //     defer 自然空转）。
+        check("默认支（移入废纸篓）也拒软链：目标必须原地不动，且不许留下快照") {
+            let root = "/private/tmp/macclean_symlink_default_\(UUID().uuidString)"
+            let fm = FileManager.default
+            try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(atPath: root) }
+            let victim = root + "/victim.txt"      // 软链背后的那份真文件
+            let link = root + "/listed.pdf"        // 列表上写着的那一项
+            try? "合同正文".write(toFile: victim, atomically: true, encoding: .utf8)
+            do { try fm.createSymbolicLink(atPath: link, withDestinationPath: victim) }
+            catch { print("      造不出软链夹具，本条未执行：\(error)"); return false }
+            let item = CleanItem(name: "listed.pdf", path: link, size: 12,
+                                 rule: "T1", category: .largeFiles, note: "软链夹具")
+            let result = Cleaner.clean([item], permanently: false) { _ in }
+            // 只有判红分支才会有快照：那说明这一项被搬进了废纸篓，就把刚建的那份清走
+            defer { for snap in result.trashedSnapshots { try? fm.removeItem(atPath: snap.trashPath) } }
+            var bad: [String] = []
+            if !result.trashedSnapshots.isEmpty {
+                bad.append("软链被搬进了废纸篓（\(result.trashedSnapshots.count) 份快照，记的还是目标路径 "
+                           + "\(result.trashedSnapshots.first?.originalPath ?? "?")，不是用户点名的那一项）"
+                           + "——判据被 forcePermanent 门控掉就是这一形状")
+            }
+            if !fm.fileExists(atPath: victim) {
+                bad.append("软链指向的真文件没了——这正是「删掉列表上根本没写的那个东西」")
+            }
+            if result.failedPaths != [link] {
+                bad.append("软链没进失败集合（\(result.failedPaths)）——被门控掉的那一支会静默跳过")
+            }
+            if result.succeeded != 0 { bad.append("一项都没删成却计了成功：\(result.succeeded)") }
+            if result.releasedBytes != 0 { bad.append("什么都没删却报释放 \(result.releasedBytes) 字节") }
+            var st = stat()
+            if lstat(link, &st) != 0 || (st.st_mode & S_IFMT) != S_IFLNK {
+                bad.append("软链入口不在了（被顺手清掉了？）")
             }
             if !bad.isEmpty { print("      " + bad.joined(separator: "\n      ")) }
             return bad.isEmpty
@@ -385,6 +547,126 @@ extension Selftest {
                 return true
             }
         }
+
+        // 10. G21 同族第三处（v1.73.15）：`HardlinkDedupService.preflight` 此前也是
+        //     先 `realPath`、再拿解析完的路径去问 `isSymlink`——同一具死判据，第二个出口。
+        //     ⚠ lint 必须**按函数体**切：这个文件里 `guardRejection` 自己也有一处合法的
+        //     `realPath`，整档比"谁先出现"会被它背书（取窗会被相邻定义顶掉，见 RELEASE-CHECKLIST §活性证据）。
+        check("G21b 硬链接去重的软链判据排在解析之前（按 preflight 函数体切，不靠整档第一次）") {
+            let dir = Selftest.sourceDirectoryPath
+            let src = (try? String(contentsOfFile: (dir as NSString)
+                                    .appendingPathComponent("HardlinkDedupService.swift"),
+                                  encoding: .utf8)) ?? ""
+            let code = Selftest.stripSwiftComments(src).filter { !$0.isWhitespace }
+            guard let head = code.range(of: "funcpreflight(source:String,target:String,") else {
+                print("      找不到 preflight 签名（签名改了？判据要跟着改，别删）"); return false
+            }
+            // 从签名往后走到第一个 `{`，再按大括号深度截出函数体
+            var i = head.upperBound
+            var bodyStart = code.endIndex
+            var endIdx = code.endIndex
+            var depth = 0
+            while i < code.endIndex {
+                let c = code[i]
+                if c == "{" {
+                    if depth == 0 { bodyStart = code.index(after: i) }
+                    depth += 1
+                } else if c == "}" {
+                    depth -= 1
+                    if depth == 0 { endIdx = i; break }
+                }
+                i = code.index(after: i)
+            }
+            guard depth == 0, bodyStart < endIdx else {
+                print("      preflight 函数体截不出来"); return false
+            }
+            let body = String(code[bodyStart..<endIdx])
+            guard let firstResolve = body.range(of: "FileSystem.realPath(") else {
+                print("      preflight 里没有 realPath——出口整块搬走了，这条判据不能沉默"); return false
+            }
+            let pre = String(body[body.startIndex..<firstResolve.lowerBound])
+            var bad: [String] = []
+            // 三个 needle 各拦一种改法：只查先后顺序的话，把循环遍历换成解析后的两个变量
+            // （文本位置不动、语义仍是死的）照样全绿。
+            if !pre.contains("isSymlink(path)") {
+                bad.append("解析之前没有软链判据——挪到 realPath 之后 lstat 就永远答「不是」")
+            }
+            if !pre.contains("(\"源\",source)") { bad.append("软链循环没遍历未解析的 source") }
+            if !pre.contains("(\"目标\",target)") { bad.append("软链循环没遍历未解析的 target") }
+            if body.contains("isSymlink(realSource)") || body.contains("isSymlink(realTarget)") {
+                bad.append("判据对着解析后的 realSource/realTarget 问是不是软链（这就是修之前的形状）")
+            }
+            // 同 2c：终审 F2 实测"死分支包壳"（`if false { for … }`）能让形状与先后都过关。
+            if let loop = body.range(of: "for(role,path)in[(\"源\",source)") {
+                if Selftest.braceDepth(in: body, upTo: loop.lowerBound) != 0 {
+                    bad.append("软链循环不在 preflight 顶层：整块包进任何分支时形状不变、判据已经不执行")
+                }
+            } else {
+                bad.append("找不到顶层的软链循环（针脚形状改了？判据要跟着改，别删）")
+            }
+            if !bad.isEmpty {
+                print("      " + bad.joined(separator: "\n      "))
+                return false
+            }
+            return true
+        }
+
+        // 11. 行为两侧都钉：软链必须拒（**源与目标两档**各测一次），且被它指的那份文件与软链本身
+        //     都原样留下；反向对照是真重复副本必须**照常去重**——只钉前一半，实现改成「什么都拒」也全绿。
+        check("硬链接去重遇到软链：源/目标两档都拒绝、背后文件与软链都还在；真重复副本照常去重") {
+            ledgerScope("dedupSymlink") {
+                let root = "/private/tmp/macclean_dedup_symlink_\(UUID().uuidString)"
+                let fm = FileManager.default
+                try? fm.createDirectory(atPath: root, withIntermediateDirectories: true)
+                defer { try? fm.removeItem(atPath: root) }
+                let keep = root + "/keep.bin"         // 真实源
+                let victim = root + "/victim.bin"     // 软链背后的那份：用户从没点过名
+                let link = root + "/dup.bin"          // 列表上写着的那一项，其实是软链
+                let twin = root + "/twin.bin"         // 正向对照：货真价实的重复副本
+                let payload = Data(repeating: 0x41, count: 200_000)   // 跨过内容抽查的 64 KB 取样窗口
+                for p in [keep, victim, twin] {
+                    HardlinkTestSupport.writeRaw(URL(fileURLWithPath: p), payload)
+                    HardlinkTestSupport.age(p, days: 30)              // 绕过「刚被写入 = 可能在用」
+                }
+                do { try fm.createSymbolicLink(atPath: link, withDestinationPath: victim) }
+                catch { print("      造不出软链夹具，本条未执行：\(error)"); return false }
+
+                var bad: [String] = []
+                let asTarget = HardlinkDedupService.performDedup(sourcePath: keep, targetPath: link,
+                                                                 journal: .module(categoryName: "自检-软链拒绝"))
+                if case .rejected(let reason) = asTarget.status {
+                    if !reason.contains("符号链接") { bad.append("拒了，但理由不是软链：\(reason)") }
+                } else {
+                    bad.append("目标位置是软链却没拒——会 rename 覆盖背后的那份文件，且不可撤销：\(asTarget.status)")
+                }
+                if !fm.fileExists(atPath: victim) { bad.append("软链指向的真文件被动过了") }
+                var st = stat()
+                if lstat(link, &st) != 0 || (st.st_mode & S_IFMT) != S_IFLNK {
+                    bad.append("软链本身不在了（或被换成硬链接）")
+                }
+                if HistoryStore.load().contains(where: { $0.categoryName == "自检-软链拒绝" }) {
+                    bad.append("一次都没动却落了一行历史")
+                }
+                let asSource = HardlinkDedupService.performDedup(sourcePath: link, targetPath: keep,
+                                                                 journal: .none)
+                if case .rejected(let reason) = asSource.status {
+                    if !reason.contains("符号链接") { bad.append("源是软链，拒错了理由：\(reason)") }
+                } else {
+                    bad.append("源位置是软链却没拒：\(asSource.status)")
+                }
+                let ok = HardlinkDedupService.performDedup(sourcePath: keep, targetPath: twin, journal: .none)
+                if case .linked = ok.status {
+                    // 正向对照通过
+                } else {
+                    bad.append("一致内容的真副本被误拒（判据是不是被改成「什么都拒」）：\(ok.status)")
+                }
+                if !bad.isEmpty {
+                    print("      " + bad.joined(separator: "\n      "))
+                    return false
+                }
+                return true
+            }
+        }
     }
 
     /// 在一次性目录里跑一段断言：历史与撤销快照两份存储都指过去，结束时**恢复原值**并删目录。
@@ -402,5 +684,20 @@ extension Selftest {
             try? FileManager.default.removeItem(atPath: dir)
         }
         return body()
+    }
+
+    /// 数一段切片里、`idx` **之前**的净花括号深度（0 = 与该切片的顶层同层）。
+    /// 为什么需要它：顺序判据只比"谁先出现"，于是 `if false { guard … }` 这种死分支包壳
+    /// 让它照样绿——形状对、先后对、就是不执行（v1.73.15 终审 F2 实测两条 lint 双双放过）。
+    /// 把"必须待在顶层"钉进来之后，包壳要红就得同时改形状，而改形状会被同一批 needle 抓住。
+    private static func braceDepth(in code: String, upTo idx: String.Index) -> Int {
+        var depth = 0
+        var i = code.startIndex
+        while i < idx {
+            if code[i] == "{" { depth += 1 }
+            else if code[i] == "}" { depth -= 1 }
+            i = code.index(after: i)
+        }
+        return depth
     }
 }

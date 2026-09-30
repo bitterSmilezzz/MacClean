@@ -42,11 +42,25 @@ final class Cleaner {
             var itemBytes: Int64 = 0     // LOW-4：逐 item 实际释放字节
             var itemTrashedBytes: Int64 = 0   // 其中只是搬进废纸篓、磁盘还没落定的部分
             for path in item.paths {
-                // 先把路径解析到**真实位置**，之后校验与删除都作用于这一个字符串。
-                //
-                // 为什么必须共用同一个解析结果：若"校验时解析一次、删除时再解析一次"，
+                // ⚠ 顺序就是这条 P0：**必须先对未解析的原路径判软链，再解析**。
+                //   以前这里是先 `realPath(path)`、后 `isSafeToClean(target)`，而
+                //   `isSafeToClean` 的第一层恰恰是 `isSymlink(path)`（`FileSystem.swift:1374`）——
+                //   拿已经解析完的路径去问"你是不是软链"永远是"不是"，
+                //   于是 G14 那条"软链防跳板"在主链路上**一次都没生效过**。
+                //   它漏掉的不是"删到受保护位置"（解析后的目标仍要过闸门），而是更隐蔽的一种：
+                //   **删掉列表上根本没写的那个东西**。一项写着 `~/Downloads/report.pdf`、
+                //   实际是一条指向 `~/Documents/合同.pdf` 的软链，被删的是合同那份；
+                //   而撤销快照记的也是目标路径，用户看到的"已清理 1 项"其实是"清掉了别处的文件"。
+                //   残留（已知、未在本条修掉）：中间某一级目录本身是软链时仍会跳，
+                //   扫描侧靠 `isRealDir` 不下钻，所以只有"卡片自己拼出来的路径"会撞上，
+                //   已记进 `docs/OPTIMIZATION-PLAN.md`。
+                guard !FileSystem.isSymlink(path) else {
+                    itemFailedPaths.append(path)
+                    continue
+                }
+                // 之后校验与删除都作用于同一个解析结果。
+                // 为什么必须共用：若"校验时解析一次、删除时再解析一次"，
                 // 两次解析之间路径被换成软链就出现了 TOCTOU 缝隙。
-                // 统一到解析后的路径，至少保证"删的就是刚刚验过的那一个"。
                 let target = FileSystem.realPath(path)
 
                 // 双保险：执行前再校验一次安全护栏（G1/G6/G8，含软链防跳板）

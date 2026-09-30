@@ -75,7 +75,11 @@
 ### P0-4 用户数据目录上的默认勾选被一条纯年龄规则破掉 —— `已复现（形状）`
 
 `DownloadsOrganizerModels.swift:77`：`if ageDays >= 90 { return true }`（默认勾选推荐判据），
-赋值点在 `DownloadsOrganizerScanner.swift:107`；截图侧同形 `ScreenshotsOrganizerModels.swift:92`。
+赋值点在 `DownloadsOrganizerScanner.swift:106-108`。
+  > **R3 复核更正**：截图侧那句不是同一个 bug。`CaptureType` 只有 screenshot / recording 两个取值，
+  > 满 90 天的项必然已经被「截图 ≥30」或「录制 ≥7」覆盖，所以它在那侧**从未影响任何判定**（死代码）。
+  > R3 两侧都删以保形状一致，但真正的 P0 只在下载侧：那边 `kind` 有 document / media / other，
+  > 纯年龄兜底会把 pdf / docx / 照片**默认勾上**，而卡片删除按钮直接吃 `filter(\.isSelected)`。
 卡片删除按钮直接吃 `filter(\.isSelected)`（`DownloadsOrganizerCard.swift:392`）。
 
 → G2「默认不勾用户数据」在 `~/Downloads`、`~/Desktop`、`~/Pictures` 上被"放够 90 天"这一条
@@ -179,7 +183,10 @@ Maven/rustc 按需解析、不留引用表的"旧版本构件"；签名克隆类
 | **P1** | `DeletionLedger.write` 里 `trashedBytes > 0 ? trashedBytes : nil` + `History.swift` 的 `pendingTrashBytes`（mode 回推那一支）+ `Cleaner.swift:39` 的 `item.permanentDelete || permanently` | 一条 mode 写「废纸篓」的记录，若**每一项都被强制彻底删除**（源本来就在废纸篓里），`trashedBytes` 记成 nil → 回推把**整批**算成"还压在磁盘上等清空废纸篓"，而磁盘上一分不欠：历史页与导出把它算进「待落定」，「累计释放」相应偏低，界面那句"清空废纸篓才算数"对这批字节是**假的** | 清理一批已经在废纸篓里的条目（废纸篓分类、以及"清空 N 天前"那两条链路都会造出这个形状） | 区分「测出来是 0」（写 0）与「老记录不知道」（写 nil）；`Selftest+DeletionGate` 里已有一条相邻的"混合落点"夹具可以照着扩 |
 | **P2** | `ScreenshotsOrganizerScanner.swift:360`、`DownloadsOrganizerScanner.swift:326`、`HardlinkDedupService.swift:418` 与 `:472`（共 4 处 `HistoryStore.append`）| G20 的 lint 只覆盖 `Cleaner.clean` 与点名的 5 个文件；这三处仍**自己** `HistoryStore.append` 造行，mode 字面量、200 条上限、Optional 字段约定各抄一份 | 下次改 `CleanRecord` 字段语义时要同步 4 份写入点，漏一处就是口径分裂 | 并进 `DeletionLedger.write`（归档类已有 `modeOverride` 这条路），然后把 lint 升级成"产品源码里 `HistoryStore.append` 只允许出现在 `DeletionLedger.swift`" |
 | **P1** | `Cleaner.swift` 的 `clean` 仍是 `internal`：任何文件都能直接调它，而"唯一出口"目前只由**文本 lint** 兜（needle 已做到"去括号 + 挤空白"，判据是"出口内 ≥1 处、出口外 = 0 处"的归属形式） | 只要有一条产品路径直接调 `Cleaner.clean`，删除就发生而历史与快照都没有——即本轮修的那个 P0 形状，只是换了成因 | **下一次发版前的硬条件**：把 `Cleaner` 的 `clean` 并进出口文件、设 `private`，让"除出口外调不到"由编译器保证、lint 退成兜底。代价是 `Cleaner.Result` 的可见性与 20+ 处类型引用要一起理。**本轮已做到的部分**：注入缝 `deleter` 用 `#if MACCLEAN_SELFTEST` 关出 release 产物（实测 `MACCLEAN_NO_SELFTEST=1` 构建的二进制里 `deleter` 符号数 = 0），并加一条 lint 钉住"产品文件不许引用 `.deleter`" |
+| **P1（R3 新增，实测残留）** | `Cleaner.swift:57`（新加的软链判据）只判**原路径自身**是不是软链 | 中间某一级目录是软链时（`~/Downloads/x` → `~/ elsewhere/`），`realPath` 仍会跳出去，闸门链是对"跳出去之后的目标"做的：目标在主目录内就算安全，于是删的是**列表上没写的那个位置**里的文件。扫描侧靠 `isRealDir`（不跟随软链）不下钻，所以只有**卡片自己拼出来的路径**（下载归档、截图归档、去重、重复组）可能撞上 | 逐段 `lstat` 走完 `path` 的每一级祖先，任一级是 `S_IFLNK` 即拒（成本：每项多次 lstat，可与现有的祖先属主判定合并成一次遍历）；先用一次性夹具目录把"中间级是软链"的形状造出来，证明断言会红再动手 |
 | **P1（实测存活，本轮未修）** | "把两处调用改接一个**同名同标签的空实现**"：`LedgerHook.recordTrashedOriginal(categoryName: "大文件归档", …)` | 字面量全留、一行账都不落，而 `707 通过 / 34 失败` 与基线一字不差（变异 MU-N6 实测）→ 归档/迁移这条链路将来可以静默退回"只删不记" | 接线判据是文本级的（presence 与计数都看不见控制流）。封死只有两条路：同上一条的编译器保护，或真跑一次 `archiveInPlace`（会 `ditto` 并把原件扔进**真废纸篓**，自动轮里不该动用户文件，而唯一覆盖它的 `SpaceArchiveDeep` 在本机崩溃未执行）。**本轮正因这一条修不掉而不打 tag** |
+| **P1（三次复审 P1-2，口径未定）** | 保留的「安装包 ≥7 天 / 压缩包 ≥30 天」两档，内部**仍是纯年龄翻转** | 用户自制的 `.zip/.dmg/.iso` 满 30/7 天会被默认勾选并一键移入废纸篓；而而 `Selftest+DownloadsOrganizerDeep` 里 `preselected != byRule` 那一支（现 :561-564）把「200 天的 c.zip 必须预勾」钉成了规矩——下一轮照 G2「只剩 T0 一条例外」推理就不会再查它 | 二选一：①把徽章 + 默认勾选降到「类别之外还要所有权/引用证据」并改掉那两条断言；②维持现状，但 G2/README 必须明说这两档的依据只有类别 + 年龄（**本轮已按 ② 把措辞改成与实样一致**）。落点是废纸篓、可撤销，所以没到 G21 那种程度 |
+| **P2（三次复审 P2-2）** | `Cleaner.swift:57` 拒软链之后只 `append + continue`，没有「这是软链，请点名目标」的出口 | 缓存类里的合法软链会永远报失败且无路可走；另外同一 item 多路径时任一路径失败就不计整个 item 的 `releasedBytes`（`Cleaner.swift:105-113`），于是「实际删了一个路径却少报字节」 | 文案分档（软链 ≠ 删不动）+ 可选的手动删除入口 + 逐路径入账；需要产品决定，本轮未动 |
 
 ## 6. 轮次编排（每轮 30–60 分钟一刀，含依赖）
 
@@ -187,7 +194,12 @@ Maven/rustc 按需解析、不留引用表的"旧版本构件"；签名克隆类
 |---|---|---|---|
 | ~~R1~~ **已做（2026-10-01）** | **P0-5 脱敏门禁**（abs 先判类型、fixture 只判片段、skip-scan 即 die、pathspec 对齐、补 `github_pat_`/大小写/commit-tag message） | 唯一"一旦错了就删不回来"的一类；纯脚本，零产品行为 | 否（新增脚本自检） |
 | ~~R2~~ **已做（2026-10-01，v1.73.15）** | **P0-1 + P0-2 合并**：删除记账与撤销快照收成单一出口 `DeletionLedger`，静默清理/卸载器/去重/孤儿/归档五处复用 + 三条腿自检（全仓 lint / 接线 lint / 行为） | 无人值守链路正在每天删用户文件且不可放回 | 实测只需同步 3 处 `recordClean` 调用（`Selftest+SystemAndHistory`、`+Foundation`、`+DeletionGate`）；计划里点的 `Selftest+Undo` 与 `PreferenceResidueDeep:191` **不用改**（前者自己造快照、不依赖 AppState 写手） |
-| R3 | **P0-3 软链 + P0-4 默认勾选降级** | 两条都是"界面上没说错但删多了" | 会红若干 `isSelected` 断言，逐条改判据 |
+| ~~R3~~ **已做（2026-10-01，随 v1.73.15 发出）** | **P0-3 软链 + P0-4 默认勾选降级** | 两条都是「界面上没说错但删多了」 | 实测只红一条断言：`Selftest+DownloadsOrganizerDeep` 里那条**把 P0 钉成规矩**的 `guard oldDoc.isHighlyRecommendedToClean`（100 天的 pdf 断它为真）。截图侧那条同形兜底是死代码，已按实测更正（见 §5bis）。**三次复审**（退化路径：qoder `general-purpose` 子代理，理由见 review 文档）在副本里跑出的四条都已处置：**P1-1**（行为判据只钉 `permanently: true`，`guard !(forcePermanent && isSymlink(path))` 两支全绿）→ 已补默认支。
+          ⚠ 第一版补法是我自己造的一条**假绿**：夹具用了悬挂软链，推理是"门控变异会让它静默跳过"，
+          实测悬挂软链的 `realPath` 按词法返回软链自己、变异随后被 `isSafeToClean` 第一层的 `isSymlink`
+          顺手拒掉，`failedPaths` 照旧——**拒绝来自别人**，判据死了也不红（是我重跑变异才看见的）。
+          终版夹具改用**活目标**，并照仓里「混合落点」那条的既有做法只清自己建的东西、
+          删除清单取返回的 `trashedSnapshots`（实现正确时它是空的，用户废纸篓一分不脏）；**P2-1**（顺序判据比的是「整档第一次」，被 `isSymlink(realPath(path))` 与一句永不执行的 `if false { _ = isSymlink(path) }` 双双绕过）→ 已改成按 `for path in item.paths` **循环体**切、并要求 `guard` 形状；**P1-2 / P2-2** 属产品口径 → 已搬进上面的 §5bis 待议；**P3** 注释与文档例子形状不一致 → 已统一。另按同一条线找到第三处同族死判据并一起修（G21b，`HardlinkDedupService.preflight`，定 P1：扫描侧已滤软链，可达路径是 TOCTOU 替换与非扫描调用方）。变异复测：`Cleaner` 三条 MU-R2a/b/c、去重三条 MU-D1/2/3——其中「判据整块挪到解析之后」这一档**只红顺序判据**（行为等价，这正是顺序 lint 的设计目的），语义回归与整块删除两支顺序 + 行为双红，**无存活**。⚠ 更正：先前报过一条「MU-R2 变异存活」，实测是我自己的锚点错了（把判据挪过一行**注释**而不是挪过 `realPath`），它既不是回归也不是存活；重跑后已按真形状重做 |
 | R4 | **P1-1 lsof 三态 + P1-14 形状断言**（含把 `contains("占用进程：无")` 改成方向断言） | AI 建议的输入正确性；顺带拆掉替旧实现兜底的恒绿 | 否 |
 | R5 | **P1-12 崩溃套件隔离**：新建 `Selftest+UIRenderQuarantine.swift`，把 7 个崩溃套件里会崩的渲染 check 整块搬进去 | 约 **44 条断言立刻回到记分板**（696→≈740），恢复 `cleanSelected` 闭环与并发记账写入的执法力；这是后续每一轮的地基 | 要同步刷新 KNOWN-ENV 的 S 段（`release.sh` 会强制） |
 | R6 | **P1-8/P1-9/P1-10/P1-11 恒绿清扫** + `scripts/mutate.sh` 落地（rsync 副本、一次性状态目录、打印三集合差、锚点命中数≠1 判 ERROR） | 执法力本身；脚手架让后面每一轮都省事 | 否 |

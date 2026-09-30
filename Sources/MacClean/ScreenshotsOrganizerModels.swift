@@ -85,11 +85,15 @@ public struct ScreenshotItem: Identifiable, Equatable, Hashable {
         CaptureAgeTier.from(ageDays: ageDays)
     }
 
-    /// 是否为高推荐治理项（屏幕录制体积大超过7天，或截图闲置超过30天，或任意超过90天的陈旧项）
+    /// 是否为高推荐治理项。这里也去掉了"任意文件满 90 天"那条兜底，但要说清**它在这侧是死代码**：
+    /// `CaptureType` 只有 `screenshot` / `recording` 两个取值，而 `ageDays >= 90` 的项必然已经
+    /// 命中"截图 ≥30"或"录制 ≥7"，所以这一条从来没改变过任何判定（计划里写的"截图侧同形"
+    /// 只是形状相同，不是同一个 bug——已在 `docs/OPTIMIZATION-PLAN.md` 更正）。
+    /// 删它只为两件事：与下载侧保持同一条形状，以及以后加第三种 `captureType`（比如
+    /// "用户自己放的图片"）时不会悄悄继承一条纯年龄的默认勾选。
     public var isHighRiskStale: Bool {
         if captureType == .recording && ageDays >= 7 { return true }
         if captureType == .screenshot && ageDays >= 30 { return true }
-        if ageDays >= 90 { return true }
         return false
     }
 }

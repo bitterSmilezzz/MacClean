@@ -70,11 +70,18 @@ public struct DownloadItem: Identifiable, Equatable, Hashable {
         self.isSelected = isSelected
     }
 
-    /// 是否为高推荐清理项（安装包且超过 7 天，或者任何超过 60 天的压缩包）
+    /// 是否为高推荐清理项。**只有"这是什么"能算证据，放了多久不算**（R3 的 P0-4）：
+    /// 以前末尾还有一条 `ageDays >= 90` 的纯年龄兜底，而这一位的输出同时是
+    /// ①界面上的"推荐"徽章 和 ②`DownloadsOrganizerScanner.swift:106` 的**默认勾选**来源，
+    /// 卡片删除按钮又直接吃 `filter(\.isSelected)` —— 于是 `~/Downloads` 里一份
+    /// 存了 100 天的 pdf / docx / 照片会被**默认勾上**，用户点"清理已选"就把它扔进废纸篓。
+    /// G2「默认不勾用户数据」正是被这一条破掉的：年龄不是"这是垃圾"的证据。
+    /// 徽章与默认勾选**故意共用同一个判据**：分两个函数迟早会漂开，届时界面说"推荐"
+    /// 而勾选却不勾，或反过来，都是对用户撒谎。
     public var isHighlyRecommendedToClean: Bool {
         if kind == .installer && ageDays >= 7 { return true }
         if kind == .archive && ageDays >= 30 { return true }
-        if ageDays >= 90 { return true }
+        // 媒体/文档/其他一律不默认勾：它们在下载目录里通常是用户的资料本身。
         return false
     }
 }

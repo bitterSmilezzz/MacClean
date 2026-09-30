@@ -1,0 +1,142 @@
+# 未发版轮次 R2 复审记录（2026-10-01，删除记账与撤销快照的单一出口）
+
+> 本稿原先占用 `v1.73.15`：那一轮因仍有一条修不掉的 P1（归档记账可被空实现绕过）而**没有打 tag**，
+> 按同目录 README 新立的规矩「不发光轮次不许占版本号」改名。
+> `v1.73.15` 现在真的用在下一轮（R3：软链防跳板 + 默认勾选）的发版上，两轮的工作一起随这个 tag 发出。
+
+## 审查者是谁（运行时探活）
+
+| 序 | 审查者 | 本轮实测症状 | 结论 |
+|---|---|---|---|
+| 1 | `dsh headless "回复 OK"`（60 s fork 看门狗） | 立刻失败：`node:internal/modules/package_json_reader:301 throw new ERR_MODULE_NOT_FOUND` | ✖ 不可用 |
+| 2 | `agy --print` | `curl --max-time 8 https://generativelanguage.googleapis.com/` → HTTP `000`（连接超时）；上一轮同一形态挂 42 分钟零输出 | ✖ 不可用（端点不通，所以它是**挂死**而不是报错） |
+| 3 | Qoder `general-purpose` 子代理 | 可用 | ✔ **本轮走退化路径**（外部 CLI 不可用，症状见上两行） |
+
+派审额度每轮最多 2 次（初审 + 修正后复审），**本轮已用满**：
+`reviewer-r2b` 审中途快照（提出 F1–F9），`reviewer-r2c` 复审判修好的终版（提出 G1–G3）。
+两次都是退化路径下的 Qoder `general-purpose` 子代理，全新上下文。
+⚠ 因此**第二次复审之后新加的修复（G1/G2/G3）没有第三方复核**，只有实现者自己跑的变异验证，
+下面第三节的"验证方式"逐条写清了是哪一种。
+
+## 复审范围
+
+基线 `efe1be2`。产品代码 10 个文件、自检 4 个文件（新增 `Selftest+DeletionLedger.swift`）、
+文档 6 个，`git diff HEAD -- Sources docs README.md scripts`。
+声明的目标：把"删完之后必须留下历史行 + 撤销快照"从"每个调用方记得写"改成"结构上必须写"，
+新增唯一出口 `DeletionLedger`。
+
+## 一、门禁与实测数字
+
+- 构建：0 error、0 条 Swift 源码 warning（两类与源码无关的 `ld:` 残留除外，未做静音）。
+- `--selftest`：**707 通过 / 34 失败 / 7 个套件未执行**——失败名集与未执行套件名集与
+  `docs/KNOWN-ENV-SELFTEST-FAILURES-MACOS27.md` **逐条相同**（`diff` 为空），新增的 11 条全在通过侧。
+  同一棵树改动前的基线是 696/34/7；本轮两个中间点也各自复跑过（703、705），一路只涨通过数、
+  失败名集一字未变。release 配置（`MACCLEAN_NO_SELFTEST=1`）另建一次：0 error，且二进制里
+  `deleter` 符号数 = 0。
+- TSan 复验：`swift build --sanitize=thread` 后跑全量，**零 `ThreadSanitizer` 报告**；
+  失败名集只比基线多一条 `护栏热路径：一次判定的开销相对单次软链解析的倍数`（时间放大所致，
+  已记进 `docs/RELEASE-CHECKLIST.md`）。
+- `--scan` 无头冒烟：exit 0。
+- 脱敏扫描：`scripts/release.sh --scan-only` ✅（活性证据 258 个文件，树侧与历史侧都查过）。
+- 变异矩阵：**17 次变异尝试 = 13 次具名判红 + 1 次真实存活 + 3 次变异体自身构建失败**
+  （那 3 次是我的驱动脚本产出了无效 Swift 或锚点串不匹配，按规矩既不算判红也不算存活）。
+  逐条只记"红在哪一个用例"，不记失败条数：
+  - `MU-A/B/C`（复跑为 `A2/B2/C2`）：调用方绕过出口、出口内那句 `Cleaner.clean` 被换掉、
+    归档少一处调用 → 红在 G20 / G20 / 「五条链路」。其中 **MU-C 第一轮真存活**：
+    接线判据数 `recordTrashedOriginal(` 出现次数，而 helper 的定义本身算一次，
+    删一处调用后仍是 2 次 → 改成点名"这一处调用自己的字面量"之后才红。
+  - `MU-D..H`：只写历史不写快照、彻底删除也写快照、空跑也落行、返回陈旧清单、mode 恒写废纸篓
+    → 分别红在「按 recordID 取回快照」「不配撤销快照」「无事发生不落行」「返回合并后的完整清单」
+    「端到端 mode 与实际落点一致」。
+  - `MU-N1..N4`（第二次复审的四条修复）：取函数引用绕过 → 红在 G20；产品文件重赋 `.deleter`
+    → 红在 G20b；归档有落点不写快照 → 红在「有落点就必须取回快照」；`bytes` 退回计划量
+    → 红在「逐列搬进账本」。
+  - `MU-N5` typealias 换名**替换**出口调用 → 红在「五条链路」；但"另加一条只用别名的新路径"看不见。
+  - `MU-N6` **存活（未修）**：归档两处调用改接一个同名同标签的空实现，字面量全留、一行账不落，
+    `707 通过 / 34 失败` 与基线一字不差。**本轮不打 tag 就是因为它。**
+  ⚠ 一处方法论错误要记：第一批的过滤词里含"端到端："，而本机基线本来就有一条
+  `端到端：勾选后清理按钮可用` 的既有红灯——它被我的过滤器算成了"变异判红"。
+  判红必须比对**失败名集与基线的差集**，不能只看有没有红字，否则噪声会冒充证据。
+
+- GUI 走查：**未做**。① 本机前台正被其他 App 占用（`System Events` 报 `agentisland`），
+  按纪律不抢焦点；② 本轮唯一用户可见的变化是"历史页多出卸载/孤儿/归档三类记录行、
+  重复文件清理弹窗开始出现可用的『放回原位』"，要走完这条链路必须**真的删掉本机文件**，
+  那是有副作用的动作，不在自动轮里替用户做。已用注入缝 + 一次性状态目录把同一批结论
+  做成可执行断言（`clean()` 的快照搬运、归档无落点仍落行），但**"界面上点得到"这件事
+  本身没有真机验证过**，这是本轮的已知盲区。
+
+## 二、发现与处置
+
+严重度按项目定义：`P0` 可致误删/越权/数据外泄，`P1` 结论失真或假绿，`P2` 健壮性/并发，`P3` 措辞与文档。
+
+| # | 严重度 | 位置 | 症状 → 后果 | 处置 |
+|---|---|---|---|---|
+| F1 | **P1** | `DeletionLedger.swift:42`（连同 36–40） | 把 `snapshots: result.trashedSnapshots` 改成 `snapshots: []`、或把 `trashedBytes` 改成 0，全量自检**与基线逐条相同**（703/34/7）。根因：唯一跑到 `clean()` 的行为断言故意用 `permanently: true`（为了不污染真废纸篓），于是废纸篓分支与四列参数的搬运**零覆盖**——而本轮修的正是"静默链路丢快照"，它可以一个 token 原样放回且全绿 | **已修**：给出口加 `DeletionLedger.deleter` 注入缝（默认仍是 `Cleaner.clean`），新增断言用伪造的 `Cleaner.Result`（带快照与 `trashedBytes`）逐列断言搬运；变异 MU-I / MU-J 各自判红 |
+| F2 | **P1** | `Selftest+DeletionLedger.swift:24,41` | needle 没**挤过空白**，违反本仓 G18/G19 已写明的规矩，两面都坏：调用方写成折行的 `Cleaner` ⏎ `.clean(` 时 lint①②与所有行为断言**全绿**（主链路一行历史一份快照都不写）；而出口自己折行会让命中数变 0，把良性排版变成发版红灯 | **已修**：判据改在挤过空白的代码上匹配（含接线 lint 的 needle）；新增变异 MU-K 专测折行绕过。审查者另外建议把 `Cleaner` 并入出口文件、`clean` 设 `private` 让编译器保证——**没采纳**：那要把 `Cleaner.Result` 的类型可见性一起改，跨 20+ 调用点，属于设计级改动，落待议 |
+| F3 | **P1** | `Selftest+DeletionLedger.swift:59–82` + `SpaceArchiveService.swift:228` | 接线 lint 只判字面存在：把归档那次 write 包进 `let skip = true; if !skip { … }`，字面量全留、永不执行，7 条断言全绿；而唯一能跑到归档行为的套件 `SpaceArchiveDeep` 在本机是崩溃未执行的。两条 name-needle（`"重复文件"`、`"App 卸载残留"`）在同文件另有出处，无判别性 | **已修（改走行为侧）**：`recordTrashedOriginal` 升为 `static`，新增断言直接调它、按记录内容断言（F4 那条就是它的夹具）；lint 仍保留但注释里写明它只守"接没接线"、守不到"死代码化"。字面量绕过这一类**没有**封死，落待议 |
+| F4 | **P1** | `SpaceArchiveService.swift:227` | `guard let trashPath else { return }`：`trashItem` 成功但 `resultingURL` 为 nil 时**连历史行也不写**，而 `deletedOriginal = true` 让 UI 照样播"原件已移入废纸篓" → 账上查无此事、无放回入口，正是本轮要消灭的形状，且当时零覆盖 | **已修**：没有落点就只降级快照、不降级账（`snapshots: []` 照常落一行），界面按"无快照不给放回按钮"既有约定降级；新增断言直接断这个形状（变异 MU-L 判红） |
+| F5 | P2 | `AppState.swift:589→592`、`654→732`、`DiskMonitor.swift:292→294`、`DuplicateView.swift:429→431` | 记账挪到后台之后，`outcome.history` 是 append 那一刻的盘上快照；main 上 `refreshDisk()` 里的 `reloadHistory()` 读到的更**新**，再拿这份更旧的 `merged` 覆盖回去，窗口期内由网关/定时自愈/无头维护写入的行会从历史页与侧栏消失（盘上没丢，`HistoryView.onAppear` 会追回）。v1.73.2 修过的陈旧覆盖形状**换了个位置** | **已修**：删掉这四处赋值，缓存统一由 `refreshDisk() → reloadHistory()` 追平；`Outcome.history` 的注释改成"给没有内存缓存的无头链路当回执用，别拿来覆盖" |
+| F6 | P2 | `DeletionLedger.swift:40` + `Cleaner.swift:66` | 硬写 `lowerBoundCount: 0`：`Cleaner` 用的是丢来源的 `FileSystem.size(at:)`（有 `walkWasBlocked` 的 `sizeWithProvenance` 没被用），于是网关侧会写「（下限）」而主链路一律写精确值——文件头那句"口径在全部链路一致"只对 mode 与快照成立 | **认账不修**（改口径要连带重算历史与 Toast，属独立一轮）：把注释从"口径一致"改成**明写这里不一致**并指出后果，条目落进 `docs/OPTIMIZATION-PLAN.md` §5bis 作为 P1 候选。`Outcome.space` 无调用方 → **已删** |
+| F7 | P3 | `DeletionLedger.swift:5–13`、`Selftest+DeletionLedger.swift:5–7`、`Selftest.swift:170`、`History.swift:72`、`Selftest+SystemAndHistory.swift:124`、`OPTIMIZATION-PLAN.md:179` | 可数声明自相矛盾：我写"6 个调用点/3 处不写"“8 个/4+1"，`git grep -c` 实测是 **7 处**、其中 **2 处一行不写 + 2 处只写历史**；三处把本轮标成 `v1.74`（本轮号是 v1.73.15）；计划里引了不存在的 `item.permanentForceDelete`（实为 `item.permanentDelete`） | **已修**：三处数字按实测重写并把"怎么复核这个数字"写在注释里；`v1.74`→`v1.73.15`；符号名改正。注：仓库里另有 **10 余处前几轮留下的 `v1.74.0` 注释**（与本文件无关的模块），本轮没动，属 P3 存量 |
+| F8 | P3 | `MacCleanApp.swift:11` 一带 | `--selftest-suite=X` 少了 `--selftest` 时**不报错，直接落到 GUI 分支**——审查者据此误开出两个副本 App 窗口。"没执行自检"演成"在跑" | **已修**：任何 `--selftest*` 参数在没有 `--selftest` 时打印一行并 `exit 2`；实测 `rc=2`、不起界面 |
+| F9 | 披露 | 审查者自己的操作 | 它承认误触发过两个副本 GUI，且只 kill 了自己启动的那两个、未动其余进程、未改仓库任何文件 | 记录在案，无需处置（与本项目纪律一致） |
+
+### Q1–Q4（实现者追加的四个定向问题）
+
+- **Q1 有没有恒绿断言？** 有两条，都被 F1/F3 指出来并已补：`clean()` 的废纸篓分支当时零覆盖（F1）、
+  归档记账只受"字面存在"保护（F3）。反证：把出口里 `UndoManagerStore.record` 摘掉，第 3 号断言立刻红；
+  把 `snapshots:` 换成 `[]`，补完之后第 8 号红。目前仍**没有**行为覆盖的是：`SpaceArchiveDeep` 套件
+  本机崩溃未执行，归档链路只能靠直接调用 `recordTrashedOriginal` 的那条断言兜，UI 侧仍是盲区。
+- **Q2 `Cleaner.clean(` 的"恰好 1 处"挡得住什么？** 挡住了"出口整体消失"（命中 0 判红，实测）；
+  修完 F2 之后也挡住了折行绕过。**挡不住**的两类：类型别名之类的写法，以及一切根本不经过 `Cleaner`
+  的删除（2 处裸 `fm.trashItem`、4 处直接 `HistoryStore.append`）——后者已在 §5bis 记成"把 lint
+  升级成只允许出口调 `HistoryStore.append`"的下一轮工作。
+- **Q3 `guard itemCount > 0 || failures > 0` 会不会把该记的抹掉？** 实测唯一走到 0/0 的入参是
+  `items` 为空，而所有调用点都先 guard 非空；护栏拒绝计入 `failures`、路径已消失计入 `succeeded`，
+  所以非空入参不可能 0/0。真正的"一次也不记"是 F4（已修）与 F1/F3（参数搬运无覆盖，已补）。
+  另：`succeeded == 0 && failures > 0` 会落行但**不发通知、不刷缓存**，靠 `HistoryView.onAppear` 兜住。
+- **Q4 记账挪到后台引入什么新问题？** 三条，其一（陈旧覆盖）就是 F5，已修；其二是"写行成功、
+  写快照失败或进程中途被杀 → 有行无快照"，这个窗口从原来的 0 变成了整次删除的时长，
+  界面按"无快照不给放回按钮"降级，`ResidueDeletionGate.swift:254` 早已备案、本轮不新增锁；
+  其三是静默链路在 main 上做两次 JSON 读改写（`DiskMonitor.swift:286`），属性能项没测出影响。
+  未发现 `@Published` 跨线程写。
+
+## 二bis、第二次复审（`reviewer-r2c`）的发现与处置
+
+它自己复现了基线（705/34/7，失败名集与 §0.2 `diff` 为空），在副本里跑了 10 条变异，
+逐条报锚点命中数。结论：**未发现 P0**，两条 P1、一条 P2、一条 P3。
+
+| # | 严重度 | 位置 | 症状 → 后果 | 处置 + 验证方式 |
+|---|---|---|---|---|
+| G1 | **P1** | `DeletionLedger.swift:39,48` | 我为了修 F1 加的注入缝 `deleter` **本身就是绕出口的后门**：它是个可变全局，任何产品文件重赋一个不调 `Cleaner.clean` 的闭包，就能让删除**跳过 `isSafeToClean`（G1/G6/G8 护栏）却照样落一行"成功"历史**。实测三条变异全绿：产品文件调 `deleter`、`let f = Cleaner.clean` 取引用、`typealias KC = Cleaner; KC.clean(` | **已修**：① `deleter` 与它那条分支用 `#if MACCLEAN_SELFTEST` 关出 release 产物——`MACCLEAN_NO_SELFTEST=1` 构建的二进制里 `nm` 查 `deleter` 符号数 **= 0**，发出去的包里这条边根本不存在；② needle 去掉左括号（取引用的写法也算命中，变异 MU-N1 红在 G20）；③ 新增 G20b：产品文件里不许出现 `.deleter` 成员引用（变异 MU-N2 红在 G20b）。`typealias` 那一种**没修掉**：文本判据追不上语言层面可达性，已写进 G20 的"挡不住"清单 |
+| G2 | **P1** | `SpaceArchiveService.swift:194,316,243` | 归档记账仍可被掏空而全绿：①`snapshots: snapshots` → `snapshots: []`（**拿得到落点也不写快照**）——本轮 P0 正题在归档链路上一个 token 就能回来，因为上一版新加的断言只喂 `trashPath: nil` 那一支；②两处调用接进一个永不执行的 hook，字面量全留 | **①已修**：新增断言"有落点就必须能按 `recordID` 取回 originalPath/trashPath/size 相符的快照"（变异 MU-N3 红在这条）。**②实测仍然存活，没修**：把两处调用改接一个**同名同标签的空实现**（`LedgerHook.recordTrashedOriginal(categoryName: "大文件归档", …)`，两个分类名字面量原样保留），**707 通过 / 34 失败，与基线一字不差**——第二次复审这条判断在我的终版上依然成立（MU-N6，构建成功、非"跑不了"）。
+    为什么没修：presence/计数两类文本判据看不见控制流，要封死只有两条路——①真跑 `archiveInPlace`（会 `ditto` 并**真的把原件扔进废纸篓**，自动轮里不该动用户文件），而唯一覆盖它的 `SpaceArchiveDeep` 在本机是崩溃未执行；②按 §5bis 上编译器保护（把出口做成唯一可达路径）。**记为已知洞、不写成"已修"**；与"GUI 未走查"是同一个盲区 |
+| G3 | P2 | `Selftest+DeletionLedger.swift:226–260` | 注入缝夹具把 `size`、`releasedBytes`、`trashedBytes` 全取同一个数 → 把 `bytes: result.releasedBytes`（实际释放）改回 `Σitem.size`（**计划量**，正是 N8 明令禁止的那条退行）实测全绿；`failures` 恒 0 同理 | **已修**：夹具改成 2 项、其中 1 项失败，计划量 / 实际释放 / 压在废纸篓的量**两两不等**，并逐列断言 `bytes`/`itemCount`/`failures`（变异 MU-N4 红在"搬进账本"那条，且新增一条 `bytes == 计划量` 就点名的判红分支） |
+| G4 | P3 | `DeletionLedger.swift:17`、`README.md:17`、G20 行 | 我把 lint 的能力写成了"除出口外调不到 `Cleaner.clean`"——替一条实测**不成立**的不变量背书 | **已修**：三处措辞降级为"常规写法下只被出口调用"，并各写明"文本判据、不是编译器判据"；审查者建议的"编译器级保护 = 把 `Cleaner` 并进出口文件、`clean` 设 `private`"按它的意见**升格为下一次发版前的硬条件**，写进 `docs/OPTIMIZATION-PLAN.md` §5bis |
+
+### 第一次复审四条 P1 的处置，被第二次复审复验的结果
+
+| 原编号 | 它的判定 | 我这边的补充动作 |
+|---|---|---|
+| F1 | **半成立**：`snapshots`/`trashedBytes`/mode 三列有牙齿（MU-F1-SNAP、MU-F1-TRASHED 都红在第 8 号断言）；但 `itemCount`/`bytes` 无判别性，且注入缝本身成后门 | 采纳。判别性按 G3 补齐，后门按 G1 关出 release 构建。**它说"还差两步"，这两步现在都做完了并各有变异判红** |
+| F2 | **不成立**：折行堵住了，但取引用 / 类型别名 / 走 deleter 三种形状全绿 | 三种分开量：①取引用**已堵**（needle 去括号，MU-N1 红在 G20）；②`deleter`**已堵两道**（编译期关出 release + G20b，MU-N2 红在 G20b）；③类型别名**半堵**——`typealias KC = Cleaner; return KC.clean(...)` 这种**替换掉出口调用**的写法会被接线判据抓到（MU-N5 红在"五条链路"，实测），但"另加一条只用别名的新路径"两道判据都看不见。这一条没修，是 §5bis 那条"下一次发版前必须上编译器保护"的硬条件仍然存在的**原因** |
+| F3 | **不成立**：处置写"已修（改走行为侧）"，但 dead-hook 与 `snapshots: []` 都存活 | 认账。`snapshots: []` 已修（G2）；dead-hook 这一类**修不了**，第一次那份"已修（改走行为侧）"是overclaim，本表按实际状态改写 |
+| F4 | **成立**：回归测试红在第 9 号断言；账落、快照不落，UI 那句话仍真 | 无需追加 |
+
+### 关于"要不要在下一次发版前把 `Cleaner` 并进出口"
+
+审查者的意见是：**要，至少做到"`deleter` 编译期只存在于自检构建"**（本轮已做到，实测符号数 0）。
+合并 `Cleaner` 本身它同意继续待议，但在拿到编译器保护之前，文档里"除出口外调不到"这句话必须降级——
+本轮已降级。这条硬条件记在 `docs/OPTIMIZATION-PLAN.md` §5bis，**下一次发版前必须做**。
+
+## 三、红线自查
+
+- 产品代码、自检、文档里没有真实凭据值（含截断形状）；`/Users/...` 形式只有 `example`/`test`/`x` 占位。
+- 没有本机第三方应用名、没有真实 `history.json` 内容、没有扫描得到的用户文件名。
+  卸载/归档类历史行的分类名是**固定字面量**（"App 卸载残留""孤儿残留清理""大文件归档"），
+  刻意不写入被卸载 App 的名字——历史文件会随状态目录被备份或截图分享。
+- 交给审查者的只有仓库内 diff 与仓库文档，没有运行期日志或目录列表。
+- 顺带修掉一处版本撞名：`docs/code-review/` 里原有一份 `v1.73.15-zcode-subagent.md`，
+  它复审的那批内容实际随 **v1.73.10** 发出、这个号从未被打过；已改名
+  `untagged-2026-09-28-mainstream-parity-zcode-subagent.md`，命名规则补进同目录 README。
+  （这正是 `OPTIMIZATION-PLAN` P3-3 记的那条"复审稿先于 tag 存在"。）
