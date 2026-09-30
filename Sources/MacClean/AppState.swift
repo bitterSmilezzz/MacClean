@@ -556,7 +556,10 @@ final class AppState: ObservableObject {
         let beforeAvailable = diskAvailable
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Cleaner.clean(items, permanently: permanently) { _ in }
+            // 删除与记账必须走同一个出口（R2 P0）：`DeletionLedger.clean` 内部调
+            // `Cleaner.clean` 并当场写下历史行 + 撤销快照，调用方拿不到"只删不记"的写法。
+            let outcome = DeletionLedger.clean(items, permanently: permanently, categoryName: cat.title)
+            let result = outcome.result
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 st.releasedBytes += result.releasedBytes
@@ -583,19 +586,12 @@ final class AppState: ObservableObject {
                 }
                 st.isScanned = true
                 self.isCleaning = false
+                // 顺序有讲究：`refreshDisk()` 里的 `reloadHistory()` 读的是**当时**的盘，
+                // 已经把出口刚写的那行连同并发写手的行一起带回来；这里若再拿 `outcome.history`
+                // （append 那一刻的快照）覆盖回去，就会把窗口期内新落的行抹掉——
+                // 正是 v1.73.2 修过的形状，只是换了位置（v1.73.15 复审 P2-F5）。
                 self.refreshDisk()
-                let record = self.recordClean(categoryName: cat.title,
-                                              itemCount: result.succeeded,
-                                              bytes: result.releasedBytes,   // N8：历史记录用实际释放量，而非计划量
-                                              mode: permanently ? "彻底删除" : "废纸篓",
-                                              failures: result.failures.count,
-                                              trashedBytes: result.trashedBytes)
-                var undoID: UUID? = nil
-                if !permanently && !result.trashedSnapshots.isEmpty {
-                    let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
-                    UndoManagerStore.record(session: session)
-                    undoID = session.id
-                }
+                let undoID = outcome.undoSessionID
                 self.lastCleanSummary = Self.cleanAnnouncement(
                     space: result.space, failures: result.failures.count,
                     skippedRunning: runningBlocked.count)
@@ -647,7 +643,8 @@ final class AppState: ObservableObject {
         let beforeAvailable = diskAvailable
         isCleaning = true
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Cleaner.clean(items, permanently: permanently) { _ in }
+            let outcome = DeletionLedger.clean(items, permanently: permanently, categoryName: "多分类")
+            let result = outcome.result
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 let breakdown = self.applyCleanBookkeeping(for: contributingCategories,
@@ -657,7 +654,7 @@ final class AppState: ObservableObject {
                 self.isCleaning = false
                 self.refreshDisk()
                 IncrementalCache.saveToDisk()
-                self.reportAggregateCleanOutcome(result: result,
+                self.reportAggregateCleanOutcome(outcome: outcome,
                                                  breakdown: breakdown,
                                                  runningBlocked: runningBlocked,
                                                  beforeAvailable: beforeAvailable,
@@ -723,24 +720,19 @@ final class AppState: ObservableObject {
         return parts.joined(separator: "，")
     }
 
-    /// 聚合清理的收尾播报：写清理历史、状态栏摘要、结果弹窗快照与系统通知
-    private func reportAggregateCleanOutcome(result: Cleaner.Result,
+    /// 聚合清理的收尾播报：刷历史缓存、状态栏摘要、结果弹窗快照与系统通知。
+    /// 历史行与撤销快照**已经在删除的那一刻**由 `DeletionLedger` 写好（R2 P0：
+    /// 动手与记账绑在同一个出口里），这里不再自己写一份——以前这两步分开写，
+    /// 于是"某条路径忘了写快照"是可能的，而现在结构上不可能。
+    private func reportAggregateCleanOutcome(outcome: DeletionLedger.Outcome,
                                              breakdown: [CleanCategory: Int64],
                                              runningBlocked: [CleanItem],
-                                              beforeAvailable: Int64,
-                                              permanently: Bool) {
-        let record = recordClean(categoryName: "多分类",
-                                 itemCount: result.succeeded,
-                                 bytes: result.releasedBytes,   // N8：实际释放量
-                                 mode: permanently ? "彻底删除" : "废纸篓",
-                                 failures: result.failures.count,
-                                 trashedBytes: result.trashedBytes)
-        var undoID: UUID? = nil
-        if !permanently && !result.trashedSnapshots.isEmpty {
-            let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
-            UndoManagerStore.record(session: session)
-            undoID = session.id
-        }
+                                             beforeAvailable: Int64,
+                                             permanently: Bool) {
+        let result = outcome.result
+        // 内存缓存由调用侧的 `refreshDisk() → reloadHistory()` 负责追平盘，
+        // 这里不再用 `outcome.history` 覆盖（理由见 `cleanSelected` 里那段注释）。
+        let undoID = outcome.undoSessionID
         lastCleanSummary = Self.cleanAnnouncement(
             space: result.space, failures: result.failures.count,
             skippedRunning: runningBlocked.count)
@@ -901,21 +893,6 @@ final class AppState: ObservableObject {
         if totalSelectedCount > 0 {
             cleanSelectedAcrossCategories(permanently: false)
         }
-    }
-
-    /// 记录一次清理历史（Mole `mo history` 思路）
-    @discardableResult
-    func recordClean(categoryName: String, itemCount: Int, bytes: Int64,
-                     mode: String, failures: Int,
-                     trashedBytes: Int64) -> CleanRecord {
-        let record = CleanRecord(categoryName: categoryName, itemCount: itemCount,
-                                 bytes: bytes, mode: mode, failures: failures,
-                                 trashedBytes: trashedBytes > 0 ? trashedBytes : nil)
-        // 走唯一写入口：它自己读盘合并，返回落盘后的完整清单再刷内存缓存。
-        // 旧写法是 `history.insert(...); HistoryStore.save(history)`——`history` 只在启动时
-        // 读过一次，于是启动期间由删除网关/归档/去重/定时自愈记下的记录会被这份陈旧缓存整片抹掉。
-        history = HistoryStore.append(record)
-        return record
     }
 
     /// 执行放回原位（Undo 撤销清理）

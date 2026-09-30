@@ -424,17 +424,15 @@ struct DuplicateView: View {
             recentlyUsedCount: 0
         ) { permanent in
             let beforeAvailable = app.diskAvailable
-            let result = dup.cleanSelected(permanently: permanent)
+            let outcome = dup.cleanSelected(permanently: permanent)
+            let result = outcome.result
             if result.releasedBytes > 0 || result.succeeded > 0 {
+                // `refreshDisk()` 内部的 `reloadHistory()` 会把出口刚写的行连同并发写手的行
+                // 一起读回来；不要再拿 `outcome.history`（append 时刻的快照）覆盖回去
+                // ——那会把窗口期新落的行抹掉（v1.73.15 复审 P2-F5）。
                 app.refreshDisk()
-                app.recordClean(
-                    categoryName: "重复文件",
-                    itemCount: result.succeeded,
-                    bytes: result.releasedBytes,
-                    mode: permanent ? "彻底删除" : "废纸篓",
-                    failures: result.failures.count,
-                    trashedBytes: result.trashedBytes
-                )
+                // 历史行与撤销快照都由 `DeletionLedger` 在删除那一刻写好（R2 P0）：
+                // 这里以前自己 `recordClean` 补一行却漏写快照，于是那条记录点不动。
                 app.lastCleanResult = CleanResultSnapshot(
                     title: "重复文件清理完成",
                     releasedBytes: result.releasedBytes,
@@ -445,6 +443,9 @@ struct DuplicateView: View {
                     afterAvailable: app.diskAvailable,
                     breakdown: [.largeFiles: result.releasedBytes],
                     timestamp: Date(),
+                    // 快照现在真的存在了 → 弹窗上的「放回原位」不再是一条点不动的按钮
+                    // （以前这条链路根本不写快照，所以这个字段一直是 nil）。
+                    undoSessionID: outcome.undoSessionID,
                     space: result.space
                 )
                 app.showCleanResultSheet = true

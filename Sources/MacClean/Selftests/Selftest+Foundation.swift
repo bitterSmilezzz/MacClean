@@ -328,8 +328,10 @@ extension Selftest {
                 try? FileManager.default.removeItem(at: tmpURL)
             }
             let app = AppState()
-            app.recordClean(categoryName: "用户缓存", itemCount: 3, bytes: 1234,
-                            mode: "废纸篓", failures: 0, trashedBytes: 1234)
+            let written = DeletionLedger.write(categoryName: "用户缓存", itemCount: 3, bytes: 1234,
+                                               trashedBytes: 1234, failures: 0,
+                                               permanently: false, snapshots: [])
+            if let merged = written.history { app.history = merged }
             guard app.history.count == 1, app.history[0].bytes == 1234 else { return false }
             // 落点必须跟着进历史：这批字节此刻还压在磁盘上，"累计释放"不许算它
             guard app.history[0].reclaimedBytes == 0,

@@ -167,17 +167,27 @@ Maven/rustc 按需解析、不留引用表的"旧版本构件"；签名克隆类
 |---|---|---|
 | P3-1 | 90 条版本标注中 **61 条首入 tag = v1.73.10**（`TrashAutoEmptyService:3`、`AppUpdateScanner:5`、`ShredderService:5`、`AIChatView:639`、`DiskMonitor:57`、`CategoryDetailView:184/1178/1442`、`README:68/86/326`、`mainstream-parity:14-17`、`RELEASE-CHECKLIST:92/101/374/387`） | 用户按 release notes 找不到功能；"无撤销快照"这类**安全口径被记晚四轮**。改标注会让 blame 指向今天的 docs 提交、更不可审计 → 正确做法是新增 `docs/VERSION-ANNOTATIONS.md` 差集表（脚本可复现）+ 在下版 notes 点名 |
 | P3-2 | `README:27/398-399/486/495` 仍称"唯一 `enumerator(atPath:)` 豁免点"，实测产品源码已 **0 处调用**；自检计数四处互斥（README 713/700/666、KNOWN-ENV 675、CHECKLIST 649/602/559）；规则数 53 vs README 写 52；`space.claim()` 实测 18 处 vs 文档"19 副本/约 20 处" | **可数声明失真即谎报**。全部改成"取当前值"或由 lint 钉住 |
-| P3-3 | `docs/code-review/v1.73.15-zcode-subagent.md`（复审稿先于 tag 存在，且它复审的是被并入 v1.73.10 的工作）、`v1.73.13-14-zcode-subagent.md`、6 份时间戳命名稿违反 `code-review/README.md:13`；`1fc2415` message 复制自 `ddb0a66`；三个 tag 提交的 diff 只有 VERSION 一行却写整轮功能 | 历史错账。**不改写已发布历史**：新增 `docs/ERRATA.md`（短哈希 → 实际内容），并立规"bump 提交只写 bump、复审稿不得早于 tag" |
+| P3-3 **(部分已处理 2026-10-01：v1.73.15 那份已改名 `untagged-2026-09-28-mainstream-parity-zcode-subagent.md`，命名规则也补进了 `code-review/README.md`；剩下的 `v1.73.13-14`、6 份时间戳稿与 ERRATA 未动)** | ~~`docs/code-review/v1.73.15-zcode-subagent.md`~~（复审稿先于 tag 存在，且它复审的是被并入 v1.73.10 的工作）、`v1.73.13-14-zcode-subagent.md`、6 份时间戳命名稿违反 `code-review/README.md:13`；`1fc2415` message 复制自 `ddb0a66`；三个 tag 提交的 diff 只有 VERSION 一行却写整轮功能 | 历史错账。**不改写已发布历史**：新增 `docs/ERRATA.md`（短哈希 → 实际内容），并立规"bump 提交只写 bump、复审稿不得早于 tag" |
 | P3-4 | `docs/SENSITIVE-DATA-AUDIT.md:139-143/183` 公开了开发者本机 `history.json` 的体量与内容画像，且 `:138`「已删除」与 `:183`「含真实密钥」口径互斥 | 自查文档自己踩红线；改成区间口径 |
 | P3-5 | cron 指令：规模数字（170 文件/5 万行）与 P2 选题（Android AVD 已发布）都过期；cron 当前 `enabled=false` | 未来自动轮会回退到已完成方向。改成"判据 + 已否决清单"，不写具体待办 |
 | P3-6 | `release.sh:263-281` 基线侧与实测侧归一规则不一致（只有一侧 `sed 's/（.*//'`）；11 处固定 `/tmp/mc-release-*` 路径 | 基线粘全称会每次假拦；并行发版会互相覆盖失败集 |
+
+## 5bis. R2 实测中**新发现**的两条（写在这里，免得下一轮重新审计）
+
+| 级别 | 位置 | 症状 | 触发条件 | 建议判据 |
+|---|---|---|---|---|
+| **P1** | `DeletionLedger.write` 里 `trashedBytes > 0 ? trashedBytes : nil` + `History.swift` 的 `pendingTrashBytes`（mode 回推那一支）+ `Cleaner.swift:39` 的 `item.permanentDelete || permanently` | 一条 mode 写「废纸篓」的记录，若**每一项都被强制彻底删除**（源本来就在废纸篓里），`trashedBytes` 记成 nil → 回推把**整批**算成"还压在磁盘上等清空废纸篓"，而磁盘上一分不欠：历史页与导出把它算进「待落定」，「累计释放」相应偏低，界面那句"清空废纸篓才算数"对这批字节是**假的** | 清理一批已经在废纸篓里的条目（废纸篓分类、以及"清空 N 天前"那两条链路都会造出这个形状） | 区分「测出来是 0」（写 0）与「老记录不知道」（写 nil）；`Selftest+DeletionGate` 里已有一条相邻的"混合落点"夹具可以照着扩 |
+| **P2** | `ScreenshotsOrganizerScanner.swift:360`、`DownloadsOrganizerScanner.swift:326`、`HardlinkDedupService.swift:418` 与 `:472`（共 4 处 `HistoryStore.append`）| G20 的 lint 只覆盖 `Cleaner.clean` 与点名的 5 个文件；这三处仍**自己** `HistoryStore.append` 造行，mode 字面量、200 条上限、Optional 字段约定各抄一份 | 下次改 `CleanRecord` 字段语义时要同步 4 份写入点，漏一处就是口径分裂 | 并进 `DeletionLedger.write`（归档类已有 `modeOverride` 这条路），然后把 lint 升级成"产品源码里 `HistoryStore.append` 只允许出现在 `DeletionLedger.swift`" |
+
+| **P1（同类，实测存活）** | "把两处调用改接一个**同名同标签的空实现**"——`LedgerHook.recordTrashedOriginal(categoryName: "大文件归档", …)` 字面量全留、一行账不落 | 接线判据是文本级的（presence/计数都看不见控制流），实测 **707 通过 / 34 失败，与基线一字不差**（MU-N6） → 归档/迁移这条链路将来可以静默退回"只删不记" | 同上一条：只有编译器级保护或真跑一次 `archiveInPlace` 能封；后者会把用户文件扔进真废纸篓，自动轮里不该做。**本轮因这一条判红不了而放弃打 tag**（见 `docs/code-review/v1.73.15-qoder-subagent.md` G2） |
+**本轮已做到的部分**：注入缝 `deleter` 用 `#if MACCLEAN_SELFTEST` 关出 release 产物 | `Cleaner.swift` 的 `clean` 仍是 `internal`：任何文件都能直接调它，而"唯一出口"目前只由**文本 lint** 兜（needle 已做到"去括号 + 挤空白"，仍挡不住 `typealias KC = Cleaner; KC.clean(`，也挡不住把调用包进永不执行的分支） | 只要有一条产品路径直接调 `Cleaner.clean`，删除就发生而历史与快照都没有——即本轮修的那个 P0 形状，只是换了成因 | 把 `Cleaner` 的 `clean` 实现并进出口文件、设为 `private`，让"除出口外调不到"由**编译器**保证、lint 退成兜底。代价是 `Cleaner.Result` 的可见性与 20+ 处类型引用要一起理。**本轮已做到的部分**：注入缝 `deleter` 用 `#if MACCLEAN_SELFTEST` 关出 release 产物（实测 `MACCLEAN_NO_SELFTEST=1` 构建的二进制里 `deleter` 符号数 = 0），并加一条 lint 钉住"产品文件不许引用 `.deleter`" |
 
 ## 6. 轮次编排（每轮 30–60 分钟一刀，含依赖）
 
 | 轮 | 做什么 | 为什么先它 | 会不会打红既有自检 |
 |---|---|---|---|
 | ~~R1~~ **已做（2026-10-01）** | **P0-5 脱敏门禁**（abs 先判类型、fixture 只判片段、skip-scan 即 die、pathspec 对齐、补 `github_pat_`/大小写/commit-tag message） | 唯一"一旦错了就删不回来"的一类；纯脚本，零产品行为 | 否（新增脚本自检） |
-| R2 | **P0-1 + P0-2 合并**：删除记账与撤销快照收成单一出口，静默清理/卸载器/归档三处复用 + 两条腿自检 | 无人值守链路正在每天删用户文件且不可放回 | 需同步 `Selftest+Undo`、`PreferenceResidueDeep:191` |
+| ~~R2~~ **已做（2026-10-01，v1.73.15）** | **P0-1 + P0-2 合并**：删除记账与撤销快照收成单一出口 `DeletionLedger`，静默清理/卸载器/去重/孤儿/归档五处复用 + 三条腿自检（全仓 lint / 接线 lint / 行为） | 无人值守链路正在每天删用户文件且不可放回 | 实测只需同步 3 处 `recordClean` 调用（`Selftest+SystemAndHistory`、`+Foundation`、`+DeletionGate`）；计划里点的 `Selftest+Undo` 与 `PreferenceResidueDeep:191` **不用改**（前者自己造快照、不依赖 AppState 写手） |
 | R3 | **P0-3 软链 + P0-4 默认勾选降级** | 两条都是"界面上没说错但删多了" | 会红若干 `isSelected` 断言，逐条改判据 |
 | R4 | **P1-1 lsof 三态 + P1-14 形状断言**（含把 `contains("占用进程：无")` 改成方向断言） | AI 建议的输入正确性；顺带拆掉替旧实现兜底的恒绿 | 否 |
 | R5 | **P1-12 崩溃套件隔离**：新建 `Selftest+UIRenderQuarantine.swift`，把 7 个崩溃套件里会崩的渲染 check 整块搬进去 | 约 **44 条断言立刻回到记分板**（696→≈740），恢复 `cleanSelected` 闭环与并发记账写入的执法力；这是后续每一轮的地基 | 要同步刷新 KNOWN-ENV 的 S 段（`release.sh` 会强制） |
@@ -212,3 +222,13 @@ Maven/rustc 按需解析、不留引用表的"旧版本构件"；签名克隆类
      这十条本轮全部补了保护 + 夹具（自测从 22 条涨到 38 条）。
    两批不是同一批变异，所以"判红率"不可横向比较；写在一起只为了说明一件事：
    **自建矩阵只会覆盖"自己想到的错法"**，豁免面的缺口要靠另一双眼睛。
+
+4. **"出现过"与"出现几次"都不是判据，点名"这一处调用长什么样"才是**（R2，2026-10-01，变异实测）：
+   给"五条链路都接上了出口"写判据时，第一版数的是 `recordTrashedOriginal(` 出现次数（≥2），
+   因为归档与迁移共用一个私有 helper。结果变异把其中**一处调用删掉**，文件里仍剩
+   "helper 定义 1 次 + 另一处调用 1 次 = 2 次"，判据不响——**计数把定义当成了调用点**。
+   同一轮里另一条同类教训：`Cleaner.clean(` 的全仓 lint 如果只判"不许出现"，
+   那么把出口里那一句整个删掉会让命中数变成 0，"无人违规"于是等于"合规"。
+   两条改法：① 判**恰好等于 N 处**并把 N 的来源写在注释里（0 也判红 = 活性证据）；
+   ② 接线判据点每一处调用自己的关键字面量（`categoryName: "跨卷迁移"` 这种），
+   删任一处必红，且不会被定义、注释或同名的另一处调用冒充。

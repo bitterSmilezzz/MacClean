@@ -418,6 +418,9 @@ enum OrphanScanner {
                 note: "孤儿残留（\(item.kind.rawValue)）· 移入废纸篓"
             )
         }
-        return Cleaner.clean(cleanItems, permanently: permanently, progress: progress)
+        return DeletionLedger.clean(cleanItems,
+                                   permanently: permanently,
+                                   categoryName: "孤儿残留清理",
+                                   progress: progress).result
     }
 }

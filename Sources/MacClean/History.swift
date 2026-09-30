@@ -69,7 +69,7 @@ enum HistoryStore {
 
     /// 历史记录条数上限。
     ///
-    /// 原先这个上限只写在 `AppState.recordClean` 里（`history.count > 200` 才截断），
+    /// 原先这个上限只写在 `AppState` 的清理记录方法里（v1.73.15 已删，收敛进 `DeletionLedger`），
     /// 而 `HistoryStore.save` 自己不设限。v1.72 之后写历史的入口多了好几个
     /// （统一删除网关、下载/截图归档、硬链接去重都直接 `HistoryStore.save`），
     /// 它们全都不经过 AppState → 磁盘上的 `history.json` 只增不减。

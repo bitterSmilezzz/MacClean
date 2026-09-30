@@ -116,31 +116,17 @@ enum AutoCleanService {
             return 0
         }
 
-        // 6. 执行安全清理（非彻底删除，统一移入系统废纸篓）
-        let result = Cleaner.clean(candidates, permanently: false) { _ in }
+        // 6. 执行安全清理（非彻底删除，统一移入系统废纸篓）。
+        //    历史行 + 撤销快照由 `DeletionLedger` 在删除的同一刻写好（R2 P0：动手与记账同一个出口）。
+        let categoryLabel = triggerHeal ? "系统定时自愈清理" : "系统定时维护"
+        let outcome = DeletionLedger.clean(candidates, permanently: false, categoryName: categoryLabel)
+        let result = outcome.result
         // 「实际释放」在这里是说谎：无头链路一律 `permanently: false`，字节只是被搬进
         // 废纸篓（本机实测同卷 rename 后磁盘可用量 Δ = 0），所以这句话必须由落点出口。
         print("[AutoClean] 清理完成：\(result.space.claim())，共 \(result.succeeded) 项，失败 \(result.failures.count) 项")
 
-        // 7. 持久化记录（历史记录与撤销快照）
+        // 7. 历史与快照已在出口里落盘；这里只做播报（无头链路没有内存缓存要刷）。
         if result.succeeded > 0 {
-            let categoryLabel = triggerHeal ? "系统定时自愈清理" : "系统定时维护"
-            let record = CleanRecord(
-                categoryName: categoryLabel,
-                itemCount: result.succeeded,
-                bytes: result.releasedBytes,
-                mode: "废纸篓",
-                failures: result.failures.count,
-                trashedBytes: result.trashedBytes > 0 ? result.trashedBytes : nil
-            )
-            _ = HistoryStore.append(record)
-
-            // 写入撤销快照，方便用户后续随时在主界面放回原位
-            if !result.trashedSnapshots.isEmpty {
-                let session = CleanUndoSession(recordID: record.id, entries: result.trashedSnapshots)
-                UndoManagerStore.record(session: session)
-            }
-
             // 8. 发送系统通知
             sendCompletionNotification(
                 space: result.space,

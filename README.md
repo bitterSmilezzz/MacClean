@@ -14,7 +14,7 @@
 - **删除只有一个入口（v1.72.0 安全收敛，G14）**：全部清理动作统一经 `ResidueDeletionGate`，主目录之外的目标必须先登记**治理域**（`GovernanceDomain`：精确根 + 最小层级 + 入口名单）才能被删除，由 `FileSystem.governanceVerdict` 做唯一裁决——软链防跳板 → 系统硬保护 → 用户数据硬排除 → 你的自定义白名单 → 域内且层级足够 → **当前进程真的有权 unlink**（含 sticky 位规则）。
   - **为什么必须做**：v1.53–v1.71 陆续加了十余个治理模块，它们扫的是 `/Library/Fonts`、`/Library/Printers`、`/Library/Audio/Plug-Ins/HAL` 这类主目录之外的位置，而统一护栏的常规允许根只有主目录与临时目录——于是每个模块各自写了 `path.hasPrefix("/System")` 式的字符串护栏。**后果是可验证的**：① 一个软链就能绕过；② `~/Library/Mail`、`~/Library/Keychains` 等硬排除与你在设置里加的白名单，对这 12 个模块**完全失效**；③ 各模块松紧不一，同一份残存在 A 模块判"在用"、在 B 模块判"孤儿"；
   - **最后两个例外在 v1.73.0 补掉**：「开发工程产物」面板（`DevProjectScanner`）与「偏好碎片」清理（`PreferenceResidueInspector`）当时漏迁，仍自写防线后裸调删除。前者删完不写历史、不留撤销快照，`resultingItemURL` 直接传 `nil` 把废纸篓落点也丢了，而它恰好是单次可释放量最大的模块（真机 9 个工程 8.6 GB）；它那条"在主目录内吗"的判断还漏了路径分隔符（`/Users/testa` 会被当成 `/Users/test` 的家），判"在 DerivedData 下"用的是 `path.contains("/DerivedData/")`（任何工程里一个叫 DerivedData 的目录都算）。**后者更严重**：它连基础护栏都没有——只 `fileExists` 就动手，于是 G8 系统硬保护、G6 用户数据硬排除与你在设置里加的白名单对这条路径**完全失效**，而调用方是 App 卸载器，用户点"卸载"时顺带清掉的正是偏好文件本身；它的"释放量"累加的还是扫描时缓存的 `item.size`。现在两个模块同样只经网关，并各有**源码接线自检**守着：模块里出现裸删除调用、或界面侧偷偷传 `journal: .none`，自检立刻红；
-  - **仍不经网关的删除只剩四类**，且都不是"扫出候选项再删"的治理模块：`Cleaner`（分类清理主链路，自带 `isSafeToClean` 与历史/撤销记账）、`SpaceArchiveService`（归档后先校验压缩包完整性才移走原件）、`LaunchAgentManager`（只删本 App 自己写入的那一个 plist）、应用自身状态文件（`AIService` 的旧密钥文件、`FileFingerprintCache` 的缓存）；
+  - **仍不经网关的删除只剩四类**，且都不是"扫出候选项再删"的治理模块：`Cleaner`（分类清理主链路，自带 `isSafeToClean`；**常规写法下它只被 `DeletionLedger` 调用**——历史行与撤销快照的配对由出口保证，不再靠调用方记得写（见 G20）。这句话的边界要说清：守它的是**文本 lint**，不是编译器；它挡得住直接调用与取函数引用，挡不住刻意绕行的写法。编译器级的保护（`Cleaner` 并入出口文件、`clean` 设 `private`）已列为下一次发版前的硬条件）、`SpaceArchiveService`（归档后先校验压缩包完整性才移走原件）、`LaunchAgentManager`（只删本 App 自己写入的那一个 plist）、应用自身状态文件（`AIService` 的旧密钥文件、`FileFingerprintCache` 的缓存）；
   - **记账从"编的"变成"量的"**：旧实现删除后直接累加扫描时缓存的 `item.size`（`try?` 读到 0 也算成功）。现在删除**前**实测真实体积，失败项不计；同时捕获废纸篓地址写**撤销快照与历史记录**——此前 14 张治理卡片清完整个人没有任何回退路径；
   - **权限不足不再谎报**：真机实测 `/Library/Printers`、`/Library/QuickLook`、`/Library/Audio/Plug-Ins/HAL`、`/Library/ColorSync/Profiles` 都是 root 只读（只有 `/Library/Fonts` 因 `drwxrwxr-t root:admin` 而对管理员可写）。网关对无权限目标返回 `needsPrivilege` 并带真实原因，界面明示"该位置由 root 管理，MacClean 不做提权"，而不是含糊一句"清理失败"。
 - **清理历史不再被陈旧缓存抹掉（v1.73.2，G3 的前提）**：写历史与写撤销快照各收敛成**唯一原子入口**（`HistoryStore.append`/`clear`、`UndoManagerStore.record`，内部统一走带事务锁的 `mutate`），6 个各自 `load → insert → save` 的调用点全部迁过去，两个存储的 `save` 已降为 `private`——"不许从别处整片写回"由**编译器**保证，一条源码不变量自检只是兜底。旧写法里 `AppState` 最要命：它在启动时把整份历史读进内存数组，之后每次主界面清理都拿那份**陈旧缓存**整片写回磁盘——于是启动期间由删除网关、截图/下载归档、硬链接去重、定时自愈记下的记录会被无声抹掉，而撤销快照是靠 `recordID` 挂在记录上的，记录没了「一键放回原位」就失去入口，等于把"清完有回退路径"这句话作废。这条不需要并发就能触发：先用任一治理卡片清一次，再从主界面「清理已选项」清一次，前一条记录就没了。同一形状的问题在快照侧还有一处：`restore` 原先开头读一份数组、中间逐项把文件从废纸篓搬回原位（秒级 I/O）、结尾整片写回，期间落下的新快照会被覆盖，症状是"记录还在、快照没了"；现在改成先搬运攒结果、最后重新读盘一次性落账。
@@ -84,9 +84,10 @@
     （变异：网关换成 directoryStats → 记账 3,006,464 vs 面板 1,003,520，判红）。
     真正的统一是**逐模块**决定承诺口径；已实测 5 个治理模块在其真实目录上两轴差值为 0。
 - **主流对齐三件套（v1.73.14）**：**文件粉碎器**（工具页 + 清理项右键，只对用户逐条点名的路径生效；覆写前先过统一护栏裁决、软链一律拒绝跟随、3 遍覆写并如实声明「APFS 写时复制卷上多遍不提供额外保证」、最终删除走网关、写历史且无撤销快照）；**App 更新检查**（默认关，开启后只访问 App 自己声明的 Sparkle 更新源 + App Store 收据判别，请求不含本机路径——有断言钉住；只列示与跳转，不代下载不代装）；**废纸篓自动清空**（可配置 N 天，判据用条目最后修改时间、文案不说「丢弃时间」，无人值守链路彻底删除、走统一网关、读不到废纸篓就明示跳过）。与 CleanMyMac X / DaisyDisk / AppCleaner / CCleaner / Pearcleaner 的逐模块对齐表与「明确不做」清单见 [mainstream-parity.md](docs/research/mainstream-parity.md)。
-- **主流对齐第二批次（v1.73.15）**：**系统维护面板**（磁盘 First Aid `diskutil verifyVolume` 走 `SafeProcess`，本机实测 verify 无需管理员；根卷修复在挂载态必须进恢复模式——实测提权无解，与 Apple 磁盘工具边界一致，如实做成指引卡而不假装能修；DNS 刷新与 Spotlight 重建复用既有链路，每动作独立确认、三态结果原样播报）；**浏览器隐私矩阵**（按 (浏览器 × 数据类) 一格一判据：Chromium 系 + Firefox + Safari，danger 格默认全不选、禁入全选、删除需独立确认带固定警示；Safari History 在 G6 内照常呈现、删除被网关拒并原样展示）；**邮件附件**（附件是用户数据：全部「需确认」零默认勾选、无「全选可清理」档、TCC 读不到明示 + 授权引导、默认移废纸篓可撤销）。至此对齐表全部主流模块行 ✅ 或 🚫（有理由不做）。
+- **主流对齐第二批次（v1.73.10 一并发出；这一行此前误标为 v1.73.15，`MailAttachmentsScanner.swift` / `MaintenanceService.swift` / `BrowserPrivacyView.swift` 三个文件都在 `v1.73.10` 那棵树里，v1.73.15 这个号留给下面那批记账收口）**：**系统维护面板**（磁盘 First Aid `diskutil verifyVolume` 走 `SafeProcess`，本机实测 verify 无需管理员；根卷修复在挂载态必须进恢复模式——实测提权无解，与 Apple 磁盘工具边界一致，如实做成指引卡而不假装能修；DNS 刷新与 Spotlight 重建复用既有链路，每动作独立确认、三态结果原样播报）；**浏览器隐私矩阵**（按 (浏览器 × 数据类) 一格一判据：Chromium 系 + Firefox + Safari，danger 格默认全不选、禁入全选、删除需独立确认带固定警示；Safari History 在 G6 内照常呈现、删除被网关拒并原样展示）；**邮件附件**（附件是用户数据：全部「需确认」零默认勾选、无「全选可清理」档、TCC 读不到明示 + 授权引导、默认移废纸篓可撤销）。至此对齐表全部主流模块行 ✅ 或 🚫（有理由不做）。
+- **删除与记账绑成同一个动作（v1.73.15，G20）**：**"删了却拿不回"不是护栏问题，是记账问题**，而此前它靠人记得去写。产品源码里原本有 7 处 `Cleaner.clean(` 调用点，其中 **App 卸载器**（删 `Application Support/<App>` 里的真数据）与**孤儿残留清理**一行历史都不写，**智能静默定时清理**与**重复文件去重**只写历史、把 `result.trashedSnapshots` 整个丢掉——于是清理历史页上有一批永远点不动的「放回原位」，而静默清理是唯一"没人看着也会删"的那条链路。另两处裸 `fm.trashItem`（归档、跨卷迁移）同样既不记账也不留快照。现在唯一的"动手 + 记账"出口是 `DeletionLedger`：`clean()` 里删完当场写历史行与撤销快照，`write()` 给不经 `Cleaner` 的链路用，`AppState.recordClean` 随之删掉。**行为可见的变化**：卸载 App 的残留、孤儿清理、归档/迁移从此出现在清理历史里，并真的能「放回原位」；一条什么都没删成的静默运行不再刷历史，而**全失败**的运行必须落一行（否则"这条链路一直删不动"永远看不见）。判据三条：全仓 lint 要求 `Cleaner.clean(` 在源码里**恰好 1 处**且位于出口内部（命中 0 也判红，防整档改走别处后 lint 因无人违规而假绿）、五条曾漏记的链路必须仍各自接线到出口、行为侧断言快照与历史行按 `recordID` **成对且条目数相等**。
 - **破坏性动作一律先确认（v1.72.1）**：复核时发现三处"点一下就删"的入口——菜单栏整个浮窗**没有任何确认弹窗**，"释放本地快照"与"清理幽灵自启"直接执行（本地快照在备份盘长期未接时可能是近期改动的唯一副本）；剪贴板两个删除函数的默认值是 `toTrash: false` 而卡片没显式传参，于是主按钮实际是"直接彻底删除、无撤销"，而 `~/Library/TemporaryItems` 里混着 Office/编辑器的**自动恢复草稿**。现全部改为先确认、默认移入废纸篓，且结果摘要必须带上失败/跳过数（只播报成功数会让用户以为剩下的也处理了）。
-- **历史记录上限移到唯一写入口（v1.72.1）**：200 条上限原先只写在 `AppState.recordClean` 里，而 `HistoryStore.save` 自己不设限；v1.72 之后写历史的入口有 6 个（AppState、AutoCleanService、统一删除网关、下载归档、截图归档、硬链接去重），除 AppState 外全部绕过上限 → 磁盘上的 `history.json` 只增不减。
+- **历史记录上限移到唯一写入口（v1.72.1）**：200 条上限原先只写在 `AppState` 的清理记录方法里（该方法已于 v1.73.15 删掉，记账收敛进 `DeletionLedger`），而 `HistoryStore.save` 自己不设限；v1.72 之后写历史的入口有 6 个（AppState、AutoCleanService、统一删除网关、下载归档、截图归档、硬链接去重），除 AppState 外全部绕过上限 → 磁盘上的 `history.json` 只增不减。
 - **扫描机制与安全护栏**：判定、遍历、删除三处**全链路不跟随符号链接**（`isSafeToClean` 先解析真实位置再判定；递归用 `lstat` 版 `isRealDir`；软链不计体积），`Cleaner` 的校验与删除作用于同一个已解析路径以消除 TOCTOU 缝隙；**"读不到"不再被读成"很干净"**——扫描根目录存在但不可读时会明确提示"结果不完整"并给出授权指引，而不是安静地返回 0 项。
 - **单一结论，不再自相矛盾**：每个扫描项只给**一个**结论——`可清理` / `使用中` / `需确认` / `勿删`，并附一句「为什么」。
   - **不变量**：`可清理` **蕴含所属应用未在运行**。界面上永远不会再出现「可清理」和「频繁使用中」同时打在一个文件上的情况；
@@ -338,7 +339,15 @@
 本机无 Xcode，使用 SwiftPM + CommandLineTools 构建，手工组装 .app：
 
 ```bash
-# 进程内 UI 自检（ViewInspector 驱动，零窗口零打断，退出码 0=全过）
+# ⚠ 先设**这一对**变量，缺一条就会构建出一个跑不起来的二进制（详见 docs/RELEASE-CHECKLIST.md §0.3）：
+#   只钉 SDKROOT 时编译器仍来自 Xcode，产物的 @rpath/libXCTestSwiftSupport.dylib 指向不存在的目录，
+#   `--selftest` 会死在 dyld 之前、连一行 ✅ 都不打印。改完变量后必须**强制重新链接**
+#   （touch 任意一个 .swift；`touch Package.swift` 不够），否则增量构建复用上一次的坏产物。
+export DEVELOPER_DIR=/Library/Developer/CommandLineTools
+export SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+
+# 进程内 UI 自检（ViewInspector 驱动，零窗口零打断；本机 macOS 27 上有一批环境性红灯，
+#   判据是"失败名集与 docs/KNOWN-ENV-SELFTEST-FAILURES-MACOS27.md 逐条相同"，不是退出码 0）
 swift build
 .build/debug/MacClean --selftest
 

@@ -257,21 +257,17 @@ enum ResidueDeletionGate {
     /// 被 launchd 杀掉、用户强退）会留下"有历史行、无快照"的记录。界面按
     /// "快照不存在就不给放回按钮"降级（`HistoryRow`），不再为此补一把跨存储的锁。
     private static func record(categoryName: String, outcome: Outcome, permanently: Bool) {
-        let record = CleanRecord(
-            id: UUID(), date: Date(), categoryName: categoryName,
-            itemCount: outcome.cleanedCount, bytes: outcome.freedBytes,
-            mode: permanently ? "彻底删除" : "废纸篓", failures: outcome.errorCount,
-            // 只在"确实是下限"时写 true，其余留 nil——老记录与不需要这句话的记录
-            // 保持和改动前逐字节一致。
-            freedIsLowerBound: outcome.lowerBoundCount > 0 ? true : nil,
-            // 只在"确实有量还压在废纸篓里"时写，其余留 nil：老记录与不需要这句话的记录
-            // 保持和改动前逐字节一致（同 `freedIsLowerBound` 的理由）。
-            trashedBytes: outcome.trashedBytes > 0 ? outcome.trashedBytes : nil)
-        HistoryStore.append(record)
-
-        if !permanently && !outcome.trashedSnapshots.isEmpty {
-            UndoManagerStore.record(session: CleanUndoSession(recordID: record.id,
-                                                              entries: outcome.trashedSnapshots))
-        }
+        // 写手只有 `DeletionLedger` 一个（R2 P0）：mode、`trashedBytes`、`freedIsLowerBound`
+        // 与撤销快照的配对关系在全部删除链路里必须是同一份实现——以前网关自己写一份、
+        // `AppState` 再写一份，于是"某条链路只写历史不写快照"是可能发生的，
+        // 而它恰恰是最致命的那种漏（删了拿不回）。
+        DeletionLedger.write(categoryName: categoryName,
+                             itemCount: outcome.cleanedCount,
+                             bytes: outcome.freedBytes,
+                             trashedBytes: outcome.trashedBytes,
+                             failures: outcome.errorCount,
+                             lowerBoundCount: outcome.lowerBoundCount,
+                             permanently: permanently,
+                             snapshots: outcome.trashedSnapshots)
     }
 }

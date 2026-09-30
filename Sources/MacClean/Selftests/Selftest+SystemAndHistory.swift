@@ -121,10 +121,13 @@ extension Selftest {
             _ = HistoryStore.append(CleanRecord(categoryName: "删除网关侧记账", itemCount: 1,
                                                 bytes: 1024, mode: "废纸篓", failures: 0))
 
-            _ = app.recordClean(categoryName: "主界面清理", itemCount: 1, bytes: 2048,
-                                mode: "废纸篓", failures: 0, trashedBytes: 0)
+            // v1.73.15 起唯一的写手是 `DeletionLedger`（`AppState.recordClean` 已删）
+            let written = DeletionLedger.write(categoryName: "主界面清理", itemCount: 1, bytes: 2048,
+                                               trashedBytes: 0, failures: 0,
+                                               permanently: false, snapshots: [])
+            if let merged = written.history { app.history = merged }
 
-            // 旧实现：recordClean 拿启动时那份缓存整片写回 → 网关那条直接消失
+            // 旧实现：拿启动时那份缓存整片写回 → 网关那条直接消失
             let onDisk = HistoryStore.load()
             guard onDisk.count == 2 else {
                 print("      盘上只剩 \(onDisk.count) 条，另一条被陈旧缓存覆盖")

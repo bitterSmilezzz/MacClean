@@ -22,6 +22,16 @@ struct MacCleanApp: App {
             exit(2)
         }
         #endif
+        // `--selftest-suite=` 只有在 `--selftest` 之下才有意义（父进程用它派子进程跑单个套件）。
+        // 漏了 `--selftest` 时以前会**一路落到 GUI 分支**——命令行看起来"什么都没发生"，
+        // 实际把整个 App 界面开了起来（v1.73.15 复审实测误开出两个窗口）。未知/搭配错的
+        // `--selftest*` 一律 fail fast：静默起 GUI 是把"没执行"演成"在执行"。
+        if !CommandLine.arguments.contains("--selftest"),
+           let stray = CommandLine.arguments.first(where: { $0.hasPrefix("--selftest") }) {
+            FileHandle.standardError.write(Data(
+                "参数 \(stray) 只在配合 --selftest 时有效；未启动任何自检，也未启动界面。\n".utf8))
+            exit(2)
+        }
         // 后台定时维护与低空间自愈命令行模式（LaunchAgent 无头执行，零窗口）
         if CommandLine.arguments.contains("--autoclean") {
             exit(AutoCleanService.run())

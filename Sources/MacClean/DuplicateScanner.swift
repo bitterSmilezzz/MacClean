@@ -382,8 +382,12 @@ final class DuplicateState: ObservableObject {
         groups[gIndex].items[iIndex].isSelected.toggle()
     }
 
-    /// 清理所有勾选的重复文件（默认安全移入废纸篓）
-    func cleanSelected(permanently: Bool = false) -> Cleaner.Result {
+    /// 清理所有勾选的重复文件（默认安全移入废纸篓）。
+    /// 返回 `DeletionLedger.Outcome` 而不是 `Cleaner.Result`：历史行与撤销快照在出口里
+    /// 已经写好，调用方只需要 `outcome.result` 做界面收尾 + `outcome.undoSessionID` 给
+    /// 结果弹窗挂「放回原位」。以前返回 Result 时，调用方自己补了一行历史却**从没写快照**
+    /// （R2 的 P0：界面上那条记录永远点不动）。
+    func cleanSelected(permanently: Bool = false) -> DeletionLedger.Outcome {
         var itemsToClean: [CleanItem] = []
         for group in groups {
             for item in group.items where item.isSelected {
@@ -400,9 +404,20 @@ final class DuplicateState: ObservableObject {
                 )
             }
         }
-        guard !itemsToClean.isEmpty else { return Cleaner.Result() }
 
-        let result = Cleaner.clean(itemsToClean, permanently: permanently) { _ in }
+        // R2 的 P0：去重一次删的是**整组副本**，而以前这条路径的调用方只补了一行历史、
+        // **从没写撤销快照**——界面上那条记录永远点不动。分类名沿用界面上已有的「重复文件」，
+        // 不改历史里既有的行名。
+        guard !itemsToClean.isEmpty else {
+            return DeletionLedger.Outcome(result: Cleaner.Result(),
+                                          record: nil,
+                                          history: nil,
+                                          undoSessionID: nil)
+        }
+        let outcome = DeletionLedger.clean(itemsToClean,
+                                           permanently: permanently,
+                                           categoryName: "重复文件")
+        let result = outcome.result
 
         // 清理完成后更新内存列表（移除已成功删除的路径）
         let succeeded = result.succeededItemIDs
@@ -418,7 +433,7 @@ final class DuplicateState: ObservableObject {
         if !result.failures.isEmpty { parts.append("\(result.failures.count) 项失败") }
         lastSummary = parts.joined(separator: "，")
 
-        return result
+        return outcome
     }
 
     /// 使用 APFS 硬链接无损替换勾选的重复副本（保留文件路径，仅释放底层物理空间）

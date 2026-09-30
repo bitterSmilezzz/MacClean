@@ -1414,17 +1414,16 @@ extension Selftest {
         }
 
         // 28. 落点必须真的写进历史：只靠 mode 回推会把混合结果算成 100% 未释放
-        check("recordClean 落参：混合结果写进历史后 pending 是显式值而不是 mode 回推的整批") {
+        check("DeletionLedger 落参：混合结果写进历史后 pending 是显式值而不是 mode 回推的整批") {
             let dir = makeFixture("history_state")
             defer { try? FileManager.default.removeItem(atPath: dir) }
             let saved = HistoryStore.fileURLOverride
             defer { HistoryStore.fileURLOverride = saved }
             HistoryStore.fileURLOverride = URL(fileURLWithPath: dir + "/history.json")
 
-            let app = AppState()
-            _ = app.recordClean(categoryName: "自检混合落盘", itemCount: 2,
-                                bytes: 10_000_000, mode: "废纸篓", failures: 0,
-                                trashedBytes: 3_000_000)
+            _ = DeletionLedger.write(categoryName: "自检混合落盘", itemCount: 2,
+                                     bytes: 10_000_000, trashedBytes: 3_000_000,
+                                     failures: 0, permanently: false, snapshots: [])
             var bad: [String] = []
             guard let row = HistoryStore.load().first(where: { $0.categoryName == "自检混合落盘" }) else {
                 print("      历史里没找到这条记录")

@@ -191,6 +191,10 @@ final class SpaceArchiveService {
                 var resultingURL: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: expanded), resultingItemURL: &resultingURL)
                 didDelete = true
+                Self.recordTrashedOriginal(categoryName: "大文件归档",
+                                      originalPath: expanded,
+                                      trashPath: resultingURL?.path,
+                                      size: originalSize)
             } catch {
                 // 原件入废纸篓失败不影响压缩包已就绪事实
                 didDelete = false
@@ -206,6 +210,38 @@ final class SpaceArchiveService {
             deletedOriginal: didDelete,
             errorMessage: nil
         )
+    }
+
+    /// 归档/迁移把原件移进废纸篓之后，必须留下一行历史 + 一份撤销快照（R2 的 P0）。
+    ///
+    /// 以前这两处 `trashItem` 之后**一行历史都不写**：用户侧表现是"应用不知道发生过什么"，
+    /// 原件躺在废纸篓里也没有「放回原位」的入口，历史页的累计量同时虚低。
+    /// 体积口径沿用 `CleanRecord.pendingTrashBytes` 里已写明的既有约定——
+    /// **归档/移动的 `bytes` 记 0**：同宗卷 rename 与打包本身不把空间还给磁盘，
+    /// 真要等清空废纸篓才落定，而那一笔对账是另一条待议项（不在此自创第二套口径）。
+    static func recordTrashedOriginal(categoryName: String,
+                                      originalPath: String,
+                                      trashPath: String?,
+                                      size: Int64) {
+        // `trashItem` 成功但没回吐落点（`resultingURL == nil`）时**照样落一行**：
+        // 调用方拿到 `deletedOriginal = true` 就会播报"原件已移入废纸篓"，
+        // 账上查无此事正是本轮要消灭的那个形状（v1.73.15 复审 P1-F4）。
+        // 没有落点就只是没有快照——界面按"无快照不给放回按钮"降级，账不降级。
+        var snapshots: [TrashedItemEntry] = []
+        if let trashPath {
+            snapshots = [TrashedItemEntry(originalPath: originalPath,
+                                          trashPath: trashPath,
+                                          size: size,
+                                          itemName: (originalPath as NSString).lastPathComponent)]
+        }
+        DeletionLedger.write(categoryName: categoryName,
+                             itemCount: 1,
+                             bytes: 0,
+                             trashedBytes: 0,
+                             failures: 0,
+                             permanently: false,
+                             snapshots: snapshots,
+                             modeOverride: "归档移动（原件已入废纸篓）")
     }
 
     // MARK: - 外接盘文件安全迁移
@@ -277,6 +313,10 @@ final class SpaceArchiveService {
                 var resultingURL: NSURL?
                 try fm.trashItem(at: URL(fileURLWithPath: expanded), resultingItemURL: &resultingURL)
                 didDelete = true
+                Self.recordTrashedOriginal(categoryName: "跨卷迁移",
+                                      originalPath: expanded,
+                                      trashPath: resultingURL?.path,
+                                      size: sourceSize)
             } catch {
                 didDelete = false
             }

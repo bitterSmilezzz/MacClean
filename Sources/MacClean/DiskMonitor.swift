@@ -277,19 +277,21 @@ final class DiskMonitor: ObservableObject {
 
         guard !safeCandidates.isEmpty else { return }
 
-        // 执行安全清理（非彻底删除，默认移入废纸篓以保万全）
-        let result = Cleaner.clean(safeCandidates, permanently: false) { _ in }
+        // 执行安全清理（非彻底删除，默认移入废纸篓以保万全）。
+        // ⚠ R2 的 P0 就修在这一行：以前这里直接调 `Cleaner.clean`，删完只写一行历史、
+        //   **把 `result.trashedSnapshots` 整个丢掉**——而这是唯一"没人看着也会删"的链路，
+        //   于是历史页留下一条永远点不动的「放回原位」，若同时开着废纸篓自动清空，
+        //   这批文件就永久找不回。现在删除与记账走同一个出口 `DeletionLedger.clean`，
+        //   "只删不记"在结构上写不出来。
+        let outcome = DeletionLedger.clean(safeCandidates,
+                                           permanently: false,
+                                           categoryName: "智能静默定时清理")
+        let result = outcome.result
         if result.succeeded > 0 {
             DispatchQueue.main.async {
+                // `refreshDisk()` 会 `reloadHistory()`，比 `outcome.history` 更新，
+                // 所以这里不能再拿 append 时刻的快照去覆盖（v1.73.15 复审 P2-F5）。
                 app.refreshDisk()
-                app.recordClean(
-                    categoryName: "智能静默定时清理",
-                    itemCount: result.succeeded,
-                    bytes: result.releasedBytes,
-                    mode: "废纸篓",
-                    failures: result.failures.count,
-                    trashedBytes: result.trashedBytes
-                )
                 NotificationManager.shared.notifyCleanCompleted(space: result.space,
                                                               failureCount: result.failures.count)
             }

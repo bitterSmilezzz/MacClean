@@ -298,7 +298,14 @@ final class UninstallerState: ObservableObject {
         }
         // L5（数据层审查）：避免主线程同步执行大目录 trashItem 阻塞 UI——后台执行 + 主线程回写
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let result = Cleaner.clean(items, permanently: permanently) { _ in }
+            // R2 的 P0：卸载器删的常是 `Application Support/<App>` 里的**真数据**，
+            // 而这条路径以前**既不写历史、也不写撤销快照**——用户点完"卸载"之后
+            // 应用不知道发生过什么，历史页虚低，也永远没有「放回原位」。
+            // 现在走与主链路同一个出口；分类名固定用「App 卸载残留」，
+            // 不把第三方 App 名写进历史行（历史文件会随状态目录被备份/截图分享）。
+            let result = DeletionLedger.clean(items,
+                                             permanently: permanently,
+                                             categoryName: "App 卸载残留").result
             DispatchQueue.main.async {
                 guard let self else { return }
                 let failed = result.failedPaths

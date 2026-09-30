@@ -167,6 +167,8 @@ enum Selftest {
         ("Orphans", suiteOrphans),
         // 清理撤销与回滚 (v1.35.0)
         ("Undo", suiteUndo),
+        // 删除记账与撤销快照的单一出口 (v1.73.15)
+        ("DeletionLedger", suiteDeletionLedger),
         // 智能清理推荐引擎 (v1.36.0)
         ("SmartRecommendation", suiteSmartRecommendation),
         // API Key 存储（钥匙串优先 + 内存回退，绝不落盘）
